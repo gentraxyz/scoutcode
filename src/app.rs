@@ -1,4 +1,4 @@
-use crate::agent::{Agent, Ev, Hooks, PermissionAnswer, PermissionRequest, PlanAnswer, Shared, Steer};
+use crate::agent::{Agent, Ev, Hooks, PermissionAnswer, PermissionRequest, PlanAnswer, Question, QuestionAnswer, Shared, Steer};
 use crate::api::{Content, Message, ModelInfo};
 use crate::attach;
 use crate::config::{self, Config, EFFORTS, MODES};
@@ -8,6 +8,7 @@ use crate::markdown::{self, Block};
 use crate::session::{self, Session, SessionInfo, Totals};
 use crate::theme;
 use crate::tools::{self, Display, Todo, ToolResult};
+use crate::update::Status;
 use eframe::egui::{self, Color32, FontId, Key, Modifiers, RichText, Sense, Stroke};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -29,12 +30,60 @@ struct Item {
     /// Height and width last time it was drawn, so items outside the viewport can be skipped.
     h: f32,
     w: f32,
+    /// On the first call of a folded run of tool calls: whether the run is expanded.
+    fold_open: bool,
 }
 
 impl Item {
     fn new(kind: Kind_) -> Self {
-        Item { kind, h: 0.0, w: 0.0 }
+        Item { kind, h: 0.0, w: 0.0, fold_open: false }
     }
+}
+
+/// A run of two or more tool calls the model has moved on from, shown under one header.
+struct ToolGroup {
+    start: usize,
+    end: usize,
+    open: bool,
+    count: usize,
+    /// What the run did, e.g. "Read 3, Run 2".
+    summary: String,
+    failed: usize,
+}
+
+/// The runs of tool calls to fold: those followed by another kind of item, or ending a turn that has finished.
+fn tool_groups(items: &[Item], running: bool) -> Vec<ToolGroup> {
+    let is_tool = |i: &Item| matches!(i.kind, Kind_::Tool { .. });
+    let mut groups = vec![];
+    let mut i = 0;
+    while i < items.len() {
+        if !is_tool(&items[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < items.len() && is_tool(&items[i]) {
+            i += 1;
+        }
+        if i - start < 2 || (i == items.len() && running) {
+            continue;
+        }
+        let mut counts: Vec<(&str, usize)> = vec![];
+        let mut failed = 0;
+        for item in &items[start..i] {
+            if let Kind_::Tool { name, result, .. } = &item.kind {
+                let title = tool_title(name);
+                match counts.iter_mut().find(|(t, _)| *t == title) {
+                    Some(c) => c.1 += 1,
+                    None => counts.push((title, 1)),
+                }
+                failed += result.as_ref().is_some_and(|r| r.is_error) as usize;
+            }
+        }
+        let summary = counts.iter().map(|(t, n)| format!("{t} {n}")).collect::<Vec<_>>().join(", ");
+        groups.push(ToolGroup { start, end: i, open: items[start].fold_open, count: i - start, summary, failed });
+    }
+    groups
 }
 
 struct PendingPermission {
@@ -49,10 +98,26 @@ struct PendingPlan {
     feedback: String,
 }
 
+/// Questions from `ask_questions`, with what the user has picked and typed so far, one entry per question.
+struct PendingQuestions {
+    questions: Vec<Question>,
+    picks: Vec<Vec<usize>>,
+    other: Vec<String>,
+    reply: Sender<QuestionAnswer>,
+}
+
 /// A message on its way: what was typed and the files attached to it.
 struct Outgoing {
     text: String,
     files: Vec<String>,
+}
+
+/// A tab in the model menu's rail.
+#[derive(Clone, Copy, PartialEq)]
+enum ModelTab {
+    Starred,
+    ScoutCode,
+    OpenRouter,
 }
 
 /// The @ file picker under the cursor: where the "@word" starts and ends (in chars) and the text after the @.
@@ -84,16 +149,18 @@ enum SettingsTab {
     Notifications,
     Usage,
     Account,
+    Updates,
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 3] = [SettingsTab::Notifications, SettingsTab::Usage, SettingsTab::Account];
+    const ALL: [SettingsTab; 4] = [SettingsTab::Notifications, SettingsTab::Usage, SettingsTab::Account, SettingsTab::Updates];
 
     fn title(self) -> &'static str {
         match self {
             SettingsTab::Notifications => "Notifications",
             SettingsTab::Usage => "Usage",
             SettingsTab::Account => "Account",
+            SettingsTab::Updates => "Updates",
         }
     }
 
@@ -103,6 +170,7 @@ impl SettingsTab {
             SettingsTab::Notifications => "notifications alerts taskbar flash toast windows attention",
             SettingsTab::Usage => "usage tokens cost spend daily chart history",
             SettingsTab::Account => "account sign in sign out login key username billing",
+            SettingsTab::Updates => "updates version upgrade download restart release notes about",
         }
     }
 }
@@ -110,6 +178,9 @@ impl SettingsTab {
 #[derive(Default)]
 struct Login {
     key: String,
+    /// The OpenRouter key being typed, and the name it's saved under.
+    or_key: String,
+    or_name: String,
     busy: bool,
     url: Option<String>,
     error: Option<String>,
@@ -137,11 +208,15 @@ pub struct App {
     totals: Totals,
     context: u64,
     models: Vec<ModelInfo>,
-    served: String,
+    /// The model id to send, for `provider` ("scoutcode" or "openrouter").
     model: String,
+    provider: String,
+    /// The model menu's tab: starred models, or one provider's. Picking a row in a provider's tab runs it there.
+    model_tab: ModelTab,
     effort: String,
     permission: Option<PendingPermission>,
     plan: Option<PendingPlan>,
+    questions: Option<PendingQuestions>,
     /// Every saved chat, from every folder; the sidebar groups them by project.
     sessions: Vec<SessionInfo>,
     projects: Vec<config::Project>,
@@ -192,6 +267,7 @@ pub struct App {
     /// The first-run choice of notifications (flash, toast) while it's being made.
     notify_choice: (bool, bool),
     voice: Voice,
+    updater: crate::update::Updater,
 }
 
 /// The mic button's state.
@@ -240,6 +316,7 @@ impl App {
         let shared = Arc::new(Shared {
             mode: Mutex::new(if MODES.contains(&cfg.mode.as_str()) { cfg.mode.clone() } else { "default".into() }),
             model: Mutex::new(cfg.model.clone()),
+            provider: Mutex::new(cfg.provider.clone()),
             effort: Mutex::new(cfg.effort.clone()),
             cancel: Default::default(),
             edit_tools: Default::default(),
@@ -247,8 +324,11 @@ impl App {
         });
         let cwd = initial_cwd();
         let agent = Agent::new(cfg.clone(), session::new_session(&cwd, &cfg.model), shared.clone());
+        let updater = crate::update::Updater::start(&cc.egui_ctx, cfg.auto_update);
         let mut app = App {
             model: cfg.model.clone(),
+            provider: cfg.provider.clone(),
+            model_tab: ModelTab::ScoutCode,
             effort: cfg.effort.clone(),
             projects: cfg.projects.clone(),
             starred: cfg.starred_models.clone(),
@@ -271,9 +351,9 @@ impl App {
             totals: Totals::default(),
             context: 0,
             models: vec![],
-            served: String::new(),
             permission: None,
             plan: None,
+            questions: None,
             sessions: session::list_sessions(),
             expanded: HashSet::new(),
             renaming: None,
@@ -306,6 +386,7 @@ impl App {
             usage_log: Default::default(),
             notify_choice: (true, false),
             voice: Voice::Idle,
+            updater,
         };
         app.enter_project(&cwd);
         app.fetch_models();
@@ -321,20 +402,46 @@ impl App {
         self.cwd.clone()
     }
 
+    /// Loads the ScoutCode and OpenRouter lists, whichever keys are saved, and merges them.
     fn fetch_models(&self) {
-        if self.cfg.api_key.is_none() {
-            return;
-        }
         let cfg = self.cfg.clone();
         let h = self.hooks.clone();
-        std::thread::spawn(move || match crate::api::list_models(&cfg) {
-            Ok((models, user)) => {
-                if let Some(u) = user {
-                    h.send(Ev::User(u));
+        std::thread::spawn(move || {
+            let (mut scout, mut openrouter, mut errors) = (vec![], vec![], vec![]);
+            if cfg.api_key.is_some() {
+                match crate::api::list_models(&cfg) {
+                    Ok((models, user)) => {
+                        if let Some(u) = user {
+                            h.send(Ev::User(u));
+                        }
+                        scout = models;
+                    }
+                    Err(e) => errors.push(e.message),
                 }
-                h.send(Ev::Models(Ok(models)));
             }
-            Err(e) => h.send(Ev::Models(Err(e.message))),
+            // The first key, in order, that lists the models is used.
+            let mut failed = None;
+            for k in &cfg.openrouter_keys {
+                let mut only = cfg.clone();
+                only.openrouter_keys = vec![k.clone()];
+                match crate::api::list_openrouter(&only) {
+                    Ok(models) => {
+                        openrouter = models;
+                        failed = None;
+                        break;
+                    }
+                    Err(e) => failed = Some(e.message),
+                }
+            }
+            if let Some(e) = failed {
+                errors.push(format!("OpenRouter: {e}"));
+            }
+            let asked = cfg.api_key.is_some() as usize + (!cfg.openrouter_keys.is_empty()) as usize;
+            if asked > 0 && errors.len() == asked {
+                h.send(Ev::Models(Err(errors.join("; "))));
+            } else {
+                h.send(Ev::Models(Ok(crate::api::merge_models(scout, openrouter))));
+            }
         });
     }
 
@@ -401,6 +508,11 @@ impl App {
                 self.alert("Scout's plan is ready", &self.chat_title());
                 self.plan = Some(PendingPlan { blocks: markdown::parse(&plan), reply, feedback: String::new() });
             }
+            Ev::AskQuestions(questions, reply) => {
+                self.alert("Scout has a question", &self.chat_title());
+                let n = questions.len();
+                self.questions = Some(PendingQuestions { questions, picks: vec![vec![]; n], other: vec![String::new(); n], reply });
+            }
             Ev::Steered(msgs) => {
                 self.streaming = None;
                 for (text, files) in msgs {
@@ -440,6 +552,7 @@ impl App {
                 self.status.clear();
                 self.permission = None;
                 self.plan = None;
+                self.questions = None;
                 self.focus_input = true;
                 self.dock.files_changed();
                 // The queue carries on unless the user stopped Scout, who then decides what's next.
@@ -452,10 +565,9 @@ impl App {
                     self.alert("Scout is done", &self.chat_title());
                 }
             }
-            Ev::ServedModel(m) => self.served = m,
             Ev::Models(Ok(m)) => {
-                // The agent picks each model's edit tools from these.
-                *self.shared.edit_tools.lock().unwrap() = m.iter().map(|m| (m.id.clone(), m.edit_tool)).collect();
+                // The agent picks each model's edit tools from these, under the id it sends on either provider.
+                *self.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).map(move |id| (id, m.edit_tool))).collect();
                 self.models = m;
             }
             Ev::Models(Err(e)) => self.status = format!("Could not load models: {e}"),
@@ -525,9 +637,47 @@ impl App {
         self.set_user(None);
         self.cfg.api_key = key;
         if let Some(a) = &mut self.agent {
-            a.cfg.api_key = self.cfg.api_key.clone();
+            a.cfg.take_keys(&self.cfg);
         }
         self.fetch_models();
+    }
+
+    /// Adds a key at the end of the order (so it's tried last). An empty name gets a number.
+    fn add_openrouter_key(&mut self, name: String, key: String) {
+        let mut keys = self.cfg.openrouter_keys.clone();
+        let name = if name.is_empty() { format!("Key {}", keys.len() + 1) } else { name };
+        keys.push(config::OpenRouterKey { name, key });
+        self.save_openrouter_keys(keys);
+    }
+
+    /// Saves the OpenRouter keys in their order. With none left, a model that ran there moves back to ScoutCode.
+    fn save_openrouter_keys(&mut self, keys: Vec<config::OpenRouterKey>) {
+        config::save_openrouter_keys(&keys);
+        let removed = keys.is_empty();
+        self.cfg.openrouter_keys = keys;
+        if removed && self.provider == "openrouter" {
+            self.choose_model("auto", "scoutcode");
+        }
+        if let Some(a) = &mut self.agent {
+            a.cfg.take_keys(&self.cfg);
+        }
+        self.fetch_models();
+    }
+
+    /// Makes `key` (a model's id in the list) the one sent to `provider`, for the next message and the next launch.
+    fn choose_model(&mut self, key: &str, provider: &str) {
+        let model = self.models.iter().find(|m| m.id == key).map(|m| m.request_id(provider).to_string()).unwrap_or_else(|| key.to_string());
+        self.model = model.clone();
+        self.provider = provider.to_string();
+        *self.shared.model.lock().unwrap() = model.clone();
+        *self.shared.provider.lock().unwrap() = provider.to_string();
+        config::save_one("model", json!(model));
+        config::save_one("provider", json!(provider));
+    }
+
+    /// The list key of the model being used: its entry's id, or the id itself when the list doesn't have it (auto).
+    fn current_key(&self) -> String {
+        self.models.iter().find(|m| m.request_id(&self.provider) == self.model).map(|m| m.id.clone()).unwrap_or_else(|| self.model.clone())
     }
 
     // ---------- actions ----------
@@ -742,7 +892,7 @@ impl App {
     /// Hands the agent to a worker thread; it comes back in Ev::Finished.
     fn start(&mut self, work: impl FnOnce(&mut Agent, &Hooks) -> Result<(), String> + Send + 'static) {
         let Some(mut agent) = self.agent.take() else { return };
-        agent.cfg.api_key = self.cfg.api_key.clone();
+        agent.cfg.take_keys(&self.cfg);
         self.running = true;
         self.stopping = false;
         self.shared.cancel.store(false, Ordering::Relaxed);
@@ -768,6 +918,9 @@ impl App {
         }
         if let Some(p) = self.plan.take() {
             let _ = p.reply.send(PlanAnswer::Revise(String::new()));
+        }
+        if let Some(p) = self.questions.take() {
+            let _ = p.reply.send(QuestionAnswer::Skipped);
         }
         self.status = "Stopping…".into();
     }
@@ -912,6 +1065,12 @@ impl App {
         }
     }
 
+    fn answer_questions(&mut self, a: QuestionAnswer) {
+        if let Some(p) = self.questions.take() {
+            let _ = p.reply.send(a);
+        }
+    }
+
     // ---------- drawing ----------
     /// The first thing asked in this chat, as its title.
     fn chat_title(&self) -> String {
@@ -948,6 +1107,7 @@ impl App {
                     self.dock.open = !self.dock.open;
                 }
                 ui.add_space(8.0);
+                self.update_pill(ui);
                 // The sidebar shows the folder; without it, the bar does.
                 if !self.sidebar {
                     let r = chip(ui, &self.project_label(), theme::MUTED, Some(&theme::icon::folder), !self.running).on_hover_text(format!("{cwd}\nClick to add another project folder"));
@@ -960,6 +1120,47 @@ impl App {
                 });
             });
         });
+    }
+
+    /// Shows in the title bar once an update is downloaded and waiting.
+    fn update_pill(&mut self, ui: &mut egui::Ui) {
+        let Status::Ready { version, .. } = self.updater.status() else { return };
+        let tip = match self.restart_blocker() {
+            Some(why) => why.to_string(),
+            None => format!("Scout {version} is ready. Your chat reopens after the restart."),
+        };
+        let pill = egui::Button::new(RichText::new("Restart to update").font(theme::bold(12.5)).color(theme::ACCENT_INK)).fill(theme::ACCENT).corner_radius(7);
+        let enabled = self.restart_blocker().is_none();
+        if ui.add_enabled(enabled, pill).on_hover_text(tip.as_str()).on_disabled_hover_text(tip.as_str()).clicked() {
+            self.restart_to_update(ui.ctx());
+        }
+        ui.add_space(8.0);
+    }
+
+    /// Why restarting now would lose something, if it would.
+    fn restart_blocker(&self) -> Option<&'static str> {
+        if self.running {
+            Some("Scout is working. You can restart when it finishes.")
+        } else if self.dock.has_unsaved_edits() {
+            Some("Save the file open in the editor first.")
+        } else {
+            None
+        }
+    }
+
+    /// Starts the new build on the same folder and chat, then closes this window.
+    fn restart_to_update(&mut self, ctx: &egui::Context) {
+        if self.restart_blocker().is_some() {
+            return;
+        }
+        let mut args = vec![self.cwd()];
+        if let Some(agent) = &self.agent {
+            args.extend(["--resume".to_string(), agent.session.id.clone()]);
+        }
+        match self.updater.restart(&args) {
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) => self.status = e,
+        }
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
@@ -1192,42 +1393,41 @@ impl App {
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(10.0);
             let browser = config::is_sign_in(self.cfg.api_key.as_deref());
-            let name = self.cfg.username.clone().unwrap_or_else(|| if browser { "Signed in" } else { "API key" }.to_string());
+            let name = self.cfg.username.clone().unwrap_or_else(|| if browser { "Signed in" } else if self.cfg.api_key.is_none() { "OpenRouter key" } else { "API key" }.to_string());
             let r = profile_row(ui, &name);
-            let mut sign_out = false;
             egui::Popup::menu(&r).width(r.rect.width()).align(egui::RectAlign::TOP_START).show(|ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 1.0;
-                        ui.label(RichText::new(if browser { "Signed in with your browser" } else { "Using an API key" }).size(12.0).color(theme::MUTED));
-                        ui.label(RichText::new(if browser { "Daily CLI credit" } else { "Pay as you go" }).size(11.0).color(theme::DIM));
-                    });
-                });
-                ui.add_space(4.0);
-                ui.separator();
                 if menu_icon_item(ui, "Settings", theme::icon::gear).clicked() {
                     self.open_settings(SettingsTab::Notifications);
                 }
                 if menu_icon_item(ui, "Usage", theme::icon::chart).clicked() {
                     self.open_settings(SettingsTab::Usage);
                 }
+                if menu_icon_item(ui, "Check for updates", theme::icon::download).clicked() {
+                    self.open_settings(SettingsTab::Updates);
+                    self.updater.check_now();
+                }
                 if menu_icon_item(ui, "Account page", theme::icon::user).clicked() {
                     let site = self.cfg.base_url.trim_end_matches("/v1");
                     ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{site}/account")));
                 }
-                if menu_item(ui, false, "Sign out").clicked() {
-                    sign_out = true;
-                }
             });
-            if sign_out {
-                config::save_one("apiKey", Value::Null);
-                self.set_key(None);
-            }
             ui.add_space(4.0);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), Sense::hover());
             ui.painter().rect_filled(rect, 0, theme::BORDER);
             ui.add_space(6.0);
+        });
+    }
+
+    /// The permission mode, as a menu in the footer (Shift+Tab cycles it too).
+    fn mode_chip(&mut self, ui: &mut egui::Ui) {
+        let r = chip(ui, config::mode_label(&self.shared.mode()), theme::MUTED, None, true).on_hover_text("Permission mode (Shift+Tab)");
+        egui::Popup::menu(&r).width(200.0).show(|ui| {
+            for m in MODES {
+                let selected = self.shared.mode() == m;
+                if menu_item(ui, selected, config::mode_label(m)).clicked() {
+                    *self.shared.mode.lock().unwrap() = m.to_string();
+                }
+            }
         });
     }
 
@@ -1237,18 +1437,16 @@ impl App {
             ui.spacing_mut().item_spacing.x = 6.0;
             let small = |s: String| RichText::new(s).size(11.5).color(theme::DIM);
             ui.add_space(6.0);
+            self.mode_chip(ui);
             if self.running {
                 ui.add(egui::Spinner::new().size(11.0).color(theme::ACCENT));
-                let s = if self.status.is_empty() { if self.permission.is_some() || self.plan.is_some() { "Waiting for you" } else { "Working…" }.to_string() } else { self.status.clone() };
+                let waiting = self.permission.is_some() || self.plan.is_some() || self.questions.is_some();
+                let s = if self.status.is_empty() { if waiting { "Waiting for you" } else { "Working…" }.to_string() } else { self.status.clone() };
                 ui.label(RichText::new(s).size(11.5).color(theme::MUTED));
                 let typing = !self.input.trim().is_empty() || !self.attachments.is_empty();
                 ui.label(small(if typing { "· Enter to queue · Ctrl+Enter to send now" } else { "· Esc to stop" }.into()));
             } else if !self.status.is_empty() {
                 ui.label(small(self.status.clone()));
-            } else {
-                // The short form when the chat is squeezed, say by the right panel, so it clears the usage ring.
-                let hint = if ui.available_width() > 600.0 { "Enter to send · Shift+Enter for a new line · @ to attach a file · /compact /undo /prune /new" } else { "Enter to send · @ to attach a file" };
-                ui.label(small(hint.into()));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
@@ -1295,9 +1493,8 @@ impl App {
                 if let Some(b) = self.totals.balance {
                     ui.label(small(format!("balance ${b:.2}")));
                 }
-                if !self.served.is_empty() && self.served != self.model {
-                    ui.label(small(format!("answered by {}", self.served)));
-                }
+                self.effort_chip(ui);
+                self.model_chip(ui);
             });
         });
     }
@@ -1404,6 +1601,74 @@ impl App {
         }
     }
 
+    /// The questions from `ask_questions`: options to pick from, or a typed answer, for each question.
+    fn questions_card(&mut self, ui: &mut egui::Ui) {
+        let Some(p) = &mut self.questions else { return };
+        let PendingQuestions { questions, picks, other, .. } = p;
+        let answers: Vec<Option<String>> = questions
+            .iter()
+            .enumerate()
+            .map(|(i, q)| {
+                let mut parts: Vec<String> = picks[i].iter().filter_map(|&j| q.options.get(j)).map(|o| o.label.clone()).collect();
+                let typed = other[i].trim();
+                if !typed.is_empty() {
+                    parts.push(typed.to_string());
+                }
+                (!parts.is_empty()).then(|| parts.join(", "))
+            })
+            .collect();
+        let ready = answers.iter().all(Option::is_some);
+        let mut answer = None;
+        card(ui, |ui| {
+            card_header(ui, if questions.len() == 1 { "Scout has a question" } else { "Scout has some questions" }, "Pick an option or type your own");
+            ui.add_space(8.0);
+            let max = ui.ctx().content_rect().height() * 0.5;
+            egui::ScrollArea::vertical().max_height(max).auto_shrink([false, true]).show(ui, |ui| {
+                for (i, q) in questions.iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(12.0);
+                    }
+                    if !q.header.is_empty() {
+                        ui.label(RichText::new(q.header.to_uppercase()).size(11.0).color(theme::DIM));
+                    }
+                    ui.label(RichText::new(&q.question).size(theme::BODY).color(theme::STRONG));
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        for (j, opt) in q.options.iter().enumerate() {
+                            let on = picks[i].contains(&j);
+                            let r = if on { theme::primary_button(ui, &opt.label) } else { theme::secondary_button(ui, &opt.label) };
+                            let r = if opt.description.is_empty() { r } else { r.on_hover_text(&opt.description) };
+                            if r.clicked() {
+                                if on {
+                                    picks[i].retain(|&k| k != j);
+                                } else if q.multi_select {
+                                    picks[i].push(j);
+                                } else {
+                                    picks[i] = vec![j];
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.add(egui::TextEdit::singleline(&mut other[i]).hint_text("Or type your own answer").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 6)));
+                }
+            });
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui.add_enabled(ready, egui::Button::new("Send answers")).clicked() || ready && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter)) {
+                    answer = Some(QuestionAnswer::Answered(answers.iter().flatten().cloned().collect()));
+                }
+                if theme::ghost_button(ui, "Skip").clicked() {
+                    answer = Some(QuestionAnswer::Skipped);
+                }
+            });
+        });
+        if let Some(a) = answer {
+            self.answer_questions(a);
+        }
+    }
+
     /// Asked once, on the first run: how Scout should get the user's attention.
     fn notify_setup_card(&mut self, ui: &mut egui::Ui) {
         if self.cfg.notify_flash.is_some() || self.cfg.notify_toast.is_some() {
@@ -1479,37 +1744,43 @@ impl App {
                     ui.set_width(220.0);
                     ui.set_height(body - 28.0);
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    egui::Frame::NONE.fill(theme::SURFACE).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(9).inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 0 }).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 30.0), Sense::hover());
-                            theme::icon::search(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)), theme::DIM);
-                            ui.add_space(4.0);
-                            ui.add(egui::TextEdit::singleline(&mut self.settings_search).hint_text(RichText::new("Search").color(theme::DIM)).frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+                    // This frame sits in a left-to-right row, so stack the search and the list in their own column.
+                    ui.vertical(|ui| {
+                        egui::Frame::NONE.fill(theme::SURFACE).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(9).inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 0 }).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 30.0), Sense::hover());
+                                theme::icon::search(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)), theme::DIM);
+                                ui.add_space(4.0);
+                                ui.add(egui::TextEdit::singleline(&mut self.settings_search).hint_text(RichText::new("Search").color(theme::DIM)).frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+                            });
                         });
-                    });
-                    ui.add_space(14.0);
-                    theme::section_label(ui, "Preferences");
-                    ui.add_space(4.0);
-                    let q = self.settings_search.trim().to_lowercase();
-                    let mut shown = 0;
-                    for tab in SettingsTab::ALL {
-                        if !q.is_empty() && !tab.keywords().contains(&q) {
-                            continue;
-                        }
-                        shown += 1;
-                        let icon: fn(&egui::Painter, egui::Rect, Color32) = match tab {
-                            SettingsTab::Notifications => theme::icon::bell,
-                            SettingsTab::Usage => theme::icon::chart,
-                            SettingsTab::Account => theme::icon::user,
-                        };
-                        if settings_nav(ui, self.settings_tab == tab, tab.title(), icon).clicked() {
-                            self.settings_tab = tab;
-                        }
-                    }
-                    if shown == 0 {
+                        ui.add_space(14.0);
+                        theme::section_label(ui, "Preferences");
                         ui.add_space(4.0);
-                        ui.label(RichText::new("Nothing matches.").size(12.5).color(theme::DIM));
-                    }
+                        let q = self.settings_search.trim().to_lowercase();
+                        let mut shown = 0;
+                        for tab in SettingsTab::ALL {
+                            // Every word typed has to appear in the section's title or keywords, in any order.
+                            let text = format!("{} {}", tab.title().to_lowercase(), tab.keywords());
+                            if !q.split_whitespace().all(|word| text.contains(word)) {
+                                continue;
+                            }
+                            shown += 1;
+                            let icon: fn(&egui::Painter, egui::Rect, Color32) = match tab {
+                                SettingsTab::Notifications => theme::icon::bell,
+                                SettingsTab::Usage => theme::icon::chart,
+                                SettingsTab::Account => theme::icon::user,
+                                SettingsTab::Updates => theme::icon::download,
+                            };
+                            if settings_nav(ui, self.settings_tab == tab, tab.title(), icon).clicked() {
+                                self.settings_tab = tab;
+                            }
+                        }
+                        if shown == 0 {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("Nothing matches.").size(12.5).color(theme::DIM));
+                        }
+                    });
                 });
                 let (sep, _) = ui.allocate_exact_size(egui::vec2(1.0, body), Sense::hover());
                 ui.painter().rect_filled(sep, 0, theme::BORDER);
@@ -1524,6 +1795,7 @@ impl App {
                                 SettingsTab::Notifications => self.settings_notifications(ui),
                                 SettingsTab::Usage => self.settings_usage(ui),
                                 SettingsTab::Account => self.settings_account(ui),
+                                SettingsTab::Updates => self.settings_updates(ui),
                             }
                         });
                     });
@@ -1578,7 +1850,7 @@ impl App {
     fn settings_account(&mut self, ui: &mut egui::Ui) {
         settings_heading(ui, "Account", "The ScoutCode account this app and the CLI use.");
         let browser = config::is_sign_in(self.cfg.api_key.as_deref());
-        let name = self.cfg.username.clone().unwrap_or_else(|| "Unknown until the model list loads".into());
+        let name = self.cfg.username.clone().unwrap_or_else(|| if self.cfg.api_key.is_some() { "Unknown until the model list loads" } else { "Not signed in" }.into());
         settings_row(ui, "Signed in as", &name, |_| {});
         let (how, pays) = if browser { ("Browser sign-in", "Uses your daily CLI credit, not your account's money.") } else { ("API key", "Pays from your account's money.") };
         settings_row(ui, how, pays, |_| {});
@@ -1596,6 +1868,106 @@ impl App {
             config::save_one("apiKey", Value::Null);
             self.set_key(None);
             self.settings_open = false;
+        }
+        ui.add_space(22.0);
+        theme::section_label(ui, "OpenRouter");
+        ui.add_space(6.0);
+        let how = "Tried from the top. If one fails, the next one is used. Saved on this PC, for the CLI too. Models on OpenRouter bill your OpenRouter account.";
+        ui.label(RichText::new(how).size(12.5).color(theme::DIM));
+        ui.add_space(8.0);
+        let mut keys = self.cfg.openrouter_keys.clone();
+        let count = keys.len();
+        let mut edit: Option<(usize, KeyEdit)> = None;
+        for (i, k) in keys.iter().enumerate() {
+            settings_row(ui, &format!("{}. {}", i + 1, k.name), &mask_key(&k.key), |ui| {
+                if i > 0 && theme::secondary_button(ui, "Up").clicked() {
+                    edit = Some((i, KeyEdit::Up));
+                }
+                if i + 1 < count && theme::secondary_button(ui, "Down").clicked() {
+                    edit = Some((i, KeyEdit::Down));
+                }
+                if theme::secondary_button(ui, "Remove").clicked() {
+                    edit = Some((i, KeyEdit::Remove));
+                }
+            });
+        }
+        if let Some((i, op)) = edit {
+            match op {
+                KeyEdit::Up => keys.swap(i, i - 1),
+                KeyEdit::Down => keys.swap(i, i + 1),
+                KeyEdit::Remove => {
+                    keys.remove(i);
+                }
+            }
+            self.save_openrouter_keys(keys);
+        }
+        ui.add_space(12.0);
+        let width = ui.available_width().min(420.0);
+        ui.add(egui::TextEdit::singleline(&mut self.login.or_name).hint_text("Name, e.g. Work").desired_width(width).margin(egui::Margin::symmetric(12, 9)));
+        ui.add_space(6.0);
+        ui.add(egui::TextEdit::singleline(&mut self.login.or_key).password(true).hint_text("sk-or-…").desired_width(width).margin(egui::Margin::symmetric(12, 9)));
+        ui.add_space(6.0);
+        let ready = !self.login.or_key.trim().is_empty();
+        if ui.add_enabled(ready, egui::Button::new(RichText::new("Add key").size(13.5)).corner_radius(10).min_size(egui::vec2(width, 36.0))).clicked() {
+            let key = std::mem::take(&mut self.login.or_key).trim().to_string();
+            let name = std::mem::take(&mut self.login.or_name).trim().to_string();
+            self.add_openrouter_key(name, key);
+        }
+    }
+
+    fn settings_updates(&mut self, ui: &mut egui::Ui) {
+        settings_heading(ui, "Updates", "Scout checks for new versions when it starts and every few hours. They're signed by ScoutCode and checked before they're installed.");
+        let version = format!("Scout {}", crate::update::VERSION);
+        if !self.updater.enabled() {
+            settings_row(ui, &version, "This copy doesn't update itself. Only the installed app does, not a development build.", |_| {});
+            return;
+        }
+        let status = self.updater.status();
+        let (line, notes): (String, Option<String>) = match &status {
+            Status::Idle => ("Hasn't checked yet.".into(), None),
+            Status::Checking => ("Checking for updates…".into(), None),
+            Status::UpToDate => ("You're on the latest version.".into(), None),
+            Status::Available { version, notes } => (format!("Version {version} is available."), Some(notes.clone())),
+            Status::Downloading { version, got, total } => (format!("Downloading version {version}: {}%", got * 100 / (*total).max(1)), None),
+            Status::Ready { version, notes } => (format!("Version {version} is ready. It installs when you restart or close Scout."), Some(notes.clone())),
+            Status::Failed(e) => (e.clone(), None),
+        };
+        settings_row(ui, &version, &line, |ui| match &status {
+            Status::Ready { .. } => {
+                let blocker = self.restart_blocker();
+                let restart = ui.add_enabled_ui(blocker.is_none(), |ui| theme::primary_button(ui, "Restart to update")).inner;
+                if restart.on_disabled_hover_text(blocker.unwrap_or_default()).clicked() {
+                    self.restart_to_update(ui.ctx());
+                }
+            }
+            Status::Available { .. } => {
+                if theme::primary_button(ui, "Download").clicked() {
+                    self.updater.download_now();
+                }
+            }
+            Status::Checking | Status::Downloading { .. } => {
+                ui.add(egui::Spinner::new().size(16.0).color(theme::ACCENT));
+            }
+            Status::Idle | Status::UpToDate | Status::Failed(_) => {
+                if theme::secondary_button(ui, "Check now").clicked() {
+                    self.updater.check_now();
+                }
+            }
+        });
+        let mut auto = self.cfg.auto_update;
+        settings_row(ui, "Download automatically", "New versions download in the background and wait for your next restart.", |ui| {
+            toggle(ui, &mut auto);
+        });
+        if auto != self.cfg.auto_update {
+            self.cfg.auto_update = auto;
+            config::save_one("desktopAutoUpdate", json!(auto));
+            self.updater.set_auto(auto);
+        }
+        if let Some(notes) = notes.filter(|n| !n.trim().is_empty()) {
+            ui.add_space(22.0);
+            theme::section_label(ui, "What's new");
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(notes).size(13.0).color(theme::MUTED)).wrap());
         }
     }
 
@@ -1682,14 +2054,14 @@ impl App {
     fn mic_button(&mut self, ui: &mut egui::Ui) {
         let shortcut = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Space));
         let clicked = match &self.voice {
-            Voice::Idle => theme::icon_button(ui, 28.0, "Dictate (Ctrl+Shift+Space). Transcribed by Deepgram through ScoutCode", theme::icon::mic).clicked(),
+            Voice::Idle => icon_box(ui, "Dictate (Ctrl+Shift+Space). Transcribed by Deepgram through ScoutCode", theme::icon::mic).clicked(),
             Voice::Recording(r) => {
                 let (rect, b) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::click());
-                // A red disc that swells with the voice.
                 let p = ui.painter();
-                p.circle_filled(rect.center(), 9.0 + 5.0 * r.level().sqrt(), theme::RED.gamma_multiply(0.35));
-                p.circle_filled(rect.center(), 10.0, theme::RED);
-                theme::icon::mic(p, rect, Color32::WHITE);
+                p.rect(rect, 8, theme::RED.gamma_multiply(0.14), Stroke::new(1.0, theme::RED.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+                // A ring that swells with the voice, around the mic.
+                p.circle_stroke(rect.center(), 6.0 + 3.0 * r.level().sqrt(), Stroke::new(1.5, theme::RED));
+                theme::icon::mic(p, icon_rect(rect), theme::RED);
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
                 if b.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1698,7 +2070,9 @@ impl App {
             }
             Voice::Busy(s) => {
                 let s = *s;
-                ui.add_sized([28.0, 28.0], egui::Spinner::new().size(14.0).color(theme::ACCENT)).on_hover_text(s);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::hover());
+                ui.painter().rect(rect, 8, theme::SURFACE_HI, Stroke::new(1.0, theme::BORDER_HI), egui::StrokeKind::Inside);
+                ui.put(rect.shrink(7.0), egui::Spinner::new().size(14.0).color(theme::ACCENT)).on_hover_text(s);
                 false
             }
         };
@@ -1707,39 +2081,79 @@ impl App {
         }
     }
 
-    /// Mode, and model with effort, as compact menus in the composer.
+    /// Attach and mic, as the composer's buttons.
     fn composer_controls(&mut self, ui: &mut egui::Ui) {
-        if theme::icon_button(ui, 28.0, "Attach files (or drop them on the window, or type @)", theme::icon::paperclip).clicked() {
+        if icon_box(ui, "Attach files (or drop them on the window, or type @)", theme::icon::paperclip).clicked() {
             self.pick_files();
         }
         self.mic_button(ui);
-        let r = chip(ui, config::mode_label(&self.shared.mode()), theme::MUTED, None, true).on_hover_text("Permission mode (Shift+Tab)");
-        egui::Popup::menu(&r).width(200.0).show(|ui| {
-            for m in MODES {
-                let selected = self.shared.mode() == m;
-                if menu_item(ui, selected, config::mode_label(m)).clicked() {
-                    *self.shared.mode.lock().unwrap() = m.to_string();
+    }
+
+    /// The reasoning effort, as a compact menu in the footer, beside the model.
+    fn effort_chip(&mut self, ui: &mut egui::Ui) {
+        let effort_title = format!("{}{}", self.effort[..1].to_uppercase(), &self.effort[1..]);
+        let effort_chip = chip(ui, &effort_title, theme::MUTED, None, true).on_hover_text("Reasoning effort");
+        let before_effort = self.effort.clone();
+        // The reasoning effort has its own menu, from its own chip.
+        egui::Popup::menu(&effort_chip).width(200.0).show(|ui| {
+            for e in EFFORTS {
+                let selected = self.effort == e;
+                let text = format!("{}{}", e[..1].to_uppercase(), &e[1..]);
+                if menu_item(ui, selected, &text).clicked() {
+                    self.effort = e.to_string();
                 }
             }
         });
+        if before_effort != self.effort {
+            *self.shared.effort.lock().unwrap() = self.effort.clone();
+            config::save_one("effort", json!(self.effort));
+        }
+    }
 
-        // One menu for both: models on the left, efforts on the right. It stays open so both can be set in one go.
-        let label = self.models.iter().find(|m| m.id == self.model).map(|m| m.label()).unwrap_or_else(|| crate::api::short_id(&self.model));
+    /// The model, as a menu with search and where it runs. It sits in the footer, beside the usage ring.
+    fn model_chip(&mut self, ui: &mut egui::Ui) {
+        let current = self.current_key();
+        let label = self.models.iter().find(|m| m.id == current).map(|m| m.label()).unwrap_or_else(|| crate::api::short_id(&self.model));
         let model: String = if label.chars().count() > 26 { format!("{}…", label.chars().take(25).collect::<String>()) } else { label };
-        let r = chip(ui, &format!("{model}  ·  {}", self.effort), theme::MUTED, None, true).on_hover_text("Model and reasoning effort");
+        let hint = if self.provider == "openrouter" { "Model · running on OpenRouter" } else { "Model" };
+        let r = chip(ui, &model, theme::MUTED, None, true).on_hover_text(hint);
         // The model row under the pointer, and where it is, for the stats card beside the menu.
         let mut hovered: Option<(String, egui::Rect)> = None;
-        let (before_model, before_effort) = (self.model.clone(), self.effort.clone());
+        // A row click picks a model and where it runs: the provider its row is listed under.
+        let mut pick: Option<(String, &'static str)> = None;
         let just_opened = !self.model_menu_open;
         if just_opened {
             self.model_search.clear();
+            self.model_tab = if self.provider == "openrouter" { ModelTab::OpenRouter } else { ModelTab::ScoutCode };
         }
-        let shown = egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        let has_openrouter = self.models.iter().any(|m| m.openrouter_id.is_some());
+        // Pinned to the chip's right edge, which stays put; its left edge moves with the model name's length.
+        let shown = egui::Popup::menu(&r)
+            .align(egui::RectAlign::TOP_END)
+            .align_alternatives(&[egui::RectAlign::BOTTOM_END])
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
             ui.horizontal_top(|ui| {
+                // The rail: starred models, then a tab per provider.
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    let tabs: &[(ModelTab, &str)] = &[(ModelTab::Starred, "Starred"), (ModelTab::ScoutCode, "ScoutCode"), (ModelTab::OpenRouter, "OpenRouter")];
+                    for &(tab, tip) in tabs {
+                        if tab == ModelTab::OpenRouter && !has_openrouter {
+                            continue;
+                        }
+                        let on = self.model_tab == tab && self.model_search.trim().is_empty();
+                        if rail_tab(ui, on, tip, tab).clicked() {
+                            self.model_tab = tab;
+                            self.model_search.clear();
+                        }
+                    }
+                });
+                let sep = ui.available_rect_before_wrap();
+                ui.painter().vline(sep.left(), sep.top()..=sep.top() + 440.0, Stroke::new(1.0, theme::BORDER));
+                ui.add_space(8.0);
                 ui.vertical(|ui| {
                     ui.set_width(300.0);
-                    theme::section_label(ui, "Model");
-                    ui.add_space(4.0);
                     let search = ui.add(
                         egui::TextEdit::singleline(&mut self.model_search)
                             .hint_text(RichText::new("Search models").color(theme::DIM))
@@ -1751,28 +2165,51 @@ impl App {
                     }
                     ui.add_space(4.0);
                     let q = self.model_search.trim().to_lowercase();
-                    let matches = |id: &str, name: &str| q.is_empty() || id.to_lowercase().contains(&q) || name.to_lowercase().contains(&q);
-                    // Starred models first, in the order they were starred; then the rest as the server lists them.
-                    let mut rows: Vec<(String, String)> = if self.models.iter().any(|m| m.id == "auto") { vec![] } else { vec![("auto".into(), "Auto".into())] };
-                    rows.extend(self.models.iter().map(|m| (m.id.clone(), m.label())));
-                    rows.retain(|(id, text)| matches(id, text));
-                    rows.sort_by_key(|(id, _)| self.starred.iter().position(|s| s == id).unwrap_or(usize::MAX));
+                    // One row per model and place it runs: (list key, provider, name, star key). A model both serve
+                    // is listed under each, and its star key is the id that provider knows it by.
+                    let mut scout: Vec<(String, &'static str, String, String)> = vec![];
+                    scout.extend(self.models.iter().filter(|m| m.hosted).map(|m| (m.id.clone(), "scoutcode", m.label(), m.id.clone())));
+                    let openrouter = self.models.iter().filter_map(|m| m.openrouter_id.as_ref().map(|or| (m.id.clone(), "openrouter", m.label(), or.clone())));
+                    let all: Vec<_> = scout.iter().cloned().chain(openrouter).collect();
+                    let mut rows: Vec<_> = if !q.is_empty() {
+                        // A search looks through every tab.
+                        all.into_iter().filter(|(id, _, name, star)| [id, name, star].iter().any(|s| s.to_lowercase().contains(&q))).collect()
+                    } else {
+                        match self.model_tab {
+                            ModelTab::Starred => {
+                                let mut v: Vec<_> = all.into_iter().filter(|r| self.starred.contains(&r.3)).collect();
+                                v.sort_by_key(|r| self.starred.iter().position(|s| *s == r.3));
+                                v
+                            }
+                            ModelTab::ScoutCode => scout,
+                            ModelTab::OpenRouter => all.into_iter().filter(|r| r.1 == "openrouter").collect(),
+                        }
+                    };
+                    // Starred first within a provider's tab too.
+                    if !q.is_empty() || self.model_tab != ModelTab::Starred {
+                        rows.sort_by_key(|r| self.starred.iter().position(|s| *s == r.3).unwrap_or(usize::MAX));
+                    }
                     let mut toggle = None;
-                    egui::ScrollArea::vertical().id_salt("models").max_height(380.0).show(ui, |ui| {
-                        for (id, text) in &rows {
-                            let starred = self.starred.contains(id);
-                            let (row, star) = model_item(ui, self.model == *id, starred, text);
+                    // Always full height, so the menu doesn't grow and shrink between tabs and searches.
+                    egui::ScrollArea::vertical().id_salt("models").max_height(400.0).auto_shrink([false, false]).show(ui, |ui| {
+                        for (id, provider, text, star_key) in &rows {
+                            let starred = self.starred.contains(star_key);
+                            let free = self.models.iter().any(|m| m.id == *id && m.free) || star_key.ends_with(":free");
+                            let selected = current == *id && (self.provider == "openrouter") == (*provider == "openrouter");
+                            let (row, star) = model_item(ui, selected, starred, free, text, provider);
                             if row.hovered() || star.hovered() {
                                 hovered = Some((id.clone(), row.rect));
                             }
                             if star.clicked() {
-                                toggle = Some(id.clone());
+                                toggle = Some(star_key.clone());
                             } else if row.clicked() {
-                                self.model = id.clone();
+                                pick = Some((id.clone(), provider));
                             }
                         }
                         if rows.is_empty() {
-                            ui.label(RichText::new("No models match.").size(12.5).color(theme::DIM));
+                            let empty = if !q.is_empty() { "No models match." } else if self.model_tab == ModelTab::Starred { "Star a model to keep it here." } else { "No models here yet." };
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(empty).size(12.5).color(theme::DIM));
                         }
                     });
                     if let Some(id) = toggle {
@@ -1784,16 +2221,6 @@ impl App {
                         config::save_one("starredModels", json!(self.starred));
                     }
                 });
-                ui.separator();
-                ui.vertical(|ui| {
-                    ui.set_width(140.0);
-                    theme::section_label(ui, "Effort");
-                    for e in EFFORTS {
-                        if menu_item(ui, self.effort == e, e).clicked() {
-                            self.effort = e.to_string();
-                        }
-                    }
-                });
             });
         });
         self.model_menu_open = shown.is_some();
@@ -1802,13 +2229,8 @@ impl App {
                 model_card(ui.ctx(), m, menu.response.rect, row);
             }
         }
-        if before_model != self.model {
-            *self.shared.model.lock().unwrap() = self.model.clone();
-            config::save_one("model", json!(self.model));
-        }
-        if before_effort != self.effort {
-            *self.shared.effort.lock().unwrap() = self.effort.clone();
-            config::save_one("effort", json!(self.effort));
+        if let Some((key, provider)) = pick {
+            self.choose_model(&key, provider);
         }
     }
 
@@ -1998,13 +2420,18 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), Sense::hover());
             theme::icon::logo(ui.painter(), rect);
             ui.add_space(18.0);
-            // "< Building in project? >": the catchphrase types itself out between the brackets of Scout's mark, with a
-            // caret. The brackets sit where the whole phrase will end, so the text fills them in. Clicking it opens a
-            // dropdown of the saved projects to switch to.
+            // "< Building in project? >": the whole line, brackets included, types itself out with a caret. Clicking the
+            // project's name opens a dropdown of the saved projects to switch to.
             let now = ui.input(|i| i.time);
             let start = *self.splash_start.get_or_insert(now);
             let font = theme::bold(26.0);
-            let parts = [(format!("{} ", SPLASH[self.splash]), theme::STRONG), (name.clone(), theme::ACCENT), ("?".to_string(), theme::STRONG)];
+            let parts = [
+                ("<".to_string(), theme::ACCENT),
+                (format!(" {} ", SPLASH[self.splash]), theme::STRONG),
+                (name.clone(), theme::ACCENT),
+                ("?".to_string(), theme::STRONG),
+                (">".to_string(), theme::ACCENT),
+            ];
             let total: usize = parts.iter().map(|(t, _)| t.chars().count()).sum();
             // A short pause, then about 18 characters a second.
             let shown = (((now - start - 0.3).max(0.0) / 0.055) as usize).min(total);
@@ -2020,19 +2447,14 @@ impl App {
             };
             let full = ui.painter().layout_job(job(total));
             let typed = ui.painter().layout_job(job(shown));
-            // The brackets use the phrase's own font, so both share a line height and sit on the same baseline.
-            let bracket = font.clone();
-            let lt = ui.painter().layout_no_wrap("<".into(), bracket.clone(), theme::ACCENT);
-            let gt = ui.painter().layout_no_wrap(">".into(), bracket, theme::ACCENT);
-            let (pad, caret_w) = (14.0, 3.0);
-            let w = 12.0 + lt.size().x + pad + full.size().x + caret_w + pad + gt.size().x + 12.0;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 48.0), Sense::hover());
+            // The caret's width, and room for it past the full line.
+            let caret_w = 3.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0 + full.size().x + caret_w + 12.0, 48.0), Sense::hover());
             let y = rect.center().y;
-            let lt_x = rect.left() + 12.0;
-            let text_x = lt_x + lt.size().x + pad;
+            let text_x = rect.left() + 12.0;
             let text_top = y - full.size().y / 2.0;
             // Only the project's name is the hover target: it gets an underline and opens the switcher.
-            let prefix_w = ui.painter().layout_no_wrap(format!("{} ", SPLASH[self.splash]), font.clone(), theme::STRONG).size().x;
+            let prefix_w = ui.painter().layout_no_wrap(format!("< {} ", SPLASH[self.splash]), font.clone(), theme::STRONG).size().x;
             let name_g = ui.painter().layout_no_wrap(name.clone(), font.clone(), theme::ACCENT);
             let name_x = text_x + prefix_w;
             let name_rect = egui::Rect::from_min_size(egui::pos2(name_x, text_top), name_g.size());
@@ -2044,7 +2466,6 @@ impl App {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             let p = ui.painter();
-            p.galley(egui::pos2(lt_x, y - lt.size().y / 2.0), lt.clone(), theme::ACCENT);
             let typed_w = typed.size().x;
             p.galley(egui::pos2(text_x, text_top), typed, theme::STRONG);
             // The caret stays solid while typing, then blinks.
@@ -2052,10 +2473,6 @@ impl App {
             if typing || (now * 1000.0) as u64 / 530 % 2 == 0 {
                 let caret = egui::Rect::from_min_size(egui::pos2(text_x + typed_w + 2.0, y - 13.0), egui::vec2(caret_w, 26.0));
                 p.rect_filled(caret, 1, theme::ACCENT);
-            }
-            // The closing bracket appears only once the phrase is finished, right after it.
-            if !typing {
-                p.galley(egui::pos2(text_x + full.size().x + pad, y - gt.size().y / 2.0), gt, theme::ACCENT);
             }
             if hot {
                 p.hline(name_x..=name_x + name_g.size().x, text_top + name_g.size().y - 2.0, egui::Stroke::new(1.2, theme::ACCENT));
@@ -2090,9 +2507,11 @@ impl App {
             self.find.jump = false;
         }
         let editable = !self.running;
+        let groups = tool_groups(&self.items, self.running);
         let mut edit = None;
         let mut resend = None;
         let mut cancel_edit = false;
+        let mut toggle = None;
         let editing = &mut self.editing;
         area.show_viewport(ui, |ui, viewport| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -2104,6 +2523,14 @@ impl App {
             let last = self.items.len().saturating_sub(1);
             let streaming = self.streaming;
             for (n, item) in self.items.iter_mut().enumerate() {
+                let group = groups.iter().find(|g| (g.start..g.end).contains(&n));
+                let folded = group.is_some_and(|g| !g.open);
+                if group.is_some_and(|g| !g.open && n != g.start) {
+                    // Inside a folded run: only its header is shown.
+                    item.h = 0.0;
+                    item.w = w;
+                    continue;
+                }
                 let y = ui.cursor().top() - origin;
                 let being_edited = editing.as_ref().is_some_and(|(i, _)| *i == n);
                 let live = n == last || Some(n) == streaming || being_edited || matches!(&item.kind, Kind_::Tool { result: None, .. });
@@ -2124,7 +2551,12 @@ impl App {
                                 None => {}
                             },
                             None => {
-                                if draw_item(ui, item, n, editable) {
+                                if let Some(g) = group.filter(|g| g.start == n) {
+                                    if tool_group_header(ui, g) {
+                                        toggle = Some(n);
+                                    }
+                                }
+                                if !folded && draw_item(ui, item, n, editable) {
                                     edit = Some(n);
                                 }
                             }
@@ -2139,8 +2571,11 @@ impl App {
                 item.h = r.response.rect.height();
                 item.w = w;
             }
-            ui.add_space(24.0);
+            ui.add_space(40.0);
         });
+        if let Some(n) = toggle {
+            self.items[n].fold_open = !self.items[n].fold_open;
+        }
         if let Some(n) = edit {
             if let Kind_::User { text, .. } = &self.items[n].kind {
                 self.editing = Some((n, text.clone()));
@@ -2276,9 +2711,52 @@ impl App {
                     ui.add_space(4.0);
                     ui.colored_label(theme::RED, e);
                 }
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    let lw = (360.0 - 150.0) / 2.0;
+                    let (a, _) = ui.allocate_exact_size(egui::vec2(lw, 12.0), Sense::hover());
+                    ui.painter().hline(a.x_range(), a.center().y, Stroke::new(1.0, theme::BORDER));
+                    ui.add_sized([130.0, 12.0], egui::Label::new(RichText::new("or use your OpenRouter key").size(11.5).color(theme::DIM)));
+                    let (b, _) = ui.allocate_exact_size(egui::vec2(lw, 12.0), Sense::hover());
+                    ui.painter().hline(b.x_range(), b.center().y, Stroke::new(1.0, theme::BORDER));
+                });
+                ui.add_space(6.0);
+                if let Some(k) = self.openrouter_entry(ui, 360.0) {
+                    self.add_openrouter_key("OpenRouter".into(), k);
+                }
             });
         });
     }
+
+    /// The OpenRouter key field and its save button, under the how-to animation. Returns the key when it's saved.
+    fn openrouter_entry(&mut self, ui: &mut egui::Ui, width: f32) -> Option<String> {
+        key_guide(ui, width);
+        ui.add_space(8.0);
+        ui.add(egui::TextEdit::singleline(&mut self.login.or_key).password(true).hint_text("sk-or-…").desired_width(width).margin(egui::Margin::symmetric(12, 9)));
+        let ready = !self.login.or_key.trim().is_empty();
+        let save = ui.add_enabled(ready, egui::Button::new(RichText::new("Save OpenRouter key").size(13.5)).corner_radius(10).min_size(egui::vec2(width, 36.0)));
+        if save.clicked() {
+            let k = self.login.or_key.trim().to_string();
+            self.login.or_key.clear();
+            return Some(k);
+        }
+        None
+    }
+
+}
+
+/// The how-to animation for the OpenRouter key. A placeholder for now: three dots taking turns to bounce.
+fn key_guide(ui: &mut egui::Ui, width: f32) {
+    egui::Frame::NONE.fill(theme::SURFACE).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(12).show(ui, |ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 84.0), Sense::hover());
+        let t = ui.input(|i| i.time) as f32;
+        for i in 0..3 {
+            let lift = (t * 3.0 - i as f32 * 0.7).sin().max(0.0) * 12.0;
+            let c = rect.center() + egui::vec2((i as f32 - 1.0) * 22.0, -lift);
+            ui.painter().circle_filled(c, 6.0, theme::ACCENT);
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    });
 }
 
 impl eframe::App for App {
@@ -2319,7 +2797,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.cfg.api_key.is_none() {
+        if self.cfg.api_key.is_none() && self.cfg.openrouter_keys.is_empty() {
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::BG)).show(ui, |ui| {
                 drag_region(ui, egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.max_rect().width(), WIN_BTN.y)));
                 self.login_screen(ui)
@@ -2363,6 +2841,7 @@ impl eframe::App for App {
                     self.notify_setup_card(ui);
                     self.permission_card(ui);
                     self.plan_card(ui);
+                    self.questions_card(ui);
                     self.queue_card(ui);
                     self.input_box(ui);
                     ui.add_space(6.0);
@@ -2379,6 +2858,8 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         tools::kill_background_shells();
+        // A waiting update goes in now. If it can't, it's found again at the next start.
+        let _ = self.updater.install();
     }
 }
 
@@ -2525,6 +3006,26 @@ fn one_line(ui: &egui::Ui, text: &str, font: FontId, color: Color32, max: f32) -
 }
 
 /// A compact dropdown trigger: optional icon, text and a chevron.
+/// The glyph's square inside a 28px box: small, so it sits level with the chips beside it.
+fn icon_rect(rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0))
+}
+
+/// A composer tool: a 28px box matching the chips beside it, with a border that brightens on hover.
+fn icon_box(ui: &mut egui::Ui, tip: &str, paint: impl FnOnce(&egui::Painter, egui::Rect, Color32)) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::click());
+    let hot = r.hovered();
+    let p = ui.painter();
+    if hot {
+        p.rect(rect, 8, Color32::from_rgb(0x2a, 0x30, 0x3b), Stroke::new(1.0, Color32::from_rgb(0x4a, 0x52, 0x60)), egui::StrokeKind::Inside);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    } else {
+        p.rect(rect, 8, theme::SURFACE_HI, Stroke::new(1.0, theme::BORDER_HI), egui::StrokeKind::Inside);
+    }
+    paint(p, icon_rect(rect), if hot { theme::STRONG } else { theme::TEXT });
+    r.on_hover_text(tip)
+}
+
 fn chip(ui: &mut egui::Ui, text: &str, color: Color32, lead: Option<IconFn>, enabled: bool) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(13.0), color);
     let lead_w = if lead.is_some() { 18.0 } else { 0.0 };
@@ -2603,23 +3104,66 @@ fn menu_icon_item(ui: &mut egui::Ui, text: &str, icon: fn(&egui::Painter, egui::
     r
 }
 
-/// A model row: a star to pin it to the top, the name, and a check when selected. Returns the row and the star.
-fn model_item(ui: &mut egui::Ui, selected: bool, starred: bool, text: &str) -> (egui::Response, egui::Response) {
+/// A model row: the name over where it runs, a FREE tag if it costs nothing, and a star to keep it in the Starred tab.
+/// Returns the row and the star.
+fn model_item(ui: &mut egui::Ui, selected: bool, starred: bool, free: bool, text: &str, provider: &str) -> (egui::Response, egui::Response) {
     let w = ui.available_width().max(140.0);
-    let (rect, r) = ui.allocate_exact_size(egui::vec2(w, 32.0), Sense::click());
-    let star_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), egui::vec2(24.0, 24.0));
-    let star = ui.interact(star_rect, r.id.with("star"), Sense::click()).on_hover_text(if starred { "Unstar" } else { "Star to keep it at the top" });
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(w, 44.0), Sense::click());
+    let star_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(24.0, 24.0));
+    let star = ui.interact(star_rect, r.id.with("star"), Sense::click()).on_hover_text(if starred { "Unstar" } else { "Star to keep it in the Starred tab" });
     let color = menu_row_bg(ui, rect, selected, r.hovered() || star.hovered());
-    let p = ui.painter();
-    let star_color = if starred { theme::ACCENT } else if star.hovered() { theme::STRONG } else { theme::FAINT };
-    theme::icon::star(p, star_rect, star_color, starred);
-    let x = rect.left() + 32.0;
-    let g = one_line(ui, text, FontId::proportional(13.5), color, rect.right() - 30.0 - x);
-    ui.painter().galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
     if selected {
-        theme::icon::check(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(18.0, 18.0)), theme::ACCENT);
+        // The bar on the left edge, like the rail's.
+        ui.painter().rect_filled(egui::Rect::from_min_size(rect.left_top() + egui::vec2(0.0, 10.0), egui::vec2(2.5, rect.height() - 20.0)), 2, theme::ACCENT);
     }
+    let star_color = if starred { theme::ACCENT } else if star.hovered() { theme::STRONG } else { theme::FAINT };
+    theme::icon::star(ui.painter(), star_rect, star_color, starred);
+    let x = rect.left() + 12.0;
+    let mut text_right = star_rect.left() - 4.0;
+    if free {
+        let badge = egui::Rect::from_min_max(egui::pos2(text_right - 40.0, rect.center().y - 8.0), egui::pos2(text_right, rect.center().y + 8.0));
+        let p = ui.painter();
+        p.rect(badge, 4, theme::GREEN.gamma_multiply(0.14), Stroke::new(1.0, theme::GREEN.gamma_multiply(0.55)), egui::StrokeKind::Inside);
+        p.text(badge.center(), egui::Align2::CENTER_CENTER, "FREE", theme::bold(9.5), theme::GREEN);
+        text_right = badge.left() - 6.0;
+    }
+    let g = one_line(ui, text, theme::bold(13.5), color, text_right - x);
+    ui.painter().galley(egui::pos2(x, rect.top() + 6.0), g, theme::TEXT);
+    // Where it runs: the provider's mark and name, dimmed.
+    let icon = egui::Rect::from_min_size(egui::pos2(x, rect.bottom() - 19.0), egui::vec2(13.0, 13.0));
+    let name = if provider == "openrouter" {
+        theme::icon::openrouter(ui.painter(), icon, theme::DIM);
+        "OpenRouter"
+    } else {
+        theme::icon::logo(ui.painter(), icon.shrink(0.5));
+        "ScoutCode"
+    };
+    ui.painter().text(egui::pos2(icon.right() + 6.0, icon.center().y), egui::Align2::LEFT_CENTER, name, FontId::proportional(11.5), theme::DIM);
     (r, star)
+}
+
+/// A tab in the model menu's rail: the provider's mark (or a star), with an accent bar when it's the open one.
+fn rail_tab(ui: &mut egui::Ui, on: bool, tip: &str, tab: ModelTab) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), Sense::click());
+    let r = r.on_hover_text(tip);
+    let p = ui.painter();
+    if on || r.hovered() {
+        p.rect_filled(rect.shrink(2.0), 8, if on { theme::MENU_HOVER } else { theme::HOVER });
+    }
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if on {
+        p.rect_filled(egui::Rect::from_min_size(egui::pos2(rect.right() + 3.0, rect.top() + 8.0), egui::vec2(2.5, rect.height() - 16.0)), 2, theme::ACCENT);
+    }
+    let c = if on || r.hovered() { theme::STRONG } else { theme::MUTED };
+    let icon = egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0));
+    match tab {
+        ModelTab::Starred => theme::icon::star(p, egui::Rect::from_center_size(rect.center(), egui::vec2(30.0, 30.0)), c, true),
+        ModelTab::ScoutCode => theme::icon::logo(p, icon),
+        ModelTab::OpenRouter => theme::icon::openrouter(p, icon, c),
+    }
+    r
 }
 
 /// A model's stats in a card beside the model menu, level with the `row` under the pointer.
@@ -2640,10 +3184,16 @@ fn model_card(ctx: &egui::Context, m: &ModelInfo, menu: egui::Rect, row: egui::R
                 ui.add(egui::Label::new(RichText::new(d).size(12.5).color(theme::MUTED)).wrap());
             }
             let caps: Vec<&str> = [(m.tools, "Tools"), (m.vision, "Vision")].into_iter().filter_map(|(on, s)| (on == Some(true)).then_some(s)).collect();
+            let runs_on = match (m.hosted, m.openrouter_id.is_some()) {
+                (true, true) => "ScoutCode or OpenRouter",
+                (true, false) => "ScoutCode",
+                _ => "OpenRouter",
+            };
             let stats = [
                 ("Context", m.context.map(|n| format!("{} tokens", tokens(n)))),
                 ("Cost", m.cost.clone()),
                 ("Supports", (!caps.is_empty()).then(|| caps.join(" · "))),
+                ("Runs on", Some(runs_on.to_string())),
                 ("Providers", (!m.providers.is_empty()).then(|| m.providers.join(", "))),
                 ("Tries", (!m.routes_to.is_empty()).then(|| m.routes_to.join(" → "))),
             ];
@@ -2730,7 +3280,7 @@ fn project_row(ui: &mut egui::Ui, here: bool, expanded: bool, enabled: bool, nam
     (r, plus, more)
 }
 
-/// The account at the foot of the sidebar: an initial, the username and a chevron. Clicking opens its menu above it.
+/// The account at the foot of the sidebar: the username and a chevron. Clicking opens its menu above it.
 fn profile_row(ui: &mut egui::Ui, name: &str) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click());
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r));
@@ -2744,13 +3294,8 @@ fn profile_row(ui: &mut egui::Ui, name: &str) -> egui::Response {
     if r.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let c = egui::pos2(rect.left() + 20.0, rect.center().y);
-    p.circle_filled(c, 13.0, theme::ACCENT);
-    let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default();
-    let ig = p.layout_no_wrap(initial, theme::bold(13.0), theme::ACCENT_INK);
-    p.galley(c - ig.size() / 2.0, ig, theme::ACCENT_INK);
-    let g = one_line(ui, name, theme::bold(13.5), if hot { theme::STRONG } else { theme::TEXT }, rect.width() - 72.0);
-    ui.painter().galley(egui::pos2(rect.left() + 42.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
+    let g = one_line(ui, name, theme::bold(13.5), if hot { theme::STRONG } else { theme::TEXT }, rect.width() - 56.0);
+    ui.painter().galley(egui::pos2(rect.left() + 14.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
     let chev = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(16.0, 16.0));
     if open { theme::icon::chevron_down(ui.painter(), chev, theme::MUTED) } else { theme::icon::chevron_up(ui.painter(), chev, theme::DIM) }
     r
@@ -2931,6 +3476,23 @@ fn settings_heading(ui: &mut egui::Ui, title: &str, sub: &str) {
 }
 
 /// A setting: its name and a line about it on the left, `control` on the right, and a rule under it.
+/// What a row's buttons do to an OpenRouter key.
+#[derive(Clone, Copy)]
+enum KeyEdit {
+    Up,
+    Down,
+    Remove,
+}
+
+/// An OpenRouter key shown without its middle: the start and end are enough to tell keys apart.
+fn mask_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 12 {
+        return "…".into();
+    }
+    format!("{}…{}", chars[..8].iter().collect::<String>(), chars[chars.len() - 4..].iter().collect::<String>())
+}
+
 fn settings_row(ui: &mut egui::Ui, title: &str, sub: &str, control: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.set_min_height(60.0);
@@ -2950,6 +3512,7 @@ fn settings_row(ui: &mut egui::Ui, title: &str, sub: &str, control: impl FnOnce(
     ui.painter().rect_filled(rule, 0, theme::BORDER);
 }
 
+/// Reasoning effort as a bar: a dot for each level, a thumb on the chosen one, and its name above.
 /// An on/off switch.
 fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let (rect, mut r) = ui.allocate_exact_size(egui::vec2(38.0, 22.0), Sense::click());
@@ -2972,11 +3535,14 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
 /// A number with its label and a smaller line under it.
 fn stat_tile(ui: &mut egui::Ui, w: f32, label: &str, value: &str, sub: &str) {
     egui::Frame::NONE.fill(theme::SURFACE).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
-        ui.set_width(w - 28.0);
-        ui.spacing_mut().item_spacing.y = 4.0;
-        ui.label(RichText::new(label).size(12.0).color(theme::DIM));
-        ui.label(RichText::new(value).font(theme::bold(18.0)).color(theme::STRONG));
-        ui.label(RichText::new(sub).size(12.0).color(theme::MUTED));
+        // The caller's row is left to right, so stack the lines in their own column.
+        ui.vertical(|ui| {
+            ui.set_width(w - 28.0);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(RichText::new(label).size(12.0).color(theme::DIM));
+            ui.add(egui::Label::new(RichText::new(value).font(theme::bold(18.0)).color(theme::STRONG)).wrap_mode(egui::TextWrapMode::Extend));
+            ui.label(RichText::new(sub).size(12.0).color(theme::MUTED));
+        });
     });
 }
 
@@ -3269,6 +3835,38 @@ fn tool_row(ui: &mut egui::Ui, name: &str, label: &str, result: &Option<ToolResu
     r
 }
 
+/// The header of a folded run of tool calls: a check, the count, what they did, and a chevron. Returns true when clicked.
+fn tool_group_header(ui: &mut egui::Ui, g: &ToolGroup) -> bool {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), Sense::click());
+    let hot = r.hovered();
+    if hot {
+        ui.painter().rect_filled(rect, 8, theme::HOVER);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let icon = egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(18.0, 18.0));
+    let p = ui.painter();
+    p.circle_filled(icon.center(), 8.0, theme::GREEN.gamma_multiply(0.15));
+    theme::icon::check(p, icon, theme::GREEN);
+    let title = p.layout_no_wrap(format!("{} tool calls", g.count), theme::bold(13.0), if hot { theme::STRONG } else { theme::TEXT });
+    let title_h = title.size().y;
+    let mut x = rect.left() + 30.0;
+    let y = rect.center().y - title_h / 2.0;
+    x += title.size().x + 8.0;
+    p.galley(egui::pos2(rect.left() + 30.0, y), title, theme::TEXT);
+    let right = rect.right() - 30.0;
+    let summary = one_line(ui, &format!("·  {}", g.summary), FontId::proportional(12.5), theme::DIM, (right - x - 60.0).max(40.0));
+    let summary_y = rect.center().y - summary.size().y / 2.0;
+    ui.painter().galley(egui::pos2(x, summary_y), summary, theme::DIM);
+    if g.failed > 0 {
+        let failed = ui.painter().layout_no_wrap(format!("·  {} failed", g.failed), FontId::proportional(12.5), theme::RED);
+        let failed_x = right - failed.size().x - 8.0;
+        ui.painter().galley(egui::pos2(failed_x, summary_y), failed, theme::RED);
+    }
+    let c = egui::Rect::from_center_size(egui::pos2(rect.right() - 14.0, rect.center().y), egui::vec2(18.0, 18.0));
+    if g.open { theme::icon::chevron_down(ui.painter(), c, theme::MUTED) } else { theme::icon::chevron_right(ui.painter(), c, theme::MUTED) }
+    r.clicked()
+}
+
 /// Draws one transcript item. Returns true when the pencil on a message of the user's was clicked.
 fn draw_item(ui: &mut egui::Ui, item: &mut Item, n: usize, editable: bool) -> bool {
     let mut edit = false;
@@ -3316,16 +3914,27 @@ fn draw_item(ui: &mut egui::Ui, item: &mut Item, n: usize, editable: bool) -> bo
             }
             ui.add_space(4.0);
             if !reasoning.is_empty() {
-                let (rect, r) = ui.allocate_exact_size(egui::vec2(110.0, 26.0), Sense::click());
+                // "Reasoning", then the model's latest thought beside it while it's collapsed.
+                let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::click());
                 let hot = r.hovered();
-                let p = ui.painter();
                 if hot {
-                    p.rect_filled(rect, 7, theme::HOVER);
+                    ui.painter().rect_filled(rect, 7, theme::HOVER);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 let c = egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(18.0, 18.0));
+                let p = ui.painter();
                 if *show_reasoning { theme::icon::chevron_down(p, c, theme::DIM) } else { theme::icon::chevron_right(p, c, theme::DIM) }
-                p.text(egui::pos2(rect.left() + 28.0, rect.center().y), egui::Align2::LEFT_CENTER, "Thinking", FontId::proportional(13.0), if hot { theme::TEXT } else { theme::DIM });
+                let title = p.layout_no_wrap("Reasoning".into(), theme::bold(13.0), if hot { theme::STRONG } else { theme::TEXT });
+                let mut x = rect.left() + 28.0;
+                let title_y = rect.center().y - title.size().y / 2.0;
+                x += title.size().x + 10.0;
+                p.galley(egui::pos2(rect.left() + 28.0, title_y), title, theme::TEXT);
+                if !*show_reasoning {
+                    let latest = reasoning.trim().lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
+                    let preview = one_line(ui, latest, FontId::proportional(13.0), theme::DIM, rect.right() - x - 14.0);
+                    let preview_y = rect.center().y - preview.size().y / 2.0;
+                    ui.painter().galley(egui::pos2(x, preview_y), preview, theme::DIM);
+                }
                 if r.clicked() {
                     *show_reasoning = !*show_reasoning;
                 }
@@ -3416,6 +4025,7 @@ fn tool_title(name: &str) -> &str {
         "todo_write" => "Todos",
         "task" => "Task",
         "present_plan" => "Plan",
+        "ask_questions" => "Ask",
         n => n,
     }
 }

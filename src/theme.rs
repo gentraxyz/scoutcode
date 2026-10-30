@@ -391,6 +391,19 @@ pub mod icon {
         }
     }
 
+    /// OpenRouter, as a route: a line from the left that forks into two arrows.
+    pub fn openrouter(p: &Painter, rect: Rect, c: Color32) {
+        let s = rect.width() / 16.0;
+        let at = |x: f32, y: f32| rect.min + vec2(x, y) * s;
+        let w = (1.6 * s).max(1.2);
+        line(p, &[at(1.5, 8.0), at(6.0, 8.0)], c, w);
+        line(p, &[at(6.0, 8.0), at(9.0, 3.5), at(14.0, 3.5)], c, w);
+        line(p, &[at(6.0, 8.0), at(9.0, 12.5), at(14.0, 12.5)], c, w);
+        for y in [3.5, 12.5] {
+            line(p, &[at(11.5, y - 2.2), at(14.0, y), at(11.5, y + 2.2)], c, w);
+        }
+    }
+
     // Window buttons, drawn thin like Windows' own.
 
     pub fn minimize(p: &Painter, rect: Rect, c: Color32) {
@@ -499,6 +512,15 @@ pub mod icon {
             let d = vec2(a.cos(), a.sin());
             line(p, &[m + d * 4.8 * s, m + d * 6.8 * s], c, 1.6);
         }
+    }
+
+    /// An arrow down to a tray, for updates.
+    pub fn download(p: &Painter, rect: Rect, c: Color32) {
+        let (m, s) = (rect.center(), rect.height() / 20.0);
+        let pt = |x: f32, y: f32| m + vec2(x, y) * s;
+        line(p, &[pt(0.0, -5.5), pt(0.0, 2.2)], c, 1.4);
+        line(p, &[pt(-3.2, -1.0), pt(0.0, 2.2), pt(3.2, -1.0)], c, 1.4);
+        line(p, &[pt(-5.5, 3.0), pt(-5.5, 5.5), pt(5.5, 5.5), pt(5.5, 3.0)], c, 1.4);
     }
 
     /// Three dots, for a "more" menu.

@@ -45,8 +45,9 @@ foreach ($path in $links) {
 
 # Lists it under Settings > Apps so it can be removed like any other app.
 New-Item $uninstallKey -Force | Out-Null
+$version = [regex]::Match((Get-Content (Join-Path $PSScriptRoot 'Cargo.toml') -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
 $props = @{
-    DisplayName = 'Scout'; DisplayIcon = "$exe,0"; Publisher = 'ScoutCode'; DisplayVersion = '0.1.0'
+    DisplayName = 'Scout'; DisplayIcon = "$exe,0"; Publisher = 'ScoutCode'; DisplayVersion = $version
     InstallLocation = $dest; NoModify = 1; NoRepair = 1
     UninstallString = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$dest\install.ps1`" -Uninstall"
 }

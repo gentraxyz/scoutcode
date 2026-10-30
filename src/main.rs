@@ -15,10 +15,14 @@ mod prompt;
 mod session;
 mod theme;
 mod tools;
+mod update;
 mod usage;
 mod voice;
 
 fn main() -> eframe::Result {
+    if update::run_setup_if_needed() {
+        return Ok(());
+    }
     let renderer = match std::env::var("SCOUT_RENDERER").as_deref() {
         Ok("wgpu") => eframe::Renderer::Wgpu,
         _ => eframe::Renderer::Glow,

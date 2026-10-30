@@ -1,0 +1,7 @@
+# Links libunwind into the exe. Otherwise it needs libunwind.dll from llvm-mingw, which only a PC with that toolchain on
+# its PATH has, so the app wouldn't start for anyone else.
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]

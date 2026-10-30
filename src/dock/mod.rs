@@ -75,6 +75,10 @@ impl Dock {
         self.open && ctx.memory(|m| m.focused().is_some_and(|id| id == terminal::id() || id == files::editor_id()))
     }
 
+    pub fn has_unsaved_edits(&self) -> bool {
+        self.files.has_unsaved_edits()
+    }
+
     /// Scout (or /undo) touched files: refresh what's on screen.
     pub fn files_changed(&mut self) {
         self.changes.stale = true;

@@ -76,7 +76,6 @@ pub struct Usage {
 
 #[derive(Default, Clone, Debug)]
 pub struct Meta {
-    pub model: Option<String>,
     pub cost: Option<f64>,
     pub balance: Option<f64>,
 }
@@ -94,7 +93,6 @@ pub struct StreamResult {
 pub enum Delta<'a> {
     Text(&'a str),
     Reasoning(&'a str),
-    Meta(&'a Meta),
 }
 
 #[derive(Debug)]
@@ -184,6 +182,12 @@ pub struct ModelInfo {
     pub available: Option<bool>,
     /// The edit tool it was trained on, as an admin set it on the server; str_replace when the server doesn't say.
     pub edit_tool: crate::tools::EditTool,
+    /// The id OpenRouter knows it by, when OpenRouter serves it too. Set for OpenRouter's own entries as well.
+    pub openrouter_id: Option<String>,
+    /// ScoutCode serves it, from our own model list. False for models that are only on OpenRouter.
+    pub hosted: bool,
+    /// Costs nothing on the route that reports it (no per-token price, or OpenRouter's ":free" variants).
+    pub free: bool,
 }
 
 impl ModelInfo {
@@ -199,6 +203,7 @@ impl ModelInfo {
         });
         let inputs = list_at(m, "/architecture/input_modalities");
         let params: Vec<String> = list("supported_parameters");
+        let free = s("id").is_some_and(|id| id.ends_with(":free")) || cost.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("free"));
         Some(ModelInfo {
             id: s("id")?,
             name: s("name"),
@@ -211,6 +216,9 @@ impl ModelInfo {
             routes_to: list("routes_to"),
             available: m.get("available").and_then(Value::as_bool),
             edit_tool: crate::tools::EditTool::parse(m.get("edit_tool").and_then(Value::as_str).unwrap_or("")),
+            openrouter_id: None,
+            hosted: false,
+            free,
         })
     }
 
@@ -221,6 +229,59 @@ impl ModelInfo {
             None => short_id(&self.id),
         }
     }
+
+    /// The id to send for this model to `provider`.
+    pub fn request_id(&self, provider: &str) -> &str {
+        match (provider, &self.openrouter_id) {
+            ("openrouter", Some(id)) => id,
+            _ => &self.id,
+        }
+    }
+}
+
+/// The name models are matched on across providers: no vendor ("OpenAI: "), no parenthetical, letters and digits only.
+fn match_key(m: &ModelInfo) -> String {
+    let label = m.label();
+    let name = label.split_once(": ").map(|(_, n)| n).unwrap_or(&label);
+    name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+/// One list from ScoutCode and OpenRouter: a model both serve shows once, on ScoutCode's entry with OpenRouter's id
+/// attached; OpenRouter-only models follow ours.
+pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    let mut out = scout;
+    for o in openrouter {
+        let key = match_key(&o);
+        let same = out.iter().position(|m| m.hosted && m.openrouter_id.is_none() && (m.id == o.id || (!key.is_empty() && match_key(m) == key)));
+        match same {
+            Some(i) => {
+                out[i].free |= o.free;
+                out[i].openrouter_id = o.openrouter_id;
+            }
+            None if out.iter().all(|m| m.id != o.id) => out.push(o),
+            None => {}
+        }
+    }
+    out
+}
+
+/// OpenRouter's catalog, read with the user's own key.
+pub fn list_openrouter(cfg: &Config) -> Result<Vec<ModelInfo>, ApiError> {
+    let or = cfg.for_provider("openrouter");
+    let res = http()
+        .get(&format!("{}/models", or.base_url))
+        .header("Authorization", &format!("Bearer {}", key(&or)?))
+        .call()
+        .map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().read_json().map_err(transport)?;
+    Ok(body
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(ModelInfo::from_json).map(|m| ModelInfo { openrouter_id: Some(m.id.clone()), ..m }).collect())
+        .unwrap_or_default())
 }
 
 /// "openai/gpt-4o:free" → "gpt-4o"; "auto" → "Auto".
@@ -255,7 +316,8 @@ pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), Api
     let models = body
         .get("data")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(ModelInfo::from_json).collect())
+        // The server's "auto" router is not offered in the picker.
+        .map(|a| a.iter().filter_map(ModelInfo::from_json).filter(|m| m.id != "auto").map(|m| ModelInfo { hosted: true, ..m }).collect())
         .unwrap_or_default();
     Ok((models, user))
 }
@@ -345,8 +407,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         return Err(error_from(res));
     }
     let num = |h: &str| header(&res, h).and_then(|v| v.parse::<f64>().ok());
-    let meta = Meta { model: header(&res, "x-scoutcode-model"), cost: num("x-scoutcode-cost"), balance: num("x-scoutcode-balance") };
-    on(Delta::Meta(&meta));
+    let meta = Meta { cost: num("x-scoutcode-cost"), balance: num("x-scoutcode-balance") };
     let event_stream = header(&res, "content-type").is_some_and(|t| t.contains("event-stream"));
     let mut out = StreamResult { meta, ..Default::default() };
 
@@ -391,10 +452,8 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
                 return Err(ApiError::new(e.to_string(), 0));
             }
         }
+        // "[DONE]" doesn't parse, so it is skipped; ScoutCode's cost chunk comes after it, so read on to the end.
         let Some(data) = line.trim().strip_prefix("data:").map(str::trim) else { continue };
-        if data == "[DONE]" {
-            break;
-        }
         let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
         if let Some(err) = chunk.get("error") {
             let code = err.get("code").and_then(Value::as_u64).unwrap_or(500) as u16;
@@ -402,6 +461,12 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         }
         if let Some(u) = chunk.get("usage").filter(|u| u.is_object()) {
             out.usage = Some(usage_from(u));
+        }
+        // What a token-priced answer cost, from ScoutCode, once the answer is done.
+        if let Some(sc) = chunk.get("scoutcode") {
+            let num = |k: &str| sc.get(k).and_then(Value::as_str).and_then(|v| v.parse::<f64>().ok());
+            out.meta.cost = num("cost").or(out.meta.cost);
+            out.meta.balance = num("balance").or(out.meta.balance);
         }
         let Some(choice) = chunk.pointer("/choices/0") else { continue };
         if let Some(d) = choice.get("delta") {

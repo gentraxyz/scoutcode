@@ -4,6 +4,7 @@ use crate::prompt;
 use crate::session::{Session, Totals, save_session};
 use crate::tools::{self, Ctx, Display, EditTool, Permission, Todo, ToolResult};
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +33,29 @@ pub enum PlanAnswer {
     Revise(String),
 }
 
+/// One option of an `ask_questions` question. `description` says what picking it means.
+#[derive(Clone)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// A question the model asks the user with `ask_questions`.
+#[derive(Clone)]
+pub struct Question {
+    pub question: String,
+    /// A very short label shown above the question.
+    pub header: String,
+    pub options: Vec<QuestionOption>,
+    pub multi_select: bool,
+}
+
+pub enum QuestionAnswer {
+    /// One answer per question, in order.
+    Answered(Vec<String>),
+    Skipped,
+}
+
 /// Everything the worker thread tells the window. Each send wakes the UI.
 pub enum Ev {
     RequestStart,
@@ -45,10 +69,9 @@ pub enum Ev {
     Notice(String),
     Todos(Vec<Todo>),
     Totals(Totals, u64),
-    /// The model that answered, which differs from the chosen one under "auto".
-    ServedModel(String),
     AskPermission(PermissionRequest, Sender<PermissionAnswer>),
     AskPlan(String, Sender<PlanAnswer>),
+    AskQuestions(Vec<Question>, Sender<QuestionAnswer>),
     /// The project's files for the @ picker: the folder, and its files relative to it.
     FileIndex(String, Vec<String>),
     /// Chats matching a sidebar search: the query, and their ids.
@@ -81,7 +104,10 @@ impl Hooks {
 /// Settings the window can change while a turn runs.
 pub struct Shared {
     pub mode: Mutex<String>,
+    /// The id to send to `provider`.
     pub model: Mutex<String>,
+    /// "scoutcode" or "openrouter".
+    pub provider: Mutex<String>,
     pub effort: Mutex<String>,
     pub cancel: AtomicBool,
     /// Each model's edit tool, from /v1/models once the window has the list.
@@ -268,6 +294,21 @@ impl Agent {
     /// One streamed request with retries for rate limits, 5xx and network errors.
     fn request(&mut self, messages: &[Message], read_only: bool, quiet: bool, model: Option<String>, no_tools: bool, h: &Hooks) -> Result<StreamResult, ApiError> {
         let model = model.unwrap_or_else(|| self.shared.model.lock().unwrap().clone());
+        let provider = self.shared.provider.lock().unwrap().clone();
+        // OpenRouter tries the user's keys in order. A key that fails hands the request to the next one.
+        let mut cfgs: Vec<Config> = if provider == "openrouter" {
+            self.cfg
+                .openrouter_keys
+                .iter()
+                .map(|k| self.cfg.for_openrouter_key(&k.key))
+                .collect()
+        } else {
+            vec![]
+        };
+        if cfgs.is_empty() {
+            cfgs.push(self.cfg.for_provider(&provider));
+        }
+        let mut key = 0;
         let effort = self.shared.effort.lock().unwrap().clone();
         let edit = self.shared.edit_tool(&model);
         if self.specs.0 != edit {
@@ -284,23 +325,21 @@ impl Agent {
                 tools: Some(tools),
                 tool_choice_none: no_tools,
                 temperature: self.cfg.temperature,
-                effort: (effort != "default").then_some(effort.as_str()),
+                effort: Some(effort.as_str()),
             };
+            // Whether any of the answer has been shown: once it has, another key would repeat it, so it isn't retried.
+            let shown = Cell::new(false);
             let mut on = |d: Delta| {
+                shown.set(true);
                 if quiet {
                     return;
                 }
                 match d {
                     Delta::Text(t) => h.send(Ev::Text(t.to_string())),
                     Delta::Reasoning(t) => h.send(Ev::Reasoning(t.to_string())),
-                    Delta::Meta(m) => {
-                        if let Some(model) = &m.model {
-                            h.send(Ev::ServedModel(model.clone()));
-                        }
-                    }
                 }
             };
-            match api::stream_chat(&self.cfg, req, &mut on, &self.shared.cancel) {
+            match api::stream_chat(&cfgs[key], req, &mut on, &self.shared.cancel) {
                 Ok(r) => {
                     self.add_usage(&r, !quiet, h);
                     if !quiet {
@@ -309,8 +348,16 @@ impl Agent {
                     return Ok(r);
                 }
                 Err(e) => {
-                    if self.cancelled() || !e.retryable() || attempt >= 4 {
-                        return Err(if self.cancelled() { ApiError::aborted() } else { e });
+                    if self.cancelled() {
+                        return Err(ApiError::aborted());
+                    }
+                    if key + 1 < cfgs.len() && !shown.get() {
+                        h.send(Ev::Status(format!("{} · trying the next OpenRouter key", e.message.chars().take(120).collect::<String>())));
+                        key += 1;
+                        continue;
+                    }
+                    if !e.retryable() || attempt >= 4 {
+                        return Err(e);
                     }
                     let wait = e.retry_after.unwrap_or(2u64.pow(attempt + 1)).min(60);
                     h.send(Ev::Status(format!("{} · retrying in {wait}s ({}/4)", e.message.chars().take(120).collect::<String>(), attempt + 1)));
@@ -433,6 +480,21 @@ impl Agent {
                 ),
             };
         }
+        if name == "ask_questions" {
+            let questions = parse_questions(args);
+            if questions.is_empty() {
+                return ToolResult::err("ask_questions needs at least one question with a text.", "invalid");
+            }
+            let (tx, rx) = channel();
+            h.send(Ev::AskQuestions(questions.clone(), tx));
+            return match rx.recv().unwrap_or(QuestionAnswer::Skipped) {
+                QuestionAnswer::Answered(answers) => {
+                    let lines: Vec<String> = questions.iter().zip(&answers).map(|(q, a)| format!("{}: {a}", q.question)).collect();
+                    ToolResult::ok(format!("The user answered:\n{}", lines.join("\n")), "answered")
+                }
+                QuestionAnswer::Skipped => ToolResult::err("The user skipped the questions. Carry on with your best judgment and say what you assumed.", "skipped"),
+            };
+        }
         if name == "todo_write" {
             let Some(list) = args.get("todos").and_then(Value::as_array) else {
                 return ToolResult::err("todos must be an array.", "invalid");
@@ -495,8 +557,10 @@ impl Agent {
     /// A read-only agent with its own context. Its tool calls show as status lines.
     fn run_subagent(&mut self, description: &str, task: &str, h: &Hooks) -> Result<String, ApiError> {
         let mut messages = vec![Message::System { content: prompt::subagent_prompt(&self.session.cwd) }, Message::User { content: Content::Text(task.into()) }];
-        // A browser sign-in may only use the approved models, which the sub-agent model may not be; use the session's.
-        let model = (!config::is_sign_in(self.cfg.api_key.as_deref()) && !self.cfg.subagent_model.is_empty()).then(|| self.cfg.subagent_model.clone());
+        // A browser sign-in may only use the approved models, which the sub-agent model may not be, and OpenRouter has
+        // none of ours; use the session's model for both.
+        let on_scout = *self.shared.provider.lock().unwrap() == "scoutcode";
+        let model = (on_scout && !config::is_sign_in(self.cfg.api_key.as_deref()) && !self.cfg.subagent_model.is_empty()).then(|| self.cfg.subagent_model.clone());
         let cwd = self.session.cwd.clone();
         for _ in 0..60 {
             let r = self.request(&messages, true, true, model.clone(), false, h)?;
@@ -914,7 +978,8 @@ mod tests {
         let shared = Arc::new(Shared {
             mode: Mutex::new("yolo".into()),
             model: Mutex::new(cfg.model.clone()),
-            effort: Mutex::new("default".into()),
+            provider: Mutex::new(cfg.provider.clone()),
+            effort: Mutex::new("low".into()),
             cancel: AtomicBool::new(false),
             edit_tools: Default::default(),
             steer: Default::default(),
@@ -929,7 +994,6 @@ mod tests {
                 Ev::Text(t) => text.push_str(&t),
                 Ev::ToolCall { name, label, .. } => println!("tool: {name} {label}"),
                 Ev::ToolResult { result, .. } => println!("  -> {:?} {}", result.summary, result.output.lines().next().unwrap_or("")),
-                Ev::ServedModel(m) => println!("model: {m}"),
                 _ => {}
             }
         }
@@ -948,7 +1012,7 @@ mod tests {
         std::fs::write(&a, "v2").unwrap();
         std::fs::write(&b, "made in turn two").unwrap();
         let cwd = dir.to_string_lossy().to_string();
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), effort: Mutex::new("default".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&cwd, "m"), shared);
         let edit = |id: &str| Message::Assistant {
             content: None,
@@ -980,4 +1044,41 @@ mod tests {
         let _ = std::fs::remove_file(crate::config::home().join("sessions").join(format!("{}.json", agent.session.id)));
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// The questions in an `ask_questions` call. Options may be plain strings or {label, description}; up to four questions.
+fn parse_questions(args: &Value) -> Vec<Question> {
+    args.get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|q| {
+            let question = q.get("question").and_then(Value::as_str)?.trim().to_string();
+            if question.is_empty() {
+                return None;
+            }
+            let options = q
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|o| match o {
+                    Value::String(s) => Some(QuestionOption { label: s.clone(), description: String::new() }),
+                    _ => {
+                        let label = o.get("label").and_then(Value::as_str)?.to_string();
+                        let description = o.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+                        Some(QuestionOption { label, description })
+                    }
+                })
+                .take(6)
+                .collect();
+            Some(Question {
+                question,
+                header: q.get("header").and_then(Value::as_str).unwrap_or_default().chars().take(16).collect(),
+                options,
+                multi_select: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+            })
+        })
+        .take(4)
+        .collect()
 }

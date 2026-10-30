@@ -1,8 +1,8 @@
 # Scout Desktop
 
 A native desktop app for Scout, separate from the CLI. It's written in Rust with [egui](https://github.com/emilk/egui):
-no webview, no Node and no bundled browser. It ships as one ~11 MB executable, opens its window in under half a
-second and uses about 90 MB of memory. It redraws only when something changes (or to blink the cursor), so it is
+no webview, no Node and no bundled browser. It ships as one ~18 MB executable, opens its window in under half a
+second and uses about 120 MB of memory. It redraws only when something changes (or to blink the cursor), so it is
 close to idle while you read.
 
 It shares the CLI's login, settings, allow list and sessions (`~/.scoutcode`), so a chat started in one can be
@@ -19,6 +19,37 @@ so Windows search finds "Scout". It also lists Scout under Settings > Apps, wher
 again to update. Add `-Desktop` for a desktop shortcut, or `-Uninstall` to remove everything except your chats and
 login in `~/.scoutcode`. Launched from the Start menu, Scout opens the last folder you opened (your home folder the
 first time); use "Open folder…" to switch.
+
+People who aren't building it themselves download `ScoutSetup.exe` from the site. It's the same binary: run under that
+name, it installs itself to the same place with the same Start menu entry and starts the installed copy. Windows warns
+about it the first time because the exe has no Authenticode signature.
+
+## Updates
+
+The installed app checks `https://scoutcode.dev/download/latest.json` five seconds after it starts and every 6 hours.
+Anything newer downloads in the background to `update-<version>.exe` next to the exe, and a **Restart to update** button
+appears in the title bar. Restarting reopens the same folder and chat (it waits while Scout is working or the editor
+has unsaved changes). If the user just closes the window, the update goes in then. Settings > Updates shows the status,
+the release notes and a switch for automatic downloads, and "Check for updates" is in the account menu.
+
+Only an installed release build (`Scout.exe`) updates itself, never `cargo run`. `SCOUT_NO_UPDATE=1` turns it off and
+`SCOUT_UPDATE_URL` points it at another manifest. Nothing is installed unless its signature checks out against the key
+built into the app and its SHA-256 matches, so control of the site or the bucket isn't enough to push code to people.
+
+### Publishing a release
+
+```powershell
+# After bumping `version` in gui/Cargo.toml:
+npm run release:desktop -- --notes "What changed"
+```
+
+This builds for x64 and ARM64 (the two `*-pc-windows-gnullvm` targets, with llvm-mingw on the PATH), signs both and
+uploads them to the public `desktop-releases` bucket in Supabase, then publishes `latest.json`. Each installed copy
+fetches its own architecture. The site's download button gives x64, and `/download/windows?arch=arm64` gives ARM64. It
+needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, and the private key in `~/.scoutcode/desktop-release-key.pem` (or
+`SCOUT_RELEASE_KEY`). Keep a backup of that key outside the repo: installed apps accept nothing else, so if it's lost
+they can't be updated and everyone has to reinstall. Apps only move to a higher version, so to undo a bad release,
+publish the old code under a new number.
 
 ## Build and run
 
@@ -87,6 +118,7 @@ permission modes, plan mode, prompt-cache-friendly system prompt, automatic prun
 | `src/markdown.rs` | Markdown for replies |
 | `src/attach.rs` | Attached files: building and reading back the `<file>` blocks, and the @ picker's file list |
 | `src/notify.rs` | Windows notifications |
+| `src/update.rs` | Checking for, verifying and installing updates, and installing from `ScoutSetup.exe` |
 | `src/dock/` | The right panel: `terminal.rs` (ConPTY + vt100), `changes.rs` (git), `files.rs` (tree and editor), `highlight.rs` |
 | `src/config.rs`, `src/session.rs`, `src/prompt.rs`, `src/oauth.rs`, `src/diff.rs` | Ports of the CLI's modules |
 

@@ -18,6 +18,8 @@ serde_json = "1"
 regex = "1.13"
 rfd = "0.17"
 sha2 = "0.10"
+# Checks that an update was signed by ScoutCode before it's installed.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
 getrandom = "0.3"
 portable-pty = "0.9"

@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub const MODES: [&str; 5] = ["default", "acceptEdits", "auto", "plan", "yolo"];
-pub const EFFORTS: [&str; 5] = ["default", "none", "low", "medium", "high"];
+pub const EFFORTS: [&str; 4] = ["none", "low", "medium", "high"];
+pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 
 pub fn mode_label(mode: &str) -> &'static str {
     match mode {
@@ -20,6 +21,10 @@ pub fn mode_label(mode: &str) -> &'static str {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub api_key: Option<String>,
+    /// The user's own OpenRouter keys, in the order they're tried. For models on OpenRouter.
+    pub openrouter_keys: Vec<OpenRouterKey>,
+    /// Where the chosen model runs: "scoutcode" or "openrouter". The model is that provider's id for it.
+    pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
     pub username: Option<String>,
     pub base_url: String,
@@ -40,6 +45,15 @@ pub struct Config {
     /// background. None until they choose, which the first run asks.
     pub notify_flash: Option<bool>,
     pub notify_toast: Option<bool>,
+    /// Desktop app only: download new versions in the background, ready for the next restart.
+    pub auto_update: bool,
+}
+
+/// One of the user's OpenRouter keys, under the name they gave it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OpenRouterKey {
+    pub name: String,
+    pub key: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -68,6 +82,27 @@ fn read_saved() -> Map<String, Value> {
         .unwrap_or_default()
 }
 
+/// The saved OpenRouter keys in the order they're tried. A file from before the list has one `openrouterKey`, which
+/// becomes the only key.
+fn saved_openrouter_keys(s: &Map<String, Value>) -> Vec<OpenRouterKey> {
+    if let Some(list) = s
+        .get("openrouterKeys")
+        .and_then(|v| serde_json::from_value::<Vec<OpenRouterKey>>(v.clone()).ok())
+    {
+        return list.into_iter().filter(|k| !k.key.is_empty()).collect();
+    }
+    s.get("openrouterKey")
+        .and_then(Value::as_str)
+        .filter(|k| !k.is_empty())
+        .map(|k| {
+            vec![OpenRouterKey {
+                name: "OpenRouter".into(),
+                key: k.into(),
+            }]
+        })
+        .unwrap_or_default()
+}
+
 pub fn load_config() -> Config {
     let s = read_saved();
     let str_ = |k: &str, d: &str| s.get(k).and_then(Value::as_str).unwrap_or(d).to_string();
@@ -83,11 +118,14 @@ pub fn load_config() -> Config {
         .unwrap_or_default();
     let mut cfg = Config {
         api_key: s.get("apiKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        openrouter_keys: saved_openrouter_keys(&s),
+        provider: str_("provider", "scoutcode"),
         username: s.get("username").and_then(Value::as_str).filter(|u| !u.is_empty()).map(String::from),
         base_url: str_("baseUrl", "https://scoutcode.dev/v1"),
         model: str_("model", "auto"),
         mode: str_("mode", "default"),
-        effort: str_("effort", "default"),
+        // A file from before "default" was removed falls back to low.
+        effort: Some(str_("effort", "low")).filter(|e| EFFORTS.contains(&e.as_str())).unwrap_or_else(|| "low".into()),
         allow,
         auto_compact_tokens: num("autoCompactTokens", 90_000),
         prune_tokens: num("pruneTokens", 60_000),
@@ -97,6 +135,7 @@ pub fn load_config() -> Config {
         projects: s.get("desktopProjects").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         notify_flash: s.get("desktopFlash").and_then(Value::as_bool),
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
+        auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
@@ -105,8 +144,51 @@ pub fn load_config() -> Config {
     if let Ok(u) = std::env::var("SCOUTCODE_BASE_URL") {
         cfg.base_url = u;
     }
+    if let Ok(k) = std::env::var("OPENROUTER_API_KEY") {
+        cfg.openrouter_keys = vec![OpenRouterKey {
+            name: "Environment".into(),
+            key: k,
+        }];
+    }
     cfg.base_url = cfg.base_url.trim_end_matches('/').to_string();
     cfg
+}
+
+impl Config {
+    /// The same settings pointed at the provider a request goes to: ScoutCode's server, or OpenRouter with its first key.
+    pub fn for_provider(&self, provider: &str) -> Config {
+        let mut c = self.clone();
+        if provider == "openrouter" {
+            c.base_url = OPENROUTER_URL.to_string();
+            c.api_key = self.openrouter_keys.first().map(|k| k.key.clone());
+        }
+        c
+    }
+
+    /// The same settings pointed at OpenRouter with one of the user's keys.
+    pub fn for_openrouter_key(&self, key: &str) -> Config {
+        let mut c = self.clone();
+        c.base_url = OPENROUTER_URL.to_string();
+        c.api_key = Some(key.to_string());
+        c
+    }
+
+    /// Copies the keys from `other`, leaving the rest (such as the allow list, which the agent saves) alone.
+    pub fn take_keys(&mut self, other: &Config) {
+        self.api_key = other.api_key.clone();
+        self.openrouter_keys = other.openrouter_keys.clone();
+    }
+}
+
+/// Saves the OpenRouter keys in order. The first is also kept as `openrouterKey`, for older builds and the CLI.
+pub fn save_openrouter_keys(keys: &[OpenRouterKey]) {
+    let mut m = Map::new();
+    m.insert("openrouterKeys".into(), json!(keys));
+    m.insert(
+        "openrouterKey".into(),
+        json!(keys.first().map(|k| k.key.clone())),
+    );
+    save_config(m);
 }
 
 /// Saves the given fields, keeping anything else already in the file. Null removes a field.

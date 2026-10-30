@@ -155,6 +155,10 @@ pub struct Files {
 }
 
 impl Files {
+    pub fn has_unsaved_edits(&self) -> bool {
+        self.editor.as_ref().is_some_and(Editor::dirty)
+    }
+
     pub fn request_open(&mut self, path: PathBuf) {
         self.request = Some(path);
     }

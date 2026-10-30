@@ -114,6 +114,8 @@ pub fn specs(only: Option<&[&str]>, edit: EditTool) -> Vec<Value> {
             json!({"type":"object","properties":{"description":{"type":"string","description":"3-5 words"},"prompt":{"type":"string","description":"The full task and what to report back"}},"required":["description","prompt"]})),
         ("present_plan", "Plan mode only: show the user your implementation plan (Markdown, concrete steps and files) and ask them to approve it. If they approve, you can start making changes.",
             json!({"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"]})),
+        ("ask_questions", "Ask the user one to four questions and wait for their answers. Use it when a decision or a detail only the user can give would otherwise be a guess. Give each question 2-4 short options; the user can always type their own answer instead. Ask only what you need.",
+            json!({"type":"object","properties":{"questions":{"type":"array","maxItems":4,"items":{"type":"object","properties":{"question":{"type":"string","description":"The full question, ending in a question mark"},"header":{"type":"string","description":"A very short label, 16 characters or fewer"},"options":{"type":"array","maxItems":6,"items":{"type":"object","properties":{"label":{"type":"string","description":"1-5 words"},"description":{"type":"string","description":"What picking it means"}},"required":["label"]}},"multiSelect":{"type":"boolean","description":"Whether the user may pick several options"}},"required":["question","options"]}}},"required":["questions"]})),
     ];
     all.into_iter()
         .filter(|(n, ..)| only.is_none_or(|o| o.contains(n)))
@@ -153,7 +155,7 @@ pub fn canonical(name: &str, args: Value) -> (String, Value) {
 }
 
 pub fn known(name: &str) -> bool {
-    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "todo_write" | "task" | "present_plan")
+    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "todo_write" | "task" | "present_plan" | "ask_questions")
 }
 
 pub fn permission(name: &str) -> Permission {
@@ -200,11 +202,22 @@ pub fn label(name: &str, a: &Value) -> String {
         "todo_write" => format!("{} items", a.get("todos").and_then(Value::as_array).map_or(0, Vec::len)),
         "task" => s(a, "description").into(),
         "present_plan" => "plan".into(),
+        "ask_questions" => {
+            let qs = a.get("questions").and_then(Value::as_array);
+            let first = qs
+                .and_then(|q| q.first())
+                .map(|q| s(q, "question"))
+                .unwrap_or_default();
+            match qs.map_or(0, Vec::len) {
+                0 | 1 => first.to_string(),
+                n => format!("{first} (+{} more)", n - 1),
+            }
+        }
         _ => String::new(),
     }
 }
 
-/// Runs a file, shell or web tool. todo_write, task and present_plan belong to the agent.
+/// Runs a file, shell or web tool. todo_write, task, present_plan and ask_questions belong to the agent.
 pub fn run(name: &str, a: &Value, ctx: &mut Ctx) -> R {
     match name {
         "view" => view(a, ctx),

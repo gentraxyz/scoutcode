@@ -489,6 +489,18 @@ pub mod icon {
         line(p, &pts, c, 1.4);
     }
 
+    /// A cog, for settings.
+    pub fn gear(p: &Painter, rect: Rect, c: Color32) {
+        let (m, s) = (rect.center(), rect.height() / 20.0);
+        p.circle_stroke(m, 2.0 * s, Stroke::new(1.3, c));
+        p.circle_stroke(m, 4.8 * s, Stroke::new(1.4, c));
+        for i in 0..8 {
+            let a = std::f32::consts::FRAC_PI_4 * i as f32;
+            let d = vec2(a.cos(), a.sin());
+            line(p, &[m + d * 4.8 * s, m + d * 6.8 * s], c, 1.6);
+        }
+    }
+
     /// Three dots, for a "more" menu.
     pub fn more(p: &Painter, rect: Rect, c: Color32) {
         for dx in [-5.0, 0.0, 5.0] {

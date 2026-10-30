@@ -1206,13 +1206,13 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.separator();
-                if menu_item(ui, false, "Settings").clicked() {
+                if menu_icon_item(ui, "Settings", theme::icon::gear).clicked() {
                     self.open_settings(SettingsTab::Notifications);
                 }
-                if menu_item(ui, false, "Usage").clicked() {
+                if menu_icon_item(ui, "Usage", theme::icon::chart).clicked() {
                     self.open_settings(SettingsTab::Usage);
                 }
-                if menu_item(ui, false, "Account page").clicked() {
+                if menu_icon_item(ui, "Account page", theme::icon::user).clicked() {
                     let site = self.cfg.base_url.trim_end_matches("/v1");
                     ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{site}/account")));
                 }
@@ -2588,6 +2588,18 @@ fn menu_item(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
     if selected {
         theme::icon::check(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(18.0, 18.0)), theme::ACCENT);
     }
+    r
+}
+
+/// A menu row with an icon before its text.
+fn menu_icon_item(ui: &mut egui::Ui, text: &str, icon: fn(&egui::Painter, egui::Rect, Color32)) -> egui::Response {
+    let w = ui.available_width().max(140.0);
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(w, 32.0), Sense::click());
+    let color = menu_row_bg(ui, rect, false, r.hovered());
+    icon(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), egui::vec2(20.0, 20.0)), if r.hovered() { color } else { theme::MUTED });
+    let x = rect.left() + 38.0;
+    let g = one_line(ui, text, FontId::proportional(13.5), color, rect.right() - 12.0 - x);
+    ui.painter().galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
     r
 }
 

@@ -152,7 +152,7 @@ fn error_from(mut res: ureq::http::Response<ureq::Body>) -> ApiError {
     let text = res.body_mut().read_to_string().unwrap_or_default();
     let mut message = serde_json::from_str::<Value>(&text)
         .ok()
-        .and_then(|b| b.pointer("/error/message").or_else(|| b.get("message")).and_then(Value::as_str).map(String::from))
+        .and_then(|b| b.pointer("/error/message").or_else(|| b.get("message")).or_else(|| b.get("error")).and_then(Value::as_str).map(String::from))
         .unwrap_or_else(|| if text.is_empty() { format!("HTTP {status}") } else { text.chars().take(500).collect() });
     if status == 401 {
         message += " (check your sign-in or API key)";
@@ -296,9 +296,100 @@ fn list_at(m: &Value, ptr: &str) -> Vec<String> {
 }
 
 /// Up to four decimals, without trailing zeros.
-fn money(usd: f64) -> String {
+pub fn money(usd: f64) -> String {
     let s = format!("{usd:.4}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// How much of a monthly limit is left.
+#[derive(Deserialize, Clone, Debug)]
+pub struct Plan {
+    pub limit: f64,
+    pub left: f64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BankedMoney {
+    pub amount: f64,
+    pub expires_at: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BankedReset {
+    pub expires_at: String,
+}
+
+/// An amount of money per month saved for a user.
+#[derive(Deserialize, Clone, Debug)]
+pub struct Monthly {
+    pub monthly: Option<f64>,
+}
+
+/// A user an admin can change, from the server's list.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedUser {
+    pub username: String,
+    /// "default", "custom" or "unlimited".
+    pub mode: String,
+    /// What applies now; null when unlimited.
+    pub limits: Option<Monthly>,
+    pub cli_monthly: f64,
+    /// The amount set for this user; null means what their plan gets.
+    pub cli_limit: Option<f64>,
+    pub balance: f64,
+    pub banked: f64,
+    pub spent_this_month: f64,
+    pub harness_spent_this_month: f64,
+}
+
+/// What Settings > Usage shows: the account's limits this month, and for admins everyone they can change.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInfo {
+    pub username: String,
+    pub admin: bool,
+    pub resets_at: String,
+    /// None when the account is unlimited.
+    pub money: Option<Plan>,
+    /// None when the account is unlimited.
+    pub cli: Option<Plan>,
+    pub balance: f64,
+    pub banked_money: Vec<BankedMoney>,
+    pub banked_resets: Vec<BankedReset>,
+    #[serde(default)]
+    pub users: Vec<ManagedUser>,
+}
+
+fn usage_url(cfg: &Config) -> String {
+    format!("{}/api/account/usage", cfg.base_url.trim_end_matches("/v1"))
+}
+
+fn usage_reply(res: ureq::http::Response<ureq::Body>) -> Result<UsageInfo, ApiError> {
+    match res.status().as_u16() {
+        200 => res.into_body().read_json().map_err(transport),
+        404 => Err(ApiError::new("This server doesn't have monthly limits yet.", 404)),
+        _ => Err(error_from(res)),
+    }
+}
+
+/// The signed-in account's limits this month.
+pub fn usage_info(cfg: &Config) -> Result<UsageInfo, ApiError> {
+    let res = http().get(&usage_url(cfg)).header("Authorization", &format!("Bearer {}", key(cfg)?)).call().map_err(transport)?;
+    usage_reply(res)
+}
+
+/// Uses a banked reset or, for admins, changes limits and money. Returns the limits afterwards.
+pub fn usage_action(cfg: &Config, body: &Value) -> Result<UsageInfo, ApiError> {
+    let res = http()
+        .post(&usage_url(cfg))
+        .header("Authorization", &format!("Bearer {}", key(cfg)?))
+        .header("x-scoutcode", "1")
+        .send_json(body)
+        .map_err(transport)?;
+    usage_reply(res)
 }
 
 /// The models the key can use, and the username it belongs to when the server says.

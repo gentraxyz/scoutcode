@@ -168,11 +168,74 @@ impl SettingsTab {
     fn keywords(self) -> &'static str {
         match self {
             SettingsTab::Notifications => "notifications alerts taskbar flash toast windows attention",
-            SettingsTab::Usage => "usage tokens cost spend daily chart history",
+            SettingsTab::Usage => "usage tokens cost spend daily monthly limits balance banked reset chart history",
             SettingsTab::Account => "account sign in sign out login key username billing",
             SettingsTab::Updates => "updates version upgrade download restart release notes about",
         }
     }
+}
+
+/// Settings > Usage: the account's limits from the server, and what's typed into the admin forms.
+struct UsagePanel {
+    info: Option<crate::api::UsageInfo>,
+    busy: bool,
+    /// The last result to show: whether it went well, and what happened.
+    message: Option<(bool, String)>,
+    /// The user the admin forms change, and the search that finds them.
+    user: String,
+    search: String,
+    mode: String,
+    monthly: String,
+    cli: String,
+    give_everyone: bool,
+    give_banked: bool,
+    amount: String,
+    expiry_days: String,
+    reset_days: String,
+    /// The everyone-wide button waiting for its second click.
+    confirm: Option<&'static str>,
+}
+
+impl Default for UsagePanel {
+    fn default() -> Self {
+        UsagePanel {
+            info: None,
+            busy: false,
+            message: None,
+            user: String::new(),
+            search: String::new(),
+            mode: "default".into(),
+            monthly: String::new(),
+            cli: String::new(),
+            give_everyone: false,
+            give_banked: false,
+            amount: String::new(),
+            expiry_days: "30".into(),
+            reset_days: "30".into(),
+            confirm: None,
+        }
+    }
+}
+
+impl UsagePanel {
+    /// Puts the chosen user's saved limits in the form.
+    fn fill_limits(&mut self) {
+        let Some(u) = self.info.as_ref().and_then(|i| i.users.iter().find(|u| u.username == self.user)) else { return };
+        self.mode = u.mode.clone();
+        self.monthly = u.limits.as_ref().and_then(|l| l.monthly).map(|m| crate::api::money(m)).unwrap_or_default();
+        self.cli = u.cli_limit.map(|c| crate::api::money(c)).unwrap_or_default();
+    }
+}
+
+/// A USD amount as typed ("1.5", "$2"), or None when it isn't one.
+fn parse_usd(s: &str) -> Option<f64> {
+    s.trim().trim_start_matches('$').parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0)
+}
+
+/// "$0.50", "$12.00", "$0.0015".
+fn usd(v: f64) -> String {
+    let cents = format!("{v:.2}");
+    if cents.parse::<f64>().is_ok_and(|c| (c - v).abs() < 1e-9) { format!("${cents}") } else { format!("${}", crate::api::money(v)) }
 }
 
 #[derive(Default)]
@@ -264,6 +327,7 @@ pub struct App {
     settings_search: String,
     /// Tokens per day, read when Settings opens.
     usage_log: crate::usage::Log,
+    usage: UsagePanel,
     /// The first-run choice of notifications (flash, toast) while it's being made.
     notify_choice: (bool, bool),
     voice: Voice,
@@ -384,6 +448,7 @@ impl App {
             settings_tab: SettingsTab::Notifications,
             settings_search: String::new(),
             usage_log: Default::default(),
+            usage: Default::default(),
             notify_choice: (true, false),
             voice: Voice::Idle,
             updater,
@@ -573,6 +638,20 @@ impl App {
             Ev::Models(Err(e)) => self.status = format!("Could not load models: {e}"),
             Ev::LoginUrl(u) => self.login.url = Some(u),
             Ev::User(u) => self.set_user(Some(u)),
+            Ev::Usage(r, said) => {
+                self.usage.busy = false;
+                match r {
+                    Ok(info) => {
+                        if self.usage.user.is_empty() {
+                            self.usage.user = info.username.clone();
+                        }
+                        self.usage.info = Some(info);
+                        self.usage.fill_limits();
+                        self.usage.message = said.map(|s| (true, s));
+                    }
+                    Err(e) => self.usage.message = Some((false, e)),
+                }
+            }
             Ev::Login(Ok((token, user))) => {
                 config::save_one("apiKey", json!(token));
                 self.set_key(Some(token));
@@ -635,6 +714,7 @@ impl App {
     /// A new key may be someone else's, so the username is dropped until the model list names it.
     fn set_key(&mut self, key: Option<String>) {
         self.set_user(None);
+        self.usage = Default::default();
         self.cfg.api_key = key;
         if let Some(a) = &mut self.agent {
             a.cfg.take_keys(&self.cfg);
@@ -1710,6 +1790,25 @@ impl App {
         self.settings_tab = tab;
         self.settings_search.clear();
         self.usage_log = crate::usage::load();
+        self.usage_request(None);
+    }
+
+    /// Asks the server for the account's limits, after making a change when `change` says what to send and say.
+    fn usage_request(&mut self, change: Option<(Value, String)>) {
+        if self.cfg.api_key.is_none() || self.usage.busy {
+            return;
+        }
+        self.usage.busy = true;
+        self.usage.confirm = None;
+        let cfg = self.cfg.clone();
+        let h = self.hooks.clone();
+        std::thread::spawn(move || {
+            let (r, said) = match change {
+                Some((body, said)) => (crate::api::usage_action(&cfg, &body), Some(said)),
+                None => (crate::api::usage_info(&cfg), None),
+            };
+            h.send(Ev::Usage(r.map_err(|e| e.message), said));
+        });
     }
 
     /// Settings: a large panel in the middle of the window, sections on the left and the open one on the right.
@@ -1826,8 +1925,207 @@ impl App {
         }
     }
 
+    /// What the account has left this month, the resets it can use, and for admins the controls.
+    fn usage_limits(&mut self, ui: &mut egui::Ui) {
+        if self.cfg.api_key.is_none() {
+            ui.label(RichText::new("Sign in to ScoutCode to see your monthly limits.").size(13.0).color(theme::MUTED));
+            ui.add_space(18.0);
+            return;
+        }
+        let mut change: Option<(Value, String)> = None;
+        if let Some(info) = self.usage.info.clone() {
+            let resets = format!("Resets {} UTC", short_date(info.resets_at.get(..10).unwrap_or("")));
+            let banked: f64 = info.banked_money.iter().map(|b| b.amount).sum();
+            let plan = |p: &Option<crate::api::Plan>| p.as_ref().map_or(("Unlimited".to_string(), "Requests are free".to_string()), |p| (usd(p.left), format!("left of {}", usd(p.limit))));
+            let (money, money_sub) = plan(&info.money);
+            let (cli, cli_sub) = plan(&info.cli);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let w = (ui.available_width() - 30.0) / 4.0;
+                stat_tile(ui, w, "CLI credit (browser sign-in)", &cli, &cli_sub);
+                stat_tile(ui, w, "Money (API keys)", &money, &money_sub);
+                stat_tile(ui, w, "Banked", &usd(banked), "Spent next, runs out");
+                stat_tile(ui, w, "Balance", &usd(info.balance), "Spent last, doesn't reset");
+            });
+            ui.add_space(8.0);
+            ui.label(RichText::new(resets).size(12.0).color(theme::DIM));
+            ui.add_space(8.0);
+            for b in &info.banked_money {
+                settings_row(ui, &format!("{} banked", usd(b.amount)), &format!("Expires {} UTC", short_date(b.expires_at.get(..10).unwrap_or(""))), |_| {});
+            }
+            let busy = self.usage.busy;
+            for (i, r) in info.banked_resets.iter().enumerate() {
+                settings_row(ui, "Banked reset", &format!("Clears your spending this month. Expires {} UTC.", short_date(r.expires_at.get(..10).unwrap_or(""))), |ui| {
+                    // The one that runs out soonest goes first, so only the first row has the button.
+                    if i == 0 && ui.add_enabled_ui(!busy, |ui| theme::primary_button(ui, "Use")).inner.clicked() {
+                        change = Some((json!({ "action": "use-banked-reset" }), "Your usage this month is back to zero.".into()));
+                    }
+                });
+            }
+            if info.admin {
+                self.usage_admin(ui, &info, &mut change);
+            }
+        } else if self.usage.busy {
+            ui.add(egui::Spinner::new().size(16.0).color(theme::ACCENT));
+        }
+        if let Some((ok, text)) = &self.usage.message {
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(RichText::new(text).size(13.0).color(if *ok { theme::GREEN } else { theme::RED })).wrap());
+        }
+        ui.add_space(22.0);
+        if change.is_some() {
+            self.usage_request(change);
+        }
+    }
+
+    /// Admin controls: anyone's limits, giving money, and resetting everyone.
+    fn usage_admin(&mut self, ui: &mut egui::Ui, info: &crate::api::UsageInfo, change: &mut Option<(Value, String)>) {
+        let u = &mut self.usage;
+        let field = |ui: &mut egui::Ui, text: &mut String, hint: &str, w: f32| ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(w).margin(egui::Margin::symmetric(12, 9)));
+        let days = |s: &str| s.trim().parse::<u32>().ok().filter(|d| (1..=3650).contains(d));
+        ui.add_space(14.0);
+        theme::section_label(ui, "Admin");
+        ui.add_space(6.0);
+        ui.add_enabled_ui(!u.busy, |ui| {
+            // Who the limits and a single gift are for.
+            ui.label(RichText::new(format!("Changing {}", u.user)).font(theme::bold(13.5)).color(theme::STRONG));
+            ui.add_space(6.0);
+            field(ui, &mut u.search, "Find a user", 260.0);
+            let q = u.search.trim().to_lowercase();
+            if !q.is_empty() {
+                ui.add_space(4.0);
+                let found: Vec<_> = info.users.iter().filter(|m| m.username.contains(&q)).collect();
+                let mut picked = None;
+                for m in found.iter().take(6) {
+                    let line = format!("{}   {} spent, {} CLI, {} balance, {} banked", m.username, usd(m.spent_this_month), usd(m.harness_spent_this_month), usd(m.balance), usd(m.banked));
+                    if ui.selectable_label(m.username == u.user, line).clicked() {
+                        picked = Some(m.username.clone());
+                    }
+                }
+                if found.is_empty() {
+                    ui.label(RichText::new("No matching users.").size(12.5).color(theme::DIM));
+                } else if found.len() > 6 {
+                    ui.label(RichText::new(format!("{} more. Keep typing to narrow it down.", found.len() - 6)).size(12.5).color(theme::DIM));
+                }
+                if let Some(name) = picked {
+                    u.user = name;
+                    u.search.clear();
+                    u.fill_limits();
+                }
+            }
+            ui.add_space(12.0);
+
+            ui.label(RichText::new("Limits per month").size(13.0).color(theme::MUTED));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                for (mode, label) in [("default", "Default"), ("custom", "Custom"), ("unlimited", "Unlimited")] {
+                    if ui.radio(u.mode == mode, label).clicked() {
+                        u.mode = mode.into();
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            let plan_cli = info.users.iter().find(|m| m.username == u.user).map_or(0.0, |m| m.cli_monthly);
+            ui.horizontal(|ui| {
+                if u.mode == "custom" {
+                    field(ui, &mut u.monthly, "Money per month, USD", 180.0);
+                }
+                field(ui, &mut u.cli, &format!("CLI credit (now {})", usd(plan_cli)), 180.0);
+                if theme::primary_button(ui, "Save limits").clicked() {
+                    let monthly = parse_usd(&u.monthly);
+                    let cli = u.cli.trim();
+                    let cli_value = parse_usd(cli);
+                    if u.mode == "custom" && monthly.is_none() {
+                        u.message = Some((false, "Money per month is an amount in USD, like 5 (0 = none).".into()));
+                    } else if !cli.is_empty() && cli_value.is_none() {
+                        u.message = Some((false, "CLI credit is an amount in USD, like 5. Leave it empty for what the plan gets.".into()));
+                    } else {
+                        let limits = if u.mode == "custom" { json!({ "monthly": monthly }) } else { json!(u.mode) };
+                        *change = Some((json!({ "action": "set-limits", "username": u.user, "limits": limits, "cliLimit": cli_value }), format!("Saved the limits for {}.", u.user)));
+                    }
+                }
+            });
+            ui.add_space(14.0);
+
+            ui.label(RichText::new("Give money").size(13.0).color(theme::MUTED));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.radio(!u.give_banked, "Balance").clicked() {
+                    u.give_banked = false;
+                }
+                if ui.radio(u.give_banked, "Banked balance").clicked() {
+                    u.give_banked = true;
+                }
+                ui.add_space(16.0);
+                if ui.radio(!u.give_everyone, format!("To {}", u.user)).clicked() {
+                    u.give_everyone = false;
+                    u.confirm = None;
+                }
+                if ui.radio(u.give_everyone, "To everyone").clicked() {
+                    u.give_everyone = true;
+                    u.confirm = None;
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                field(ui, &mut u.amount, "Amount, USD", 140.0);
+                if u.give_banked {
+                    field(ui, &mut u.expiry_days, "Expires in days", 140.0);
+                }
+                let label = if u.confirm == Some("give") { "Confirm: give to everyone" } else { "Give" };
+                if theme::primary_button(ui, label).clicked() {
+                    match (parse_usd(&u.amount).filter(|a| *a > 0.0), days(&u.expiry_days)) {
+                        (None, _) => u.message = Some((false, "The amount is in USD and more than $0, like 5.".into())),
+                        (_, None) if u.give_banked => u.message = Some((false, "The expiry is a whole number of days, from 1 to 3650.".into())),
+                        _ if u.give_everyone && u.confirm != Some("give") => u.confirm = Some("give"),
+                        (Some(amount), d) => {
+                            let who = if u.give_everyone { "everyone".to_string() } else { u.user.clone() };
+                            let what = if u.give_banked { "banked balance" } else { "balance" };
+                            let mut body = json!({ "action": if u.give_banked { "give-banked" } else { "give-balance" }, "amount": amount, "expiresInDays": d });
+                            if u.give_everyone {
+                                body["everyone"] = json!(true);
+                            } else {
+                                body["username"] = json!(u.user);
+                            }
+                            *change = Some((body, format!("Gave {who} {} of {what}.", usd(amount))));
+                            u.amount.clear();
+                        }
+                    }
+                }
+            });
+            ui.add_space(10.0);
+
+            let reset_label = if u.confirm == Some("reset") { "Confirm: reset everyone" } else { "Reset usage" };
+            settings_row(ui, "Reset usage", "Everyone's spending this month and free requests today go back to zero. Banked money and balances stay.", |ui| {
+                if theme::secondary_button(ui, reset_label).clicked() {
+                    if u.confirm == Some("reset") {
+                        *change = Some((json!({ "action": "reset-all" }), "Everyone's usage is back to zero.".into()));
+                    } else {
+                        u.confirm = Some("reset");
+                    }
+                }
+            });
+            let banked_label = if u.confirm == Some("banked") { "Confirm: give to everyone" } else { "Banked Reset" };
+            settings_row(ui, "Banked Reset", "Everyone gets one reset of their own to use when they want, before it expires.", |ui| {
+                if theme::secondary_button(ui, banked_label).clicked() {
+                    match days(&u.reset_days) {
+                        None => u.message = Some((false, "The expiry is a whole number of days, from 1 to 3650.".into())),
+                        Some(d) if u.confirm == Some("banked") => {
+                            *change = Some((json!({ "action": "give-banked-reset", "everyone": true, "expiresInDays": d }), format!("Everyone got a banked reset that expires in {d} days.")));
+                        }
+                        Some(_) => u.confirm = Some("banked"),
+                    }
+                }
+                ui.add_space(6.0);
+                field(ui, &mut u.reset_days, "Days", 70.0);
+                ui.label(RichText::new("Expires in days").size(12.5).color(theme::DIM));
+            });
+        });
+    }
+
     fn settings_usage(&mut self, ui: &mut egui::Ui) {
-        settings_heading(ui, "Usage", "Tokens Scout used each day on this PC, from the desktop app and the CLI. Days are UTC, like your daily credit.");
+        settings_heading(ui, "Usage", "What you have left this month, and the tokens Scout used each day on this PC, from the desktop app and the CLI. Days and months are UTC.");
+        self.usage_limits(ui);
         let log = &self.usage_log;
         let sum = |n: usize| crate::usage::last_days(log, n).iter().fold((0u64, 0f64), |(t, c), (_, d)| (t + d.tokens, c + d.cost));
         ui.horizontal(|ui| {
@@ -1852,7 +2150,7 @@ impl App {
         let browser = config::is_sign_in(self.cfg.api_key.as_deref());
         let name = self.cfg.username.clone().unwrap_or_else(|| if self.cfg.api_key.is_some() { "Unknown until the model list loads" } else { "Not signed in" }.into());
         settings_row(ui, "Signed in as", &name, |_| {});
-        let (how, pays) = if browser { ("Browser sign-in", "Uses your daily CLI credit, not your account's money.") } else { ("API key", "Pays from your account's money.") };
+        let (how, pays) = if browser { ("Browser sign-in", "Uses your monthly CLI credit, then any banked money and balance.") } else { ("API key", "Pays from your account's money.") };
         settings_row(ui, how, pays, |_| {});
         settings_row(ui, "Account page", "Keys, balance and billing on scoutcode.dev.", |ui| {
             if theme::secondary_button(ui, "Open").clicked() {
@@ -2679,7 +2977,7 @@ impl App {
                         });
                     }
                 });
-                ui.label(RichText::new("No key needed: uses your account's daily CLI credit.").size(12.0).color(theme::DIM));
+                ui.label(RichText::new("No key needed: uses your account's monthly CLI credit.").size(12.0).color(theme::DIM));
                 if self.login.busy {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(12.0).color(theme::ACCENT));

@@ -82,6 +82,8 @@ pub enum Ev {
     Models(Result<Vec<ModelInfo>, String>),
     /// The account the key belongs to, from the model list.
     User(String),
+    /// The account's limits for Settings > Usage, and what to say when it follows a change.
+    Usage(Result<crate::api::UsageInfo, String>, Option<String>),
     LoginUrl(String),
     /// The token and, when the server sent it, the username.
     Login(Result<(String, Option<String>), String>),

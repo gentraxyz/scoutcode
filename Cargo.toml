@@ -1,6 +1,6 @@
 [package]
 name = "scout-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Scout: a native desktop coding agent for ScoutCode (scoutcode.dev)"
 license = "UNLICENSED"

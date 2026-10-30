@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub const MODES: [&str; 5] = ["default", "acceptEdits", "auto", "plan", "yolo"];
 pub const EFFORTS: [&str; 4] = ["none", "low", "medium", "high"];
 pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
+pub const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1";
 
 pub fn mode_label(mode: &str) -> &'static str {
     match mode {
@@ -23,7 +24,9 @@ pub struct Config {
     pub api_key: Option<String>,
     /// The user's own OpenRouter keys, in the order they're tried. For models on OpenRouter.
     pub openrouter_keys: Vec<OpenRouterKey>,
-    /// Where the chosen model runs: "scoutcode" or "openrouter". The model is that provider's id for it.
+    /// The user's own NVIDIA key, for models on NVIDIA NIM.
+    pub nvidia_key: Option<String>,
+    /// Where the chosen model runs: "scoutcode", "openrouter" or "nvidia". The model is that provider's id for it.
     pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
     pub username: Option<String>,
@@ -119,6 +122,7 @@ pub fn load_config() -> Config {
     let mut cfg = Config {
         api_key: s.get("apiKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         openrouter_keys: saved_openrouter_keys(&s),
+        nvidia_key: s.get("nvidiaKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         provider: str_("provider", "scoutcode"),
         username: s.get("username").and_then(Value::as_str).filter(|u| !u.is_empty()).map(String::from),
         base_url: str_("baseUrl", "https://scoutcode.dev/v1"),
@@ -150,17 +154,24 @@ pub fn load_config() -> Config {
             key: k,
         }];
     }
+    if let Ok(k) = std::env::var("NVIDIA_API_KEY") {
+        cfg.nvidia_key = Some(k);
+    }
     cfg.base_url = cfg.base_url.trim_end_matches('/').to_string();
     cfg
 }
 
 impl Config {
-    /// The same settings pointed at the provider a request goes to: ScoutCode's server, or OpenRouter with its first key.
+    /// The same settings pointed at the provider a request goes to: ScoutCode's server, OpenRouter with its first key,
+    /// or NVIDIA NIM with its key.
     pub fn for_provider(&self, provider: &str) -> Config {
         let mut c = self.clone();
         if provider == "openrouter" {
             c.base_url = OPENROUTER_URL.to_string();
             c.api_key = self.openrouter_keys.first().map(|k| k.key.clone());
+        } else if provider == "nvidia" {
+            c.base_url = NVIDIA_URL.to_string();
+            c.api_key = self.nvidia_key.clone();
         }
         c
     }
@@ -177,6 +188,7 @@ impl Config {
     pub fn take_keys(&mut self, other: &Config) {
         self.api_key = other.api_key.clone();
         self.openrouter_keys = other.openrouter_keys.clone();
+        self.nvidia_key = other.nvidia_key.clone();
     }
 }
 

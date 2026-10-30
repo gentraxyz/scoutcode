@@ -8,6 +8,7 @@ mod config;
 mod diff;
 mod dock;
 mod markdown;
+mod mcp;
 mod notify;
 mod oauth;
 mod patch;
@@ -20,6 +21,11 @@ mod usage;
 mod voice;
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "mcp") {
+        mcp::serve_stdio(&args[1..]);
+        return Ok(());
+    }
     if update::run_setup_if_needed() {
         return Ok(());
     }

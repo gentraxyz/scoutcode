@@ -151,8 +151,9 @@ pub fn strip_mode_note(s: &str) -> &str {
     }
 }
 
-/// Kept the same for a whole session so providers can reuse the cached prompt prefix.
-pub fn system_prompt(cwd: &str, edit: crate::tools::EditTool) -> String {
+/// Kept the same for a whole session so providers can reuse the cached prompt prefix. Only switching models changes
+/// it, which voids the cache anyway. `model` is the name the user picked, and a router's says nothing about what's behind it.
+pub fn system_prompt(cwd: &str, edit: crate::tools::EditTool, model: &str) -> String {
     let edit_hint = match edit {
         crate::tools::EditTool::ApplyPatch => "Change files with apply_patch rather than rewriting them with write_file.",
         crate::tools::EditTool::StrReplace => "Prefer edit_file / multi_edit over rewriting whole files.",
@@ -166,6 +167,7 @@ pub fn system_prompt(cwd: &str, edit: crate::tools::EditTool) -> String {
     };
     format!(
         "You are Scout, a coding agent running in the Scout desktop app through ScoutCode. You help with software engineering: fixing bugs, adding features, refactoring, explaining code and running commands.
+You are running as the model \"{model}\". If asked which model you are, give that name.
 
 # How to work
 - Understand before changing: search with grep/glob and read the relevant files first. Never edit a file you have not read.
@@ -230,7 +232,8 @@ mod tests {
         std::fs::write(dir.join("AGENTS.md"), "agent rules").unwrap();
         std::fs::write(dir.join("CLAUDE.md"), "agent rules").unwrap();
         std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
-        let p = super::system_prompt(&dir.to_string_lossy(), crate::tools::EditTool::StrReplace);
+        let p = super::system_prompt(&dir.to_string_lossy(), crate::tools::EditTool::StrReplace, "Test Model");
+        assert!(p.contains("running as the model \"Test Model\""), "{p}");
         assert!(p.contains("scout rules") && p.contains("agent rules"), "{p}");
         // CLAUDE.md is the same text as AGENTS.md, so it's in once.
         assert_eq!(p.matches("agent rules").count(), 1);

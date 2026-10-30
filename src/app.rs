@@ -118,6 +118,7 @@ enum ModelTab {
     Starred,
     ScoutCode,
     OpenRouter,
+    Nvidia,
 }
 
 /// The @ file picker under the cursor: where the "@word" starts and ends (in chars) and the text after the @.
@@ -149,17 +150,19 @@ enum SettingsTab {
     Notifications,
     Usage,
     Account,
+    Chatbots,
     Updates,
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 4] = [SettingsTab::Notifications, SettingsTab::Usage, SettingsTab::Account, SettingsTab::Updates];
+    const ALL: [SettingsTab; 5] = [SettingsTab::Notifications, SettingsTab::Usage, SettingsTab::Account, SettingsTab::Chatbots, SettingsTab::Updates];
 
     fn title(self) -> &'static str {
         match self {
             SettingsTab::Notifications => "Notifications",
             SettingsTab::Usage => "Usage",
             SettingsTab::Account => "Account",
+            SettingsTab::Chatbots => "Chatbots",
             SettingsTab::Updates => "Updates",
         }
     }
@@ -170,6 +173,7 @@ impl SettingsTab {
             SettingsTab::Notifications => "notifications alerts taskbar flash toast windows attention",
             SettingsTab::Usage => "usage tokens cost spend daily monthly limits balance banked reset chart history",
             SettingsTab::Account => "account sign in sign out login key username billing",
+            SettingsTab::Chatbots => "chatbots mcp connector link claude chatgpt cursor tools server",
             SettingsTab::Updates => "updates version upgrade download restart release notes about",
         }
     }
@@ -244,6 +248,8 @@ struct Login {
     /// The OpenRouter key being typed, and the name it's saved under.
     or_key: String,
     or_name: String,
+    /// The NVIDIA key being typed.
+    nv_key: String,
     busy: bool,
     url: Option<String>,
     error: Option<String>,
@@ -271,7 +277,7 @@ pub struct App {
     totals: Totals,
     context: u64,
     models: Vec<ModelInfo>,
-    /// The model id to send, for `provider` ("scoutcode" or "openrouter").
+    /// The model id to send, for `provider` ("scoutcode", "openrouter" or "nvidia").
     model: String,
     provider: String,
     /// The model menu's tab: starred models, or one provider's. Picking a row in a provider's tab runs it there.
@@ -322,6 +328,13 @@ pub struct App {
     find: Find,
     /// The message being edited: its item and the new text.
     editing: Option<(usize, String)>,
+    /// The link that lets web chatbots use Scout, while it's on. It stays off until turned on each run.
+    link: Option<crate::mcp::Link>,
+    link_mode: String,
+    link_status: String,
+    /// The chatbot's latest tool calls.
+    link_log: Vec<String>,
+    link_permission: Option<PendingPermission>,
     settings_open: bool,
     settings_tab: SettingsTab,
     settings_search: String,
@@ -384,6 +397,7 @@ impl App {
             effort: Mutex::new(cfg.effort.clone()),
             cancel: Default::default(),
             edit_tools: Default::default(),
+            model_names: Default::default(),
             steer: Default::default(),
         });
         let cwd = initial_cwd();
@@ -444,6 +458,11 @@ impl App {
             deleting: None,
             find: Find::default(),
             editing: None,
+            link: None,
+            link_mode: "default".into(),
+            link_status: String::new(),
+            link_log: vec![],
+            link_permission: None,
             settings_open: false,
             settings_tab: SettingsTab::Notifications,
             settings_search: String::new(),
@@ -467,7 +486,7 @@ impl App {
         self.cwd.clone()
     }
 
-    /// Loads the ScoutCode and OpenRouter lists, whichever keys are saved, and merges them.
+    /// Loads the ScoutCode, OpenRouter and NIM lists, whichever keys are saved, and merges them.
     fn fetch_models(&self) {
         let cfg = self.cfg.clone();
         let h = self.hooks.clone();
@@ -501,11 +520,18 @@ impl App {
             if let Some(e) = failed {
                 errors.push(format!("OpenRouter: {e}"));
             }
-            let asked = cfg.api_key.is_some() as usize + (!cfg.openrouter_keys.is_empty()) as usize;
+            let mut nvidia = vec![];
+            if cfg.nvidia_key.is_some() {
+                match crate::api::list_nvidia(&cfg) {
+                    Ok(models) => nvidia = models,
+                    Err(e) => errors.push(format!("NVIDIA NIM: {}", e.message)),
+                }
+            }
+            let asked = cfg.api_key.is_some() as usize + (!cfg.openrouter_keys.is_empty()) as usize + cfg.nvidia_key.is_some() as usize;
             if asked > 0 && errors.len() == asked {
                 h.send(Ev::Models(Err(errors.join("; "))));
             } else {
-                h.send(Ev::Models(Ok(crate::api::merge_models(scout, openrouter))));
+                h.send(Ev::Models(Ok(crate::api::merge_models(scout, openrouter, nvidia))));
             }
         });
     }
@@ -631,8 +657,9 @@ impl App {
                 }
             }
             Ev::Models(Ok(m)) => {
-                // The agent picks each model's edit tools from these, under the id it sends on either provider.
-                *self.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).map(move |id| (id, m.edit_tool))).collect();
+                // The agent picks each model's edit tools from these, under the id it sends on any provider.
+                *self.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).map(move |id| (id, m.edit_tool))).collect();
+                *self.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).map(move |id| (id, m.label()))).collect();
                 self.models = m;
             }
             Ev::Models(Err(e)) => self.status = format!("Could not load models: {e}"),
@@ -661,6 +688,22 @@ impl App {
             Ev::Login(Err(e)) => {
                 self.login.busy = false;
                 self.login.error = Some(e);
+            }
+            Ev::Link(crate::mcp::LinkEvent::Status(s)) => self.link_status = s,
+            Ev::Link(crate::mcp::LinkEvent::Call(c)) => {
+                self.link_log.push(c);
+                if self.link_log.len() > 8 {
+                    self.link_log.remove(0);
+                }
+            }
+            Ev::Link(crate::mcp::LinkEvent::Ask(req, reply)) => {
+                self.alert("A chatbot wants to use Scout", req.label.lines().next().unwrap_or(""));
+                self.link_permission = Some(PendingPermission { req, reply, feedback: String::new() });
+            }
+            Ev::Link(crate::mcp::LinkEvent::Ended(s)) => {
+                self.link = None;
+                self.link_permission = None;
+                self.link_status = s;
             }
             Ev::Voice(crate::voice::Update::Busy(s)) => self.voice = Voice::Busy(s),
             Ev::Voice(crate::voice::Update::Done(r)) => {
@@ -736,6 +779,19 @@ impl App {
         let removed = keys.is_empty();
         self.cfg.openrouter_keys = keys;
         if removed && self.provider == "openrouter" {
+            self.choose_model("auto", "scoutcode");
+        }
+        if let Some(a) = &mut self.agent {
+            a.cfg.take_keys(&self.cfg);
+        }
+        self.fetch_models();
+    }
+
+    /// Saves or forgets the NVIDIA key. Without one, a model that ran on NIM moves back to ScoutCode.
+    fn save_nvidia_key(&mut self, key: Option<String>) {
+        config::save_one("nvidiaKey", json!(key));
+        self.cfg.nvidia_key = key;
+        if self.cfg.nvidia_key.is_none() && self.provider == "nvidia" {
             self.choose_model("auto", "scoutcode");
         }
         if let Some(a) = &mut self.agent {
@@ -1473,7 +1529,7 @@ impl App {
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(10.0);
             let browser = config::is_sign_in(self.cfg.api_key.as_deref());
-            let name = self.cfg.username.clone().unwrap_or_else(|| if browser { "Signed in" } else if self.cfg.api_key.is_none() { "OpenRouter key" } else { "API key" }.to_string());
+            let name = self.cfg.username.clone().unwrap_or_else(|| if browser { "Signed in" } else if self.cfg.api_key.is_some() { "API key" } else if self.cfg.openrouter_keys.is_empty() { "NVIDIA key" } else { "OpenRouter key" }.to_string());
             let r = profile_row(ui, &name);
             egui::Popup::menu(&r).width(r.rect.width()).align(egui::RectAlign::TOP_START).show(|ui| {
                 if menu_icon_item(ui, "Settings", theme::icon::gear).clicked() {
@@ -1869,6 +1925,7 @@ impl App {
                                 SettingsTab::Notifications => theme::icon::bell,
                                 SettingsTab::Usage => theme::icon::chart,
                                 SettingsTab::Account => theme::icon::user,
+                                SettingsTab::Chatbots => theme::icon::chat,
                                 SettingsTab::Updates => theme::icon::download,
                             };
                             if settings_nav(ui, self.settings_tab == tab, tab.title(), icon).clicked() {
@@ -1894,6 +1951,7 @@ impl App {
                                 SettingsTab::Notifications => self.settings_notifications(ui),
                                 SettingsTab::Usage => self.settings_usage(ui),
                                 SettingsTab::Account => self.settings_account(ui),
+                                SettingsTab::Chatbots => self.settings_chatbots(ui),
                                 SettingsTab::Updates => self.settings_updates(ui),
                             }
                         });
@@ -2163,6 +2221,7 @@ impl App {
             sign_out = theme::secondary_button(ui, "Sign out").clicked();
         });
         if sign_out {
+            self.stop_link("Off.");
             config::save_one("apiKey", Value::Null);
             self.set_key(None);
             self.settings_open = false;
@@ -2210,6 +2269,157 @@ impl App {
             let key = std::mem::take(&mut self.login.or_key).trim().to_string();
             let name = std::mem::take(&mut self.login.or_name).trim().to_string();
             self.add_openrouter_key(name, key);
+        }
+        ui.add_space(22.0);
+        theme::section_label(ui, "NVIDIA NIM");
+        ui.add_space(6.0);
+        ui.label(RichText::new("Saved on this PC, for the CLI too. Models on NVIDIA NIM use your NVIDIA account.").size(12.5).color(theme::DIM));
+        ui.add_space(8.0);
+        if let Some(k) = self.cfg.nvidia_key.clone() {
+            let mut remove = false;
+            settings_row(ui, "NVIDIA key", &mask_key(&k), |ui| remove = theme::secondary_button(ui, "Remove").clicked());
+            if remove {
+                self.save_nvidia_key(None);
+            }
+        } else {
+            let width = ui.available_width().min(420.0);
+            if let Some(k) = self.nvidia_entry(ui, width) {
+                self.save_nvidia_key(Some(k));
+            }
+        }
+    }
+
+    fn stop_link(&mut self, status: &str) {
+        if let Some(l) = self.link.take() {
+            l.stop();
+        }
+        self.link_permission = None;
+        self.link_status = status.to_string();
+    }
+
+    fn settings_chatbots(&mut self, ui: &mut egui::Ui) {
+        settings_heading(ui, "Chatbots", "Let a chatbot use Scout's tools on this computer over MCP: its model does the thinking, and it can reach the files and shell here, in the folder you choose. Nothing is spent on ScoutCode.");
+        theme::section_label(ui, "Web chatbots, like claude.ai and ChatGPT");
+        ui.add_space(6.0);
+        let on = self.link.is_some();
+        let cwd = self.link.as_ref().map(|l| l.cwd.clone()).unwrap_or_else(|| self.cwd.clone());
+        settings_row(ui, "Folder", if cwd.is_empty() { "Open a project first." } else { &cwd }, |_| {});
+        let mode_text = config::mode_label(&self.link_mode);
+        let mut mode = self.link_mode.clone();
+        settings_row(ui, "What it may do without asking", "The rest waits for your OK here. Turn the link off and on to change this.", |ui| {
+            ui.add_enabled_ui(!on, |ui| {
+                egui::ComboBox::from_id_salt("link_mode").selected_text(mode_text).show_ui(ui, |ui| {
+                    for m in config::MODES {
+                        ui.selectable_value(&mut mode, m.to_string(), config::mode_label(m));
+                    }
+                });
+            });
+        });
+        self.link_mode = mode;
+        let mut toggle = false;
+        let can_link = self.cfg.api_key.is_some() && !cwd.is_empty();
+        let status = if !self.link_status.is_empty() {
+            self.link_status.as_str()
+        } else if self.cfg.api_key.is_none() {
+            "This goes through your ScoutCode account, so sign in first."
+        } else {
+            "Off."
+        };
+        settings_row(ui, "Link", status, |ui| {
+            let text = if on { "Turn off" } else { "Turn on" };
+            if ui.add_enabled(on || can_link, egui::Button::new(RichText::new(text).size(13.5).color(theme::TEXT)).corner_radius(8)).clicked() {
+                toggle = true;
+            }
+        });
+        if toggle {
+            if on {
+                self.stop_link("Off.");
+            } else {
+                let h = self.hooks.clone();
+                self.link_log.clear();
+                self.link_status = "Connecting…".into();
+                self.link = Some(crate::mcp::start_link(&self.cfg, &cwd, &self.link_mode, move |e| h.send(Ev::Link(e))));
+            }
+        }
+        if self.link_mode == "yolo" {
+            ui.add_space(4.0);
+            ui.label(RichText::new("Yolo lets the chatbot run any command on this computer without asking.").size(12.5).color(theme::RED));
+        }
+        let address = format!("{}/mcp", self.cfg.base_url);
+        settings_row(ui, "Connector address", &address, |ui| {
+            if theme::secondary_button(ui, "Copy").clicked() {
+                ui.ctx().copy_text(address.clone());
+            }
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new("Add this to the chatbot as a connector and sign in when it asks. Unlink a chatbot from your account page.").size(12.5).color(theme::DIM));
+        if !self.link_log.is_empty() {
+            ui.add_space(10.0);
+            ui.label(RichText::new("Latest calls").size(12.5).color(theme::DIM));
+            for c in self.link_log.iter().rev() {
+                let line: String = c.lines().next().unwrap_or("").chars().take(100).collect();
+                ui.label(RichText::new(line).font(FontId::monospace(12.0)).color(theme::CODE));
+            }
+        }
+        ui.add_space(22.0);
+        theme::section_label(ui, "Chatbot apps on this computer, like Claude Desktop and Cursor");
+        ui.add_space(6.0);
+        ui.label(RichText::new("Add this to the app's MCP settings. It's read-only and can't ask you anything. To allow more, add \"--mode\" and acceptEdits, auto or yolo to args.").size(12.5).color(theme::DIM));
+        ui.add_space(8.0);
+        let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "Scout.exe".into());
+        let snippet = serde_json::to_string_pretty(&json!({"mcpServers": {"scout": {"command": exe, "args": ["mcp", "--cwd", cwd]}}})).unwrap_or_default();
+        markdown::code_block(ui, &snippet);
+        ui.add_space(6.0);
+        if theme::secondary_button(ui, "Copy").clicked() {
+            ui.ctx().copy_text(snippet);
+        }
+    }
+
+    /// A linked chatbot's call that needs the user's OK. Its own window, since it can come while Scout is on something else.
+    fn link_permission_window(&mut self, ctx: &egui::Context) {
+        let Some(p) = &mut self.link_permission else { return };
+        let mut answer = None;
+        egui::Window::new("A chatbot wants to use Scout").collapsible(false).resizable(false).default_width(520.0).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| {
+            if let Some(r) = &p.req.reason {
+                ui.label(RichText::new(format!("Held for review. {r}")).color(theme::RED));
+                ui.add_space(6.0);
+            }
+            ui.label(RichText::new(if p.req.tool == "bash" { "Run this command?" } else { "Make this change?" }).color(theme::MUTED));
+            ui.add_space(4.0);
+            if p.req.tool == "bash" {
+                markdown::code_block(ui, &p.req.label);
+            } else {
+                ui.label(RichText::new(&p.req.label).font(FontId::monospace(13.0)).color(theme::CODE));
+            }
+            if let Some(d) = &p.req.preview {
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| show_display(ui, d));
+            }
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if theme::primary_button(ui, "Allow").clicked() {
+                    answer = Some(PermissionAnswer::Allow);
+                }
+                let always = match (&p.req.prefix, p.req.tool.as_str()) {
+                    (Some(pre), _) => Some(format!("Always allow {pre} here")),
+                    (None, "bash") => None,
+                    _ => Some("Allow all edits while linked".to_string()),
+                };
+                if let Some(a) = always {
+                    if theme::secondary_button(ui, &a).clicked() {
+                        answer = Some(PermissionAnswer::Always);
+                    }
+                }
+                ui.add(egui::TextEdit::singleline(&mut p.feedback).hint_text("or tell the chatbot why not").desired_width(200.0).margin(egui::Margin::symmetric(10, 4)));
+                if theme::ghost_button(ui, "Deny").clicked() {
+                    answer = Some(PermissionAnswer::Deny(p.feedback.trim().to_string()));
+                }
+            });
+        });
+        if let Some(a) = answer {
+            if let Some(p) = self.link_permission.take() {
+                let _ = p.reply.send(a);
+            }
         }
     }
 
@@ -2413,7 +2623,11 @@ impl App {
         let current = self.current_key();
         let label = self.models.iter().find(|m| m.id == current).map(|m| m.label()).unwrap_or_else(|| crate::api::short_id(&self.model));
         let model: String = if label.chars().count() > 26 { format!("{}…", label.chars().take(25).collect::<String>()) } else { label };
-        let hint = if self.provider == "openrouter" { "Model · running on OpenRouter" } else { "Model" };
+        let hint = match self.provider.as_str() {
+            "openrouter" => "Model · running on OpenRouter",
+            "nvidia" => "Model · running on NVIDIA NIM",
+            _ => "Model",
+        };
         let r = chip(ui, &model, theme::MUTED, None, true).on_hover_text(hint);
         // The model row under the pointer, and where it is, for the stats card beside the menu.
         let mut hovered: Option<(String, egui::Rect)> = None;
@@ -2422,9 +2636,14 @@ impl App {
         let just_opened = !self.model_menu_open;
         if just_opened {
             self.model_search.clear();
-            self.model_tab = if self.provider == "openrouter" { ModelTab::OpenRouter } else { ModelTab::ScoutCode };
+            self.model_tab = match self.provider.as_str() {
+                "openrouter" => ModelTab::OpenRouter,
+                "nvidia" => ModelTab::Nvidia,
+                _ => ModelTab::ScoutCode,
+            };
         }
         let has_openrouter = self.models.iter().any(|m| m.openrouter_id.is_some());
+        let has_nvidia = self.models.iter().any(|m| m.nvidia_id.is_some());
         // Pinned to the chip's right edge, which stays put; its left edge moves with the model name's length.
         let shown = egui::Popup::menu(&r)
             .align(egui::RectAlign::TOP_END)
@@ -2435,9 +2654,9 @@ impl App {
                 // The rail: starred models, then a tab per provider.
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
-                    let tabs: &[(ModelTab, &str)] = &[(ModelTab::Starred, "Starred"), (ModelTab::ScoutCode, "ScoutCode"), (ModelTab::OpenRouter, "OpenRouter")];
+                    let tabs: &[(ModelTab, &str)] = &[(ModelTab::Starred, "Starred"), (ModelTab::ScoutCode, "ScoutCode"), (ModelTab::OpenRouter, "OpenRouter"), (ModelTab::Nvidia, "NVIDIA NIM")];
                     for &(tab, tip) in tabs {
-                        if tab == ModelTab::OpenRouter && !has_openrouter {
+                        if (tab == ModelTab::OpenRouter && !has_openrouter) || (tab == ModelTab::Nvidia && !has_nvidia) {
                             continue;
                         }
                         let on = self.model_tab == tab && self.model_search.trim().is_empty();
@@ -2468,7 +2687,8 @@ impl App {
                     let mut scout: Vec<(String, &'static str, String, String)> = vec![];
                     scout.extend(self.models.iter().filter(|m| m.hosted).map(|m| (m.id.clone(), "scoutcode", m.label(), m.id.clone())));
                     let openrouter = self.models.iter().filter_map(|m| m.openrouter_id.as_ref().map(|or| (m.id.clone(), "openrouter", m.label(), or.clone())));
-                    let all: Vec<_> = scout.iter().cloned().chain(openrouter).collect();
+                    let nvidia = self.models.iter().filter_map(|m| m.nvidia_id.as_ref().map(|nv| (m.id.clone(), "nvidia", m.label(), nv.clone())));
+                    let all: Vec<_> = scout.iter().cloned().chain(openrouter).chain(nvidia).collect();
                     let mut rows: Vec<_> = if !q.is_empty() {
                         // A search looks through every tab.
                         all.into_iter().filter(|(id, _, name, star)| [id, name, star].iter().any(|s| s.to_lowercase().contains(&q))).collect()
@@ -2481,6 +2701,7 @@ impl App {
                             }
                             ModelTab::ScoutCode => scout,
                             ModelTab::OpenRouter => all.into_iter().filter(|r| r.1 == "openrouter").collect(),
+                            ModelTab::Nvidia => all.into_iter().filter(|r| r.1 == "nvidia").collect(),
                         }
                     };
                     // Starred first within a provider's tab too.
@@ -2492,9 +2713,13 @@ impl App {
                     egui::ScrollArea::vertical().id_salt("models").max_height(400.0).auto_shrink([false, false]).show(ui, |ui| {
                         for (id, provider, text, star_key) in &rows {
                             let starred = self.starred.contains(star_key);
-                            let free = self.models.iter().any(|m| m.id == *id && m.free) || star_key.ends_with(":free");
-                            let selected = current == *id && (self.provider == "openrouter") == (*provider == "openrouter");
-                            let (row, star) = model_item(ui, selected, starred, free, text, provider);
+                            let info = self.models.iter().find(|m| m.id == *id);
+                            // NIM's list has no prices, and what another provider charges says nothing about it.
+                            let on_nvidia = *provider == "nvidia";
+                            let free = !on_nvidia && (info.is_some_and(|m| m.free) || star_key.ends_with(":free"));
+                            let tier = info.filter(|_| !on_nvidia).and_then(|m| if *provider == "openrouter" && m.hosted { m.openrouter_tier } else { m.tier });
+                            let selected = current == *id && self.provider == *provider;
+                            let (row, star) = model_item(ui, selected, starred, free, tier, text, provider);
                             if row.hovered() || star.hovered() {
                                 hovered = Some((id.clone(), row.rect));
                             }
@@ -2950,9 +3175,15 @@ impl App {
         }
     }
 
+    /// Scrolls, because the card is taller than a small window.
     fn login_screen(&mut self, ui: &mut egui::Ui) {
+        let height = ui.available_height();
+        egui::ScrollArea::vertical().id_salt("login").auto_shrink([false, false]).show(ui, |ui| self.login_content(ui, height));
+    }
+
+    fn login_content(&mut self, ui: &mut egui::Ui, height: f32) {
         ui.vertical_centered(|ui| {
-            ui.add_space((ui.available_height() * 0.5 - 250.0).max(24.0));
+            ui.add_space((height * 0.5 - 250.0).max(24.0));
             let (rect, _) = ui.allocate_exact_size(egui::vec2(52.0, 52.0), Sense::hover());
             theme::icon::logo(ui.painter(), rect);
             ui.add_space(18.0);
@@ -3022,7 +3253,13 @@ impl App {
                 if let Some(k) = self.openrouter_entry(ui, 360.0) {
                     self.add_openrouter_key("OpenRouter".into(), k);
                 }
+                ui.add_space(14.0);
+                ui.label(RichText::new("or use your NVIDIA NIM key").size(11.5).color(theme::DIM));
+                if let Some(k) = self.nvidia_entry(ui, 360.0) {
+                    self.save_nvidia_key(Some(k));
+                }
             });
+            ui.add_space(24.0);
         });
     }
 
@@ -3036,6 +3273,22 @@ impl App {
         if save.clicked() {
             let k = self.login.or_key.trim().to_string();
             self.login.or_key.clear();
+            return Some(k);
+        }
+        None
+    }
+
+    /// The NVIDIA key field and its save button. Returns the key when it's saved.
+    fn nvidia_entry(&mut self, ui: &mut egui::Ui, width: f32) -> Option<String> {
+        ui.hyperlink_to(RichText::new("Make a key at build.nvidia.com").size(12.5).color(theme::ACCENT), "https://build.nvidia.com");
+        ui.add_space(6.0);
+        ui.add(egui::TextEdit::singleline(&mut self.login.nv_key).password(true).hint_text("nvapi-…").desired_width(width).margin(egui::Margin::symmetric(12, 9)));
+        ui.add_space(6.0);
+        let ready = !self.login.nv_key.trim().is_empty();
+        let save = ui.add_enabled(ready, egui::Button::new(RichText::new("Save NVIDIA key").size(13.5)).corner_radius(10).min_size(egui::vec2(width, 36.0)));
+        if save.clicked() {
+            let k = self.login.nv_key.trim().to_string();
+            self.login.nv_key.clear();
             return Some(k);
         }
         None
@@ -3095,7 +3348,9 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.cfg.api_key.is_none() && self.cfg.openrouter_keys.is_empty() {
+        let ctx = ui.ctx().clone();
+        self.link_permission_window(&ctx);
+        if self.cfg.api_key.is_none() && self.cfg.openrouter_keys.is_empty() && self.cfg.nvidia_key.is_none() {
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::BG)).show(ui, |ui| {
                 drag_region(ui, egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.max_rect().width(), WIN_BTN.y)));
                 self.login_screen(ui)
@@ -3402,9 +3657,9 @@ fn menu_icon_item(ui: &mut egui::Ui, text: &str, icon: fn(&egui::Painter, egui::
     r
 }
 
-/// A model row: the name over where it runs, a FREE tag if it costs nothing, and a star to keep it in the Starred tab.
-/// Returns the row and the star.
-fn model_item(ui: &mut egui::Ui, selected: bool, starred: bool, free: bool, text: &str, provider: &str) -> (egui::Response, egui::Response) {
+/// A model row: the name over where it runs, a FREE tag if it costs nothing or $ to $$$$ for its price tier, and a star
+/// to keep it in the Starred tab. Returns the row and the star.
+fn model_item(ui: &mut egui::Ui, selected: bool, starred: bool, free: bool, tier: Option<u8>, text: &str, provider: &str) -> (egui::Response, egui::Response) {
     let w = ui.available_width().max(140.0);
     let (rect, r) = ui.allocate_exact_size(egui::vec2(w, 44.0), Sense::click());
     let star_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(24.0, 24.0));
@@ -3424,6 +3679,9 @@ fn model_item(ui: &mut egui::Ui, selected: bool, starred: bool, free: bool, text
         p.rect(badge, 4, theme::GREEN.gamma_multiply(0.14), Stroke::new(1.0, theme::GREEN.gamma_multiply(0.55)), egui::StrokeKind::Inside);
         p.text(badge.center(), egui::Align2::CENTER_CENTER, "FREE", theme::bold(9.5), theme::GREEN);
         text_right = badge.left() - 6.0;
+    } else if let Some(tier) = tier {
+        let price = ui.painter().text(egui::pos2(text_right, rect.center().y), egui::Align2::RIGHT_CENTER, "$".repeat(tier as usize), theme::bold(11.5), theme::MUTED);
+        text_right = price.left() - 6.0;
     }
     let g = one_line(ui, text, theme::bold(13.5), color, text_right - x);
     ui.painter().galley(egui::pos2(x, rect.top() + 6.0), g, theme::TEXT);
@@ -3432,6 +3690,9 @@ fn model_item(ui: &mut egui::Ui, selected: bool, starred: bool, free: bool, text
     let name = if provider == "openrouter" {
         theme::icon::openrouter(ui.painter(), icon, theme::DIM);
         "OpenRouter"
+    } else if provider == "nvidia" {
+        theme::icon::nvidia(ui.painter(), icon, theme::DIM);
+        "NVIDIA NIM"
     } else {
         theme::icon::logo(ui.painter(), icon.shrink(0.5));
         "ScoutCode"
@@ -3460,6 +3721,7 @@ fn rail_tab(ui: &mut egui::Ui, on: bool, tip: &str, tab: ModelTab) -> egui::Resp
         ModelTab::Starred => theme::icon::star(p, egui::Rect::from_center_size(rect.center(), egui::vec2(30.0, 30.0)), c, true),
         ModelTab::ScoutCode => theme::icon::logo(p, icon),
         ModelTab::OpenRouter => theme::icon::openrouter(p, icon, c),
+        ModelTab::Nvidia => theme::icon::nvidia(p, icon, c),
     }
     r
 }
@@ -3482,16 +3744,12 @@ fn model_card(ctx: &egui::Context, m: &ModelInfo, menu: egui::Rect, row: egui::R
                 ui.add(egui::Label::new(RichText::new(d).size(12.5).color(theme::MUTED)).wrap());
             }
             let caps: Vec<&str> = [(m.tools, "Tools"), (m.vision, "Vision")].into_iter().filter_map(|(on, s)| (on == Some(true)).then_some(s)).collect();
-            let runs_on = match (m.hosted, m.openrouter_id.is_some()) {
-                (true, true) => "ScoutCode or OpenRouter",
-                (true, false) => "ScoutCode",
-                _ => "OpenRouter",
-            };
+            let runs_on = [(m.hosted, "ScoutCode"), (m.openrouter_id.is_some(), "OpenRouter"), (m.nvidia_id.is_some(), "NVIDIA NIM")].into_iter().filter_map(|(on, s)| on.then_some(s)).collect::<Vec<_>>().join(" or ");
             let stats = [
                 ("Context", m.context.map(|n| format!("{} tokens", tokens(n)))),
                 ("Cost", m.cost.clone()),
                 ("Supports", (!caps.is_empty()).then(|| caps.join(" · "))),
-                ("Runs on", Some(runs_on.to_string())),
+                ("Runs on", Some(runs_on)),
                 ("Providers", (!m.providers.is_empty()).then(|| m.providers.join(", "))),
                 ("Tries", (!m.routes_to.is_empty()).then(|| m.routes_to.join(" → "))),
             ];

@@ -404,6 +404,20 @@ pub mod icon {
         }
     }
 
+    /// NVIDIA NIM, as a plain N.
+    pub fn nvidia(p: &Painter, rect: Rect, c: Color32) {
+        let s = rect.width() / 16.0;
+        let at = |x: f32, y: f32| rect.min + vec2(x, y) * s;
+        line(p, &[at(3.0, 13.0), at(3.0, 3.0), at(13.0, 13.0), at(13.0, 3.0)], c, (1.8 * s).max(1.2));
+    }
+
+    /// Chatbots: a speech bubble.
+    pub fn chat(p: &Painter, rect: Rect, c: Color32) {
+        let s = rect.width() / 16.0;
+        let at = |x: f32, y: f32| rect.min + vec2(x, y) * s;
+        line(p, &[at(3.0, 3.0), at(13.0, 3.0), at(13.0, 10.5), at(7.5, 10.5), at(4.5, 13.5), at(4.5, 10.5), at(3.0, 10.5), at(3.0, 3.0)], c, (1.3 * s).max(1.0));
+    }
+
     // Window buttons, drawn thin like Windows' own.
 
     pub fn minimize(p: &Painter, rect: Rect, c: Color32) {

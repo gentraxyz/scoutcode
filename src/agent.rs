@@ -88,6 +88,8 @@ pub enum Ev {
     /// The token and, when the server sent it, the username.
     Login(Result<(String, Option<String>), String>),
     Voice(crate::voice::Update),
+    /// From the link that lets web chatbots use Scout.
+    Link(crate::mcp::LinkEvent),
 }
 
 #[derive(Clone)]
@@ -108,12 +110,14 @@ pub struct Shared {
     pub mode: Mutex<String>,
     /// The id to send to `provider`.
     pub model: Mutex<String>,
-    /// "scoutcode" or "openrouter".
+    /// "scoutcode", "openrouter" or "nvidia".
     pub provider: Mutex<String>,
     pub effort: Mutex<String>,
     pub cancel: AtomicBool,
     /// Each model's edit tool, from /v1/models once the window has the list.
     pub edit_tools: Mutex<HashMap<String, EditTool>>,
+    /// Each model's name, from the same list.
+    pub model_names: Mutex<HashMap<String, String>>,
     /// Messages to add to the running turn at its next step.
     pub steer: Mutex<Vec<Steer>>,
 }
@@ -131,6 +135,11 @@ impl Shared {
     /// The edit tools that suit `model`; str_replace until the server says otherwise.
     pub fn edit_tool(&self, model: &str) -> EditTool {
         self.edit_tools.lock().unwrap().get(model).copied().unwrap_or_default()
+    }
+
+    /// The name `model` goes by in the system prompt; its short id until the list is in, and for auto, which isn't listed.
+    pub fn model_name(&self, model: &str) -> String {
+        self.model_names.lock().unwrap().get(model).cloned().unwrap_or_else(|| crate::api::short_id(model))
     }
 
     pub fn mode(&self) -> String {
@@ -209,7 +218,7 @@ const KEEP_RECENT_RESULTS: usize = 6;
 const CACHE_TTL: Duration = Duration::from_secs(300);
 const STUB: &str = "[Output cleared to save context";
 
-fn cap_output(s: String) -> String {
+pub fn cap_output(s: String) -> String {
     let n = s.chars().count();
     if n <= MAX_TOOL_CHARS {
         return s;
@@ -233,8 +242,10 @@ pub struct Agent {
     pub checkpoints: Vec<Checkpoint>,
     pub todos: Vec<Todo>,
     pub last_prompt_tokens: u64,
+    /// What a refused call is told in plan mode.
+    pub read_only_note: &'static str,
     last_request_at: Option<Instant>,
-    sys: Option<(String, EditTool, Message)>,
+    sys: Option<(String, EditTool, String, Message)>,
     /// The tool list for the edit tool it was built for.
     specs: (EditTool, Vec<Value>),
     read_only_specs: Vec<Value>,
@@ -250,6 +261,7 @@ impl Agent {
             checkpoints: vec![],
             todos: vec![],
             last_prompt_tokens: 0,
+            read_only_note: "Plan mode is read-only. Call present_plan with your plan first.",
             last_request_at: None,
             sys: None,
             specs: (EditTool::StrReplace, tools::specs(None, EditTool::StrReplace)),
@@ -263,12 +275,14 @@ impl Agent {
 
     /// Built once and then sent unchanged, so providers that cache prompt prefixes bill the repeat as cached input.
     fn system(&mut self) -> Message {
-        let edit = self.shared.edit_tool(&self.shared.model.lock().unwrap());
-        if self.sys.as_ref().is_none_or(|(cwd, e, _)| *cwd != self.session.cwd || *e != edit) {
-            let msg = Message::System { content: prompt::system_prompt(&self.session.cwd, edit) };
-            self.sys = Some((self.session.cwd.clone(), edit, msg));
+        let model = self.shared.model.lock().unwrap().clone();
+        let edit = self.shared.edit_tool(&model);
+        let name = self.shared.model_name(&model);
+        if self.sys.as_ref().is_none_or(|(cwd, e, n, _)| *cwd != self.session.cwd || *e != edit || *n != name) {
+            let msg = Message::System { content: prompt::system_prompt(&self.session.cwd, edit, &name) };
+            self.sys = Some((self.session.cwd.clone(), edit, name, msg));
         }
-        self.sys.as_ref().unwrap().2.clone()
+        self.sys.as_ref().unwrap().3.clone()
     }
 
     fn add_usage(&mut self, r: &StreamResult, main: bool, h: &Hooks) {
@@ -327,7 +341,8 @@ impl Agent {
                 tools: Some(tools),
                 tool_choice_none: no_tools,
                 temperature: self.cfg.temperature,
-                effort: Some(effort.as_str()),
+                // ScoutCode and OpenRouter drop it for models without it; NIM isn't known to.
+                effort: (provider != "nvidia").then_some(effort.as_str()),
             };
             // Whether any of the answer has been shown: once it has, another key would repeat it, so it isn't retried.
             let shown = Cell::new(false);
@@ -388,7 +403,7 @@ impl Agent {
             return PermissionAnswer::Allow;
         }
         if mode == "plan" {
-            return PermissionAnswer::Deny("Plan mode is read-only. Call present_plan with your plan first.".into());
+            return PermissionAnswer::Deny(self.read_only_note.into());
         }
         if perm == Permission::Edit && mode == "acceptEdits" {
             return PermissionAnswer::Allow;
@@ -443,7 +458,7 @@ impl Agent {
         answer
     }
 
-    fn run_tool(&mut self, call: &ToolCall, h: &Hooks) -> ToolResult {
+    pub fn run_tool(&mut self, call: &ToolCall, h: &Hooks) -> ToolResult {
         let name = call.function.name.as_str();
         let id = call.id.clone();
         let Ok(args) = serde_json::from_str::<Value>(if call.function.arguments.is_empty() { "{}" } else { &call.function.arguments }) else {
@@ -559,8 +574,8 @@ impl Agent {
     /// A read-only agent with its own context. Its tool calls show as status lines.
     fn run_subagent(&mut self, description: &str, task: &str, h: &Hooks) -> Result<String, ApiError> {
         let mut messages = vec![Message::System { content: prompt::subagent_prompt(&self.session.cwd) }, Message::User { content: Content::Text(task.into()) }];
-        // A browser sign-in may only use the approved models, which the sub-agent model may not be, and OpenRouter has
-        // none of ours; use the session's model for both.
+        // A browser sign-in may only use the approved models, which the sub-agent model may not be, and OpenRouter and
+        // NIM have none of ours; use the session's model for those.
         let on_scout = *self.shared.provider.lock().unwrap() == "scoutcode";
         let model = (on_scout && !config::is_sign_in(self.cfg.api_key.as_deref()) && !self.cfg.subagent_model.is_empty()).then(|| self.cfg.subagent_model.clone());
         let cwd = self.session.cwd.clone();
@@ -984,6 +999,7 @@ mod tests {
             effort: Mutex::new("low".into()),
             cancel: AtomicBool::new(false),
             edit_tools: Default::default(),
+            model_names: Default::default(),
             steer: Default::default(),
         });
         let mut agent = Agent::new(cfg.clone(), crate::session::new_session(&cwd, &cfg.model), shared);
@@ -1014,7 +1030,7 @@ mod tests {
         std::fs::write(&a, "v2").unwrap();
         std::fs::write(&b, "made in turn two").unwrap();
         let cwd = dir.to_string_lossy().to_string();
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&cwd, "m"), shared);
         let edit = |id: &str| Message::Assistant {
             content: None,

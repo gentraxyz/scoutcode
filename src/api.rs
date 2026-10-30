@@ -152,7 +152,7 @@ fn error_from(mut res: ureq::http::Response<ureq::Body>) -> ApiError {
     let text = res.body_mut().read_to_string().unwrap_or_default();
     let mut message = serde_json::from_str::<Value>(&text)
         .ok()
-        .and_then(|b| b.pointer("/error/message").or_else(|| b.get("message")).or_else(|| b.get("error")).and_then(Value::as_str).map(String::from))
+        .and_then(|b| b.pointer("/error/message").or_else(|| b.get("message")).or_else(|| b.get("error")).or_else(|| b.get("detail")).and_then(Value::as_str).map(String::from))
         .unwrap_or_else(|| if text.is_empty() { format!("HTTP {status}") } else { text.chars().take(500).collect() });
     if status == 401 {
         message += " (check your sign-in or API key)";
@@ -184,10 +184,25 @@ pub struct ModelInfo {
     pub edit_tool: crate::tools::EditTool,
     /// The id OpenRouter knows it by, when OpenRouter serves it too. Set for OpenRouter's own entries as well.
     pub openrouter_id: Option<String>,
-    /// ScoutCode serves it, from our own model list. False for models that are only on OpenRouter.
+    /// The id NVIDIA NIM knows it by, when NIM serves it too. Set for NIM's own entries as well.
+    pub nvidia_id: Option<String>,
+    /// ScoutCode serves it, from our own model list. False for models that are only on OpenRouter or NIM.
     pub hosted: bool,
     /// Costs nothing on the route that reports it (no per-token price, or OpenRouter's ":free" variants).
     pub free: bool,
+    /// How expensive it is, from 1 ($) to 4 ($$$$), on ScoutCode or for OpenRouter's own entries. None when it's free or varies.
+    pub tier: Option<u8>,
+    /// The same on OpenRouter, for a model both serve.
+    pub openrouter_tier: Option<u8>,
+}
+
+/// The price tier for USD per million tokens, on the server's scale: what 10k tokens in and 1k out cost. None when free or unknown.
+fn price_tier(input: f64, output: f64) -> Option<u8> {
+    if input < 0.0 || output < 0.0 || input + output == 0.0 {
+        return None;
+    }
+    let usd = (input * 10_000.0 + output * 1_000.0) / 1e6;
+    Some(if usd < 0.01 { 1 } else if usd < 0.05 { 2 } else if usd < 0.2 { 3 } else { 4 })
 }
 
 impl ModelInfo {
@@ -201,6 +216,7 @@ impl ModelInfo {
             (Some(i), Some(o)) => Some(format!("${} in · ${} out / M tokens", money(i), money(o))),
             _ => None,
         });
+        let tier = m.get("price_tier").and_then(Value::as_u64).map(|t| t as u8).or_else(|| price_tier(per_m("prompt")?, per_m("completion")?));
         let inputs = list_at(m, "/architecture/input_modalities");
         let params: Vec<String> = list("supported_parameters");
         let free = s("id").is_some_and(|id| id.ends_with(":free")) || cost.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("free"));
@@ -217,8 +233,11 @@ impl ModelInfo {
             available: m.get("available").and_then(Value::as_bool),
             edit_tool: crate::tools::EditTool::parse(m.get("edit_tool").and_then(Value::as_str).unwrap_or("")),
             openrouter_id: None,
+            nvidia_id: None,
             hosted: false,
             free,
+            tier,
+            openrouter_tier: None,
         })
     }
 
@@ -232,8 +251,8 @@ impl ModelInfo {
 
     /// The id to send for this model to `provider`.
     pub fn request_id(&self, provider: &str) -> &str {
-        match (provider, &self.openrouter_id) {
-            ("openrouter", Some(id)) => id,
+        match (provider, &self.openrouter_id, &self.nvidia_id) {
+            ("openrouter", Some(id), _) | ("nvidia", _, Some(id)) => id,
             _ => &self.id,
         }
     }
@@ -246,9 +265,9 @@ fn match_key(m: &ModelInfo) -> String {
     name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
 }
 
-/// One list from ScoutCode and OpenRouter: a model both serve shows once, on ScoutCode's entry with OpenRouter's id
-/// attached; OpenRouter-only models follow ours.
-pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>) -> Vec<ModelInfo> {
+/// One list from every provider: a model several serve shows once, on the first one's entry with the others' ids
+/// attached; models only one of them serves follow ours.
+pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>, nvidia: Vec<ModelInfo>) -> Vec<ModelInfo> {
     let mut out = scout;
     for o in openrouter {
         let key = match_key(&o);
@@ -257,12 +276,51 @@ pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>) -> Vec<Mo
             Some(i) => {
                 out[i].free |= o.free;
                 out[i].openrouter_id = o.openrouter_id;
+                out[i].openrouter_tier = o.tier;
             }
             None if out.iter().all(|m| m.id != o.id) => out.push(o),
             None => {}
         }
     }
+    for n in nvidia {
+        let key = match_key(&n);
+        let same = out
+            .iter()
+            .position(|m| m.nvidia_id.is_none() && m.id == n.id)
+            .or_else(|| out.iter().position(|m| m.nvidia_id.is_none() && !key.is_empty() && match_key(m) == key));
+        match same {
+            Some(i) => out[i].nvidia_id = n.nvidia_id,
+            None if out.iter().all(|m| m.id != n.id) => out.push(n),
+            None => {}
+        }
+    }
     out
+}
+
+/// Whether NIM's list entry can chat. The list also has embeddings, safety filters, document parsers and so on, with no
+/// field to tell them apart.
+fn nvidia_chat_model(id: &str) -> bool {
+    const NOT_CHAT: [&str; 16] = ["embed", "rerank", "safety", "guard", "parse", "reward", "clip", "detector", "translate", "calibration", "diffusion", "deplot", "kosmos", "fuyu", "neva", "vila"];
+    !NOT_CHAT.iter().any(|w| id.contains(w))
+}
+
+/// NIM's catalog. It's public, so reading it says nothing about the key.
+pub fn list_nvidia(cfg: &Config) -> Result<Vec<ModelInfo>, ApiError> {
+    let nv = cfg.for_provider("nvidia");
+    let res = http()
+        .get(&format!("{}/models", nv.base_url))
+        .header("Authorization", &format!("Bearer {}", key(&nv)?))
+        .call()
+        .map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().read_json().map_err(transport)?;
+    Ok(body
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(ModelInfo::from_json).filter(|m| nvidia_chat_model(&m.id)).map(|m| ModelInfo { nvidia_id: Some(m.id.clone()), ..m }).collect())
+        .unwrap_or_default())
 }
 
 /// OpenRouter's catalog, read with the user's own key.

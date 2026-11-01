@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { act, invoke } from './api';
-import { AdditionalOptions, BrowserEntry, KeyField, NvidiaEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalOptions, BrowserEntry, KeyField, NvidiaEntry, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { Composer, PermissionBody } from './Composer';
 import { Dock } from './Dock';
 import { Settings, restartBlocker } from './Settings';
@@ -38,10 +38,10 @@ function toggleDock(tab: DockTab) {
 
 function UpdatePill() {
   const { status } = useView('updater');
-  const { running } = useView('run');
+  const { anyRunning } = useView('run');
   const dirty = useUi((u) => u.editorDirty);
   if (status.state !== 'ready') return null;
-  const blocker = restartBlocker(running, dirty);
+  const blocker = restartBlocker(anyRunning, dirty);
   return (
     <button type="button" className="button primary pill" disabled={!!blocker} title={blocker ?? `Scout ${status.version} is ready. Your chat reopens after the restart.`} onClick={() => invoke('restart_to_update')}>Restart to update</button>
   );
@@ -52,14 +52,13 @@ function TopBar() {
   const dockOpen = useUi((u) => u.dockOpen);
   const dockTab = useUi((u) => u.dockTab);
   const chat = useView('chat');
-  const { running } = useView('run');
   return (
     <header className="top-bar" data-tauri-drag-region>
       {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
       <b className="chat-title ellipsis" data-tauri-drag-region>{chat.title}</b>
       <span className="grow" data-tauri-drag-region />
       {/* The sidebar shows the folder; without it, the bar does. */}
-      {!sidebar && <button type="button" className="chip" disabled={running} title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button>}
+      {!sidebar && <button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button>}
       <UpdatePill />
       <IconButton icon="panel" tip={dockOpen ? 'Hide panel' : 'Show panel'} active={dockOpen} onClick={() => ui.set({ dockOpen: !dockOpen })} />
       <IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} />
@@ -135,6 +134,9 @@ function Login() {
             <KeyField hint="sk-or-…" button="Save OpenRouter key" onSave={(key) => act('addOpenrouterKey', { name: 'OpenRouter', key })} />
             <Divider>or use your NVIDIA NIM key</Divider>
             <NvidiaEntry />
+            <Divider>or use OpenCode</Divider>
+            <OpencodeEntry />
+            <div className="tiny dim">No account needed for its free models. {OPENCODE_WARNING}</div>
             <Divider>or use your own GitHub Copilot plan</Divider>
             <div className="tiny dim">About 150 MB to install.</div>
             <SignInEntry which="copilot" />

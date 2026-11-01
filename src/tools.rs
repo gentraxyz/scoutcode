@@ -453,6 +453,8 @@ fn view(a: &Value, ctx: &mut Ctx) -> R {
     let real = if meta.is_some() { canon(&abs) } else { abs.clone() };
     let inside = match real.strip_prefix(&root) {
         Ok(r) => r.to_string_lossy().replace('\\', "/"),
+        // The user attached it, which is permission to read it.
+        Err(_) if ctx.read_files.contains(&abs) => abs.to_string_lossy().to_string(),
         Err(_) => return Err(format!("{} is outside the project ({}). view only shows files inside it.", v.path, ctx.cwd)),
     };
     let shown = if inside.is_empty() { ".".to_string() } else { inside };

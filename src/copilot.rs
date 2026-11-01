@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use github_copilot_sdk::tool::ToolHandler;
-use github_copilot_sdk::types::{SessionConfig, SystemMessageConfig};
+use github_copilot_sdk::types::{Attachment, MessageOptions, SessionConfig, SystemMessageConfig};
 use github_copilot_sdk::{CliProgram, Client, ClientOptions, Error, Tool, ToolInvocation, ToolResult};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha512};
@@ -294,7 +294,7 @@ impl Run {
     /// Starts a session with `system` as its whole system prompt and Scout's tools (OpenAI-format `specs`) as its only
     /// ones, and sends `prompt`. Scout asks the user about each tool itself, so the tools skip the runtime's permission
     /// step and anything else the runtime might try is refused.
-    pub fn start(cfg: &Config, model: &str, cwd: &str, system: String, prompt: String, specs: &[Value]) -> Result<Run, String> {
+    pub fn start(cfg: &Config, model: &str, cwd: &str, system: String, prompt: String, images: Vec<(String, String)>, specs: &[Value]) -> Result<Run, String> {
         let token = cfg.copilot_token.clone().ok_or("Sign in to GitHub Copilot under Settings > Account first.")?;
         check_token(&token)?;
         let options = client_options(&token, cwd)?;
@@ -324,7 +324,7 @@ impl Run {
             .with_available_tools(name_list)
             .with_tools(tools);
         let task = rt.spawn(async move {
-            if let Err(e) = drive(options, session, prompt, tx.clone(), commands).await {
+            if let Err(e) = drive(options, session, prompt, images, tx.clone(), commands).await {
                 let _ = tx.send(Msg::Failed { message: e.to_string(), kind: String::new() });
             }
         });
@@ -354,7 +354,7 @@ impl Run {
 }
 
 /// Runs the session until the commands stop, forwarding its events.
-async fn drive(options: ClientOptions, config: SessionConfig, prompt: String, tx: Sender<Msg>, mut commands: mpsc::UnboundedReceiver<Cmd>) -> Result<(), Error> {
+async fn drive(options: ClientOptions, config: SessionConfig, prompt: String, images: Vec<(String, String)>, tx: Sender<Msg>, mut commands: mpsc::UnboundedReceiver<Cmd>) -> Result<(), Error> {
     let client = Client::start(options).await?;
     let session = client.create_session(config).await?;
     let mut events = session.subscribe();
@@ -375,7 +375,8 @@ async fn drive(options: ClientOptions, config: SessionConfig, prompt: String, tx
             }
         }
     });
-    session.send(prompt.as_str()).await?;
+    let attachments = images.into_iter().map(|(mime_type, data)| Attachment::Blob { data, mime_type, display_name: None }).collect();
+    session.send(MessageOptions::new(prompt).with_attachments(attachments)).await?;
     while let Some(c) = commands.recv().await {
         match c {
             Cmd::Send(text) => {
@@ -444,8 +445,17 @@ pub fn list_models(token: &str) -> Vec<(String, String)> {
     .collect()
 }
 
+/// The images of the newest user message, when nothing came after it: they go along with `as_prompt`'s message. Earlier
+/// ones are only named in the text.
+pub fn newest_images(messages: &[Message]) -> Vec<(String, String)> {
+    match messages.last() {
+        Some(Message::User { content }) => content.images(),
+        _ => vec![],
+    }
+}
+
 /// A conversation as the system prompt and one message: the SDK has no way to hand it earlier turns, so they go in as
-/// text, tagged so the model tells them from what's new. Images can't go this way and show as "[image]".
+/// text, tagged so the model tells them from what's new. Images can't go this way: see `newest_images`.
 pub fn as_prompt(messages: &[Message]) -> (String, String) {
     let mut system = String::new();
     let mut lines = vec![];

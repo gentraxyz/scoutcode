@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
 import { act, tokens, type Model } from './api';
-import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, KIRO_NOTE, KeyField, logo, NvidiaEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GrokEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { core, useCore, useView } from './store';
 import { Icon, Link, Popover, Star } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
-type Tab = 'starred' | 'scoutcode' | 'openrouter' | 'nvidia' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'additional';
-const TABS: [Tab, string][] = [['starred', 'Starred'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['additional', 'Additional Providers']];
+type Tab = 'starred' | 'scoutcode' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'additional';
+const TABS: [Tab, string][] = [['starred', 'Starred'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['additional', 'Additional Providers']];
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
 type ModelRow = { key: string; provider: string; name: string; star: string; model: Model };
@@ -23,10 +23,12 @@ function allRows(models: Model[]): ModelRow[] {
   add((m) => (m.hosted ? 'scoutcode' : null), (m) => m.id);
   add((m) => (m.openrouterId ? 'openrouter' : null), (m) => m.openrouterId);
   add((m) => (m.nvidiaId ? 'nvidia' : null), (m) => m.nvidiaId);
+  add((m) => (m.opencodeId ? 'opencode' : null), (m) => m.id);
   add((m) => (m.kiloId ? 'kilo' : null), (m) => m.kiloId);
   add((m) => (m.copilotId ? 'copilot' : null), (m) => m.id);
   add((m) => (m.devinId ? 'devin' : null), (m) => m.id);
   add((m) => (m.kiroId ? 'kiro' : null), (m) => m.id);
+  add((m) => (m.grokId ? 'grok' : null), (m) => m.id);
   add((m) => m.additional?.[0] ?? null, (m) => m.id);
   return rows;
 }
@@ -39,14 +41,14 @@ function runsOn(id: string): string {
 function RailIcon({ tab }: { tab: Tab }) {
   if (tab === 'starred') return <Star on={false} />;
   if (tab === 'additional') return <Icon name="plus" />;
-  const file = { scoutcode: '', openrouter: 'openrouter', nvidia: 'nvidia', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro' }[tab];
+  const file = { scoutcode: '', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok' }[tab];
   if (!file) return <img className="logo" src={scoutLogo} width={16} height={16} alt="" />;
   return <img className="logo" src={logo(file)} width={16} height={16} alt="" />;
 }
 
 function ModelCard({ m, top, left }: { m: Model; top: number; left: number }) {
   const caps = [m.tools && 'Tools', m.vision && 'Vision'].filter(Boolean).join(' · ');
-  const on = [m.hosted && 'ScoutCode', m.openrouterId && 'OpenRouter', m.nvidiaId && 'NVIDIA NIM', m.kiloId && 'Kilo Code', m.additional && runsOn(m.additional[0])].filter(Boolean).join(' or ');
+  const on = [m.hosted && 'ScoutCode', m.openrouterId && 'OpenRouter', m.nvidiaId && 'NVIDIA NIM', m.opencodeId && 'OpenCode', m.kiloId && 'Kilo Code', m.additional && runsOn(m.additional[0])].filter(Boolean).join(' or ');
   const stats: [string, string | null | undefined][] = [
     ['Context', m.context ? `${tokens(m.context)} tokens` : null], ['Cost', m.cost], ['Supports', caps], ['Runs on', on],
     ['Providers', m.providers.join(', ')], ['Tries', m.routesTo.join(' → ')],
@@ -68,7 +70,7 @@ function SignedOut({ tab }: { tab: Tab }) {
   const name = TABS.find(([t]) => t === tab)![1];
   return (
     <div className="stack">
-      <b className="strong">You must sign in to use {name}</b>
+      <b className="strong">{tab === 'opencode' ? 'Set up OpenCode' : `You must sign in to use ${name}`}</b>
       {tab === 'scoutcode' && (
         <>
           <div className="small dim">No key needed: uses your account's monthly desktop credit.</div>
@@ -90,9 +92,11 @@ function SignedOut({ tab }: { tab: Tab }) {
           <NvidiaEntry />
         </>
       )}
+      {tab === 'opencode' && <><div className="small dim">{OPENCODE_NOTE}</div><OpencodeEntry /></>}
       {tab === 'copilot' && <><div className="small dim">{COPILOT_NOTE}</div><SignInEntry which="copilot" /></>}
       {tab === 'devin' && <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>}
       {tab === 'kiro' && <><div className="small dim">{KIRO_NOTE}</div><SignInEntry which="kiro" /></>}
+      {tab === 'grok' && <><div className="small dim">{GROK_NOTE}</div><GrokEntry /></>}
     </div>
   );
 }
@@ -105,12 +109,14 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const loading = useView('modelsLoading');
   const additionalErrors = useView('additionalErrors');
   const kiroError = useView('kiroModelsError');
+  const opencodeError = useView('opencodeModelsError');
+  const grokError = useView('grokModelsError');
   const { kiloWarning, additionalProviders } = useCore((s) => s.statics);
   const [tab, setTab] = useState<Tab>(startTab);
   const [search, setSearch] = useState('');
   const [adding, setAdding] = useState(false);
   const [hover, setHover] = useState<{ m: Model; top: number; left: number } | null>(null);
-  const signedIn = (t: Tab) => ({ scoutcode: cfg.hasKey, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, additional: cfg.additional.length > 0, starred: true, kilo: true })[t];
+  const signedIn = (t: Tab) => ({ scoutcode: cfg.hasKey, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, grok: cfg.grokSignedIn || cfg.grokKey !== null, additional: cfg.additional.length > 0, starred: true, kilo: true })[t];
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => {
     const all = allRows(models);
@@ -138,6 +144,14 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
         <input className="input" autoFocus placeholder="Search models" value={search} onChange={(e) => setSearch(e.target.value)} />
         {tab === 'kilo' && <div className="tiny dim">{kiloWarning}</div>}
         {tab === 'kiro' && cfg.kiro && kiroError && <div className="tiny red">{kiroError}</div>}
+        {tab === 'grok' && signedIn('grok') && grokError && <div className="tiny red">{grokError}</div>}
+        {tab === 'opencode' && cfg.opencode && (
+          <>
+            <div className="tiny dim">{OPENCODE_WARNING}</div>
+            {opencodeError && <div className="tiny red">{opencodeError}</div>}
+            {!cfg.opencodeSignedIn && <SignInEntry which="opencode" />}
+          </>
+        )}
         {tab === 'additional' && !q && (
           <>
             <div className="row">

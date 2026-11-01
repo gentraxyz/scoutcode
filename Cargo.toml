@@ -1,6 +1,6 @@
 [package]
 name = "scout-desktop"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "Scout: a desktop coding agent for ScoutCode (scoutcode.dev)"
 license = "UNLICENSED"
@@ -39,6 +39,10 @@ flate2 = "1"
 tar = "0.4"
 # Devin's CLI comes as a zip on Windows.
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# Attached images are checked, and shrunk when they're too big to send.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# Grok Build's CLI comes compressed with Brotli.
+brotli-decompressor = "5"
 
 [target.'cfg(windows)'.dependencies]
 # For toast notifications.

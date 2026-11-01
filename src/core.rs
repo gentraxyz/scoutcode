@@ -56,10 +56,10 @@ pub struct Outgoing {
     pub files: Vec<String>,
 }
 
-/// Signing in to Copilot, Devin or Kiro, while it's going on.
+/// Signing in to Copilot, Devin, Kiro, OpenCode or Grok, while it's going on.
 #[derive(Default)]
 struct SignIn {
-    /// The code to enter on GitHub, and where. Copilot only.
+    /// The code to enter, and where. Copilot, OpenCode and Grok only.
     code: Option<(String, String)>,
     /// Bytes downloaded so far, of how many.
     progress: (u64, u64),
@@ -84,6 +84,10 @@ struct Login {
     devin_error: Option<String>,
     kiro: Option<SignIn>,
     kiro_error: Option<String>,
+    opencode: Option<SignIn>,
+    opencode_error: Option<String>,
+    grok: Option<SignIn>,
+    grok_error: Option<String>,
     busy: bool,
     url: Option<String>,
     error: Option<String>,
@@ -104,15 +108,16 @@ enum Voice {
     Busy(&'static str),
 }
 
-pub struct Core {
-    handle: AppHandle,
-    cfg: Config,
+/// One chat and whatever Scout is doing in it. Each runs on its own, on screen or not.
+struct Chat {
+    /// What its worker's events are marked with.
+    key: u64,
+    /// The saved chat's id, also while a worker has the agent.
+    session_id: String,
     shared: Arc<Shared>,
     /// None while a worker thread owns it.
     agent: Option<Agent>,
-    hooks: Hooks,
     items: Vec<Item>,
-    next_item: u64,
     /// Items changed since the window last heard, or all of them after a reset.
     changed: BTreeSet<usize>,
     reset: bool,
@@ -126,19 +131,89 @@ pub struct Core {
     todos: Vec<Todo>,
     totals: Totals,
     context: u64,
-    models: Vec<ModelInfo>,
-    models_changed: bool,
     /// The model id to send, for `provider` ("scoutcode", "openrouter", "nvidia" or "kilo").
     model: String,
     provider: String,
-    additional_errors: Vec<String>,
-    /// The additional provider to choose a model on once its list is in: it was linked with nothing else to run on.
-    start_additional: Option<&'static str>,
-    kiro_models_error: Option<String>,
     effort: String,
     permission: Option<PendingPermission>,
     plan: Option<PendingPlan>,
     questions: Option<PendingQuestions>,
+    /// The chat's folder, also while a worker has the agent.
+    cwd: String,
+    /// Messages sent while Scout worked, sent in order once it finishes.
+    queue: Vec<Outgoing>,
+    /// It finished while another chat was on screen.
+    unread: bool,
+}
+
+impl Chat {
+    /// A chat opened on a saved or new conversation, with the settings it starts on.
+    fn new(key: u64, s: Session, cfg: &Config, shared: Arc<Shared>) -> Self {
+        let (model, provider, effort) = (shared.model.lock().unwrap().clone(), shared.provider.lock().unwrap().clone(), shared.effort.lock().unwrap().clone());
+        let (session_id, cwd, totals) = (s.id.clone(), s.cwd.clone(), s.totals.clone());
+        let mut agent = Agent::new(cfg.clone(), s, shared.clone());
+        agent.last_prompt_tokens = 0;
+        Chat {
+            key,
+            session_id,
+            shared,
+            context: agent.context_tokens(),
+            agent: Some(agent),
+            items: vec![],
+            changed: BTreeSet::new(),
+            reset: true,
+            streaming: None,
+            partial: String::new(),
+            tool_index: HashMap::new(),
+            running: false,
+            stopping: false,
+            status: String::new(),
+            todos: vec![],
+            totals,
+            model,
+            provider,
+            effort,
+            permission: None,
+            plan: None,
+            questions: None,
+            cwd,
+            queue: vec![],
+            unread: false,
+        }
+    }
+
+    /// Scout is held up until the user answers.
+    fn waiting(&self) -> bool {
+        self.permission.is_some() || self.plan.is_some() || self.questions.is_some()
+    }
+
+    /// The first thing asked in this chat, as its title.
+    fn title(&self) -> String {
+        let first = self.items.iter().find_map(|i| if let ItemKind::User { text, .. } = &i.kind { Some(text.lines().next().unwrap_or("").trim().to_string()) } else { None });
+        first.filter(|t| !t.is_empty()).unwrap_or_else(|| "New chat".into())
+    }
+}
+
+pub struct Core {
+    handle: AppHandle,
+    cfg: Config,
+    /// The chat on screen.
+    chat: Chat,
+    /// Chats working behind it, and ones that finished there and haven't been opened since.
+    background: Vec<Chat>,
+    /// Handling an event for a chat in `background`, which is in `chat` for as long as that takes.
+    behind: bool,
+    next_chat: u64,
+    hooks: Hooks,
+    next_item: u64,
+    models: Vec<ModelInfo>,
+    models_changed: bool,
+    additional_errors: Vec<String>,
+    /// The additional provider to choose a model on once its list is in: it was linked with nothing else to run on.
+    start_additional: Option<&'static str>,
+    kiro_models_error: Option<String>,
+    opencode_models_error: Option<String>,
+    grok_models_error: Option<String>,
     /// Every saved chat, from every folder; the sidebar groups them by project.
     sessions: Vec<SessionInfo>,
     projects: Vec<config::Project>,
@@ -146,10 +221,6 @@ pub struct Core {
     /// How many model lists are still being fetched.
     models_loading: u32,
     login: Login,
-    /// The open chat's folder, also while a worker has the agent.
-    cwd: String,
-    /// Messages sent while Scout worked, sent in order once it finishes.
-    queue: Vec<Outgoing>,
     skills: Vec<crate::skills::Skill>,
     /// Goes up when Scout may have changed files, so the right panel reloads.
     files_epoch: u64,
@@ -270,8 +341,8 @@ fn permission_json(p: &PendingPermission) -> Value {
 fn model_json(m: &ModelInfo) -> Value {
     json!({
         "id": m.id, "label": m.label(), "description": m.description, "context": m.context, "tools": m.tools, "vision": m.vision, "cost": m.cost,
-        "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id,
-        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id,
+        "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id, "opencodeId": m.opencode_id,
+        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "grokId": m.grok_id,
         "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier,
     })
 }
@@ -337,7 +408,7 @@ fn user_parts(content: &Content) -> (String, Vec<String>) {
 impl Core {
     pub fn new(handle: AppHandle, tx: Sender<Ev>, waker: Waker) -> Self {
         let cfg = config::load_config();
-        let hooks = Hooks { tx, ctx: waker.clone() };
+        let hooks = Hooks { chat: None, tx, ctx: waker.clone() };
         let shared = Arc::new(Shared {
             mode: Mutex::new(if MODES.contains(&cfg.mode.as_str()) { cfg.mode.clone() } else { "default".into() }),
             model: Mutex::new(cfg.model.clone()),
@@ -346,49 +417,34 @@ impl Core {
             cancel: Default::default(),
             edit_tools: Default::default(),
             model_names: Default::default(),
+            no_vision: Default::default(),
             steer: Default::default(),
         });
         let cwd = initial_cwd();
-        let agent = Agent::new(cfg.clone(), session::new_session(&cwd, &cfg.model), shared.clone());
+        let chat = Chat::new(0, session::new_session(&cwd, &cfg.model), &cfg, shared);
         let updater = crate::update::Updater::start(&waker, cfg.auto_update);
         crate::mcp_client::hub().reload(&waker, false);
         let mut core = Core {
             handle,
-            model: cfg.model.clone(),
-            provider: cfg.provider.clone(),
+            chat,
+            background: vec![],
+            behind: false,
+            next_chat: 0,
             additional_errors: vec![],
             start_additional: None,
+            opencode_models_error: None,
+            grok_models_error: None,
             kiro_models_error: None,
-            effort: cfg.effort.clone(),
             projects: cfg.projects.clone(),
             starred: cfg.starred_models.clone(),
             cfg,
-            shared,
-            agent: Some(agent),
             hooks,
-            items: vec![],
             next_item: 0,
-            changed: BTreeSet::new(),
-            reset: true,
-            streaming: None,
-            partial: String::new(),
-            tool_index: HashMap::new(),
-            running: false,
-            stopping: false,
-            status: String::new(),
-            todos: vec![],
-            totals: Totals::default(),
-            context: 0,
             models: vec![],
             models_changed: true,
-            permission: None,
-            plan: None,
-            questions: None,
             sessions: session::list_sessions(),
             models_loading: 0,
             login: Login::default(),
-            cwd: cwd.clone(),
-            queue: vec![],
             link: None,
             skills: crate::skills::list(),
             files_epoch: 0,
@@ -426,19 +482,19 @@ impl Core {
     }
 
     pub fn cwd(&self) -> String {
-        self.cwd.clone()
+        self.chat.cwd.clone()
     }
 
     fn push(&mut self, kind: ItemKind) {
         self.next_item += 1;
-        self.changed.insert(self.items.len());
-        self.items.push(Item { id: self.next_item, kind });
+        self.chat.changed.insert(self.chat.items.len());
+        self.chat.items.push(Item { id: self.next_item, kind });
     }
 
     fn replace_items(&mut self, items: Vec<Item>) {
-        self.items = items;
-        self.reset = true;
-        self.changed.clear();
+        self.chat.items = items;
+        self.chat.reset = true;
+        self.chat.changed.clear();
     }
 
     /// Loads the ScoutCode, OpenRouter, NIM, Kilo and additional providers' lists, whichever are on, and merges them.
@@ -499,7 +555,7 @@ impl Core {
             errors.extend(additional_errors.iter().cloned());
             h.send(Ev::AdditionalErrors(additional_errors));
             let asked = cfg.api_key.is_some() as usize + (!cfg.openrouter_keys.is_empty()) as usize + cfg.nvidia_key.is_some() as usize + cfg.additional.len() + 1;
-            if errors.len() == asked && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled {
+            if errors.len() == asked && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() {
                 h.send(Ev::Models(Err(errors.join("; "))));
             } else {
                 let mut models = crate::api::merge_models(scout, openrouter, nvidia, kilo);
@@ -528,6 +584,28 @@ impl Core {
                     h.send(Ev::KiroModelsError(error));
                     models.extend(listed.into_iter().filter(|(id, _)| id != "auto").map(|(id, name)| kiro(id, name)));
                 }
+                // Its default is always there too: it's what a new session starts on, and needs no list.
+                if cfg.opencode_enabled {
+                    let opencode = |id: String, name: String| ModelInfo { id: format!("opencode/{id}"), name: Some(name), free: crate::opencode::is_free(&id), opencode_id: Some(id), ..Default::default() };
+                    models.push(opencode("auto".into(), "OpenCode Default".into()));
+                    let (listed, error) = match crate::opencode::list_models() {
+                        Ok(listed) => (listed, None),
+                        Err(e) => (vec![], Some(crate::opencode::explain(&e))),
+                    };
+                    h.send(Ev::OpencodeModelsError(error));
+                    models.extend(listed.into_iter().map(|(id, name)| opencode(id, name)));
+                }
+                // The same here.
+                if cfg.grok_on() {
+                    let grok = |id: String, name: String| ModelInfo { id: format!("grok/{id}"), name: Some(name), grok_id: Some(id), ..Default::default() };
+                    models.push(grok("auto".into(), "Grok Default".into()));
+                    let (listed, error) = match crate::grok::list_models() {
+                        Ok(listed) => (listed, None),
+                        Err(e) => (vec![], Some(crate::grok::explain(&e))),
+                    };
+                    h.send(Ev::GrokModelsError(error));
+                    models.extend(listed.into_iter().map(|(id, name)| grok(id, name)));
+                }
                 h.send(Ev::Models(Ok(models)));
             }
         });
@@ -535,15 +613,29 @@ impl Core {
 
     // ---------- events from the workers ----------
 
+    /// Applies a worker's event to its chat. One behind the screen stands in as the current chat while it's handled.
+    fn handle_for(&mut self, key: u64, ev: Ev) {
+        if key == self.chat.key {
+            return self.handle(ev);
+        }
+        let Some(i) = self.background.iter().position(|c| c.key == key) else { return };
+        std::mem::swap(&mut self.chat, &mut self.background[i]);
+        self.behind = true;
+        self.handle(ev);
+        self.behind = false;
+        std::mem::swap(&mut self.chat, &mut self.background[i]);
+    }
+
     pub fn handle(&mut self, ev: Ev) {
         match ev {
+            Ev::ForChat(key, ev) => self.handle_for(key, *ev),
             Ev::RequestStart => {
-                self.streaming = None;
-                self.partial.clear();
-                self.status.clear();
+                self.chat.streaming = None;
+                self.chat.partial.clear();
+                self.chat.status.clear();
             }
             Ev::Text(t) => {
-                self.partial.push_str(&t);
+                self.chat.partial.push_str(&t);
                 if let ItemKind::Assistant { text, .. } = self.assistant_item() {
                     text.push_str(&t);
                 }
@@ -554,72 +646,74 @@ impl Core {
                 }
             }
             Ev::AssistantDone => {
-                self.streaming = None;
-                self.partial.clear();
+                self.chat.streaming = None;
+                self.chat.partial.clear();
             }
             Ev::ToolCall { id, name, label } => {
-                self.streaming = None;
-                self.tool_index.insert(id, self.items.len());
+                self.chat.streaming = None;
+                self.chat.tool_index.insert(id, self.chat.items.len());
                 self.push(ItemKind::Tool { name, label, progress: String::new(), result: None });
             }
             Ev::ToolProgress { id, text } => {
-                if let Some(&i) = self.tool_index.get(&id) {
-                    if let Some(ItemKind::Tool { progress, .. }) = self.items.get_mut(i).map(|i| &mut i.kind) {
+                if let Some(&i) = self.chat.tool_index.get(&id) {
+                    if let Some(ItemKind::Tool { progress, .. }) = self.chat.items.get_mut(i).map(|i| &mut i.kind) {
                         *progress = text;
-                        self.changed.insert(i);
+                        self.chat.changed.insert(i);
                     }
                 }
             }
             Ev::ToolResult { id, result } => {
-                if let Some(&i) = self.tool_index.get(&id) {
-                    if let Some(ItemKind::Tool { name, result: r, .. }) = self.items.get_mut(i).map(|i| &mut i.kind) {
+                if let Some(&i) = self.chat.tool_index.get(&id) {
+                    if let Some(ItemKind::Tool { name, result: r, .. }) = self.chat.items.get_mut(i).map(|i| &mut i.kind) {
                         if matches!(name.as_str(), "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "bash" | "update_memory") {
                             self.files_epoch += 1;
                         }
                         *r = Some(result);
-                        self.changed.insert(i);
+                        self.chat.changed.insert(i);
                     }
                 }
             }
-            Ev::Status(s) => self.status = s,
+            Ev::Status(s) => self.chat.status = s,
             Ev::Notice(s) => self.push(ItemKind::Notice(s)),
-            Ev::Todos(t) => self.todos = t,
+            Ev::Todos(t) => self.chat.todos = t,
             Ev::Totals(t, c) => {
-                self.totals = t;
-                self.context = c;
+                self.chat.totals = t;
+                self.chat.context = c;
             }
             Ev::AskPermission(req, reply) => {
                 let verb = match req.tool.as_str() {
                     "bash" => "run a command",
                     "devin" => "use a Devin tool",
                     "kiro" => "use a Kiro tool",
+                    "opencode" => "use an OpenCode tool",
+                    "grok" => "use a Grok Build tool",
                     t if tools::is_mcp(t) => "use an MCP tool",
                     _ => "change a file",
                 };
                 self.alert(&format!("Scout wants to {verb}"), req.label.lines().next().unwrap_or(""));
-                self.permission = Some(PendingPermission { req, reply });
+                self.chat.permission = Some(PendingPermission { req, reply });
             }
             Ev::AskPlan(text, reply) => {
                 self.alert("Scout's plan is ready", &self.chat_title());
-                self.plan = Some(PendingPlan { text, reply });
+                self.chat.plan = Some(PendingPlan { text, reply });
             }
             Ev::AskQuestions(questions, reply) => {
                 self.alert("Scout has a question", &self.chat_title());
-                self.questions = Some(PendingQuestions { questions, reply });
+                self.chat.questions = Some(PendingQuestions { questions, reply });
             }
             Ev::Steered(msgs) => {
-                self.streaming = None;
+                self.chat.streaming = None;
                 for (text, files) in msgs {
                     self.push(ItemKind::User { text, files });
                 }
             }
             Ev::Finished(mut agent, result) => {
-                let stopped = self.stopping || matches!(&result, Err(e) if e == "Interrupted");
+                let stopped = self.chat.stopping || matches!(&result, Err(e) if e == "Interrupted");
                 let error = result.as_ref().err().filter(|_| !stopped).cloned();
                 let out_of_credit = std::mem::take(&mut agent.out_of_credit) && !stopped;
                 if let Err(e) = result {
                     if stopped {
-                        agent.keep_partial(&self.partial);
+                        agent.keep_partial(&self.chat.partial);
                         self.push(ItemKind::Notice("Interrupted.".into()));
                     } else if out_of_credit {
                         self.push(ItemKind::OutOfCredit(e));
@@ -628,25 +722,30 @@ impl Core {
                     }
                 }
                 // Messages sent to steer that the turn ended before taking go first in the queue.
-                let left: Vec<Steer> = std::mem::take(&mut *self.shared.steer.lock().unwrap());
-                self.queue.splice(0..0, left.into_iter().map(|s| Outgoing { text: s.text, files: s.files }));
-                self.totals = agent.session.totals.clone();
-                self.context = agent.context_tokens();
-                self.sessions = session::list_sessions();
-                self.agent = Some(*agent);
-                self.running = false;
-                self.stopping = false;
-                self.streaming = None;
-                self.partial.clear();
-                self.status.clear();
-                self.permission = None;
-                self.plan = None;
-                self.questions = None;
-                self.focus_epoch += 1;
+                let left: Vec<Steer> = std::mem::take(&mut *self.chat.shared.steer.lock().unwrap());
+                self.chat.queue.splice(0..0, left.into_iter().map(|s| Outgoing { text: s.text, files: s.files }));
+                self.chat.totals = agent.session.totals.clone();
+                self.chat.context = agent.context_tokens();
+                self.chat.agent = Some(*agent);
+                self.chat.running = false;
+                self.chat.stopping = false;
+                self.chat.streaming = None;
+                self.chat.partial.clear();
+                self.chat.status.clear();
+                self.chat.permission = None;
+                self.chat.plan = None;
+                self.chat.questions = None;
+                self.refresh_sessions();
+                // The keyboard stays where the user is typing.
+                if self.behind {
+                    self.chat.unread = true;
+                } else {
+                    self.focus_epoch += 1;
+                }
                 self.files_epoch += 1;
                 // The queue carries on unless the user stopped Scout or it ran out of credit: they then decide what's next.
-                if !stopped && !out_of_credit && !self.queue.is_empty() {
-                    let next = self.queue.remove(0);
+                if !stopped && !out_of_credit && !self.chat.queue.is_empty() {
+                    let next = self.chat.queue.remove(0);
                     self.submit(next);
                 } else if let Some(e) = error {
                     self.alert("Scout stopped with an error", &e);
@@ -656,15 +755,16 @@ impl Core {
             }
             Ev::Models(Ok(m)) => {
                 // The agent picks each model's edit tools from these, under the id it sends on any provider.
-                *self.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
-                *self.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
+                *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
+                *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
+                *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
                 self.models = m;
                 self.models_changed = true;
                 self.models_loading -= 1;
                 self.start_on_additional();
             }
             Ev::Models(Err(e)) => {
-                self.status = format!("Could not load models: {e}");
+                self.chat.status = format!("Could not load models: {e}");
                 self.models_loading -= 1;
             }
             Ev::KiloCheck(r) => self.login.kilo_check = Some(r),
@@ -673,6 +773,10 @@ impl Core {
             Ev::Devin(u) => self.devin_update(u),
             Ev::Kiro(u) => self.kiro_update(u),
             Ev::KiroModelsError(e) => self.kiro_models_error = e,
+            Ev::Opencode(u) => self.opencode_update(u),
+            Ev::OpencodeModelsError(e) => self.opencode_models_error = e,
+            Ev::Grok(u) => self.grok_update(u),
+            Ev::GrokModelsError(e) => self.grok_models_error = e,
             Ev::LoginUrl(u) => self.login.url = Some(u),
             Ev::User(u) => self.set_user(Some(u)),
             Ev::Usage(r, said) => {
@@ -715,13 +819,13 @@ impl Core {
             Ev::Voice(crate::voice::Update::Done(r)) => {
                 self.voice = Voice::Idle;
                 match r {
-                    Ok(text) if text.is_empty() => self.status = "Didn't catch anything. Try again a little closer to the mic.".into(),
+                    Ok(text) if text.is_empty() => self.chat.status = "Didn't catch anything. Try again a little closer to the mic.".into(),
                     Ok(text) => {
-                        self.status.clear();
+                        self.chat.status.clear();
                         let _ = self.handle.emit("dictated", text);
                         self.focus_epoch += 1;
                     }
-                    Err(e) => self.status = e,
+                    Err(e) => self.chat.status = e,
                 }
             }
         }
@@ -731,7 +835,7 @@ impl Core {
     pub fn toggle_voice(&mut self) {
         match &self.voice {
             Voice::Idle => {
-                self.status.clear();
+                self.chat.status.clear();
                 self.voice = Voice::Recording(crate::voice::start(self.cfg.clone(), self.hooks.clone()));
             }
             Voice::Recording(r) => {
@@ -743,13 +847,13 @@ impl Core {
     }
 
     fn assistant_item(&mut self) -> &mut ItemKind {
-        if self.streaming.is_none() {
-            self.streaming = Some(self.items.len());
+        if self.chat.streaming.is_none() {
+            self.chat.streaming = Some(self.chat.items.len());
             self.push(ItemKind::Assistant { text: String::new(), reasoning: String::new() });
         }
-        let i = self.streaming.unwrap();
-        self.changed.insert(i);
-        &mut self.items[i].kind
+        let i = self.chat.streaming.unwrap();
+        self.chat.changed.insert(i);
+        &mut self.chat.items[i].kind
     }
 
     fn set_user(&mut self, user: Option<String>) {
@@ -764,14 +868,14 @@ impl Core {
         self.set_user(None);
         self.usage = Default::default();
         self.cfg.api_key = key;
-        if self.cfg.only_kilo() && self.provider == "scoutcode" {
+        if self.cfg.only_kilo() && self.chat.provider == "scoutcode" {
             self.choose_model(config::KILO_DEFAULT_MODEL, "kilo");
         }
         self.keys_changed();
     }
 
     fn keys_changed(&mut self) {
-        if let Some(a) = &mut self.agent {
+        if let Some(a) = &mut self.chat.agent {
             a.cfg.take_keys(&self.cfg);
         }
         self.fetch_models();
@@ -834,7 +938,7 @@ impl Core {
         config::save_openrouter_keys(&keys);
         let removed = keys.is_empty();
         self.cfg.openrouter_keys = keys;
-        if removed && self.provider == "openrouter" {
+        if removed && self.chat.provider == "openrouter" {
             self.choose_model("auto", "scoutcode");
         }
         self.keys_changed();
@@ -844,7 +948,7 @@ impl Core {
     pub fn save_nvidia_key(&mut self, key: Option<String>) {
         config::save_one("nvidiaKey", json!(key));
         self.cfg.nvidia_key = key;
-        if self.cfg.nvidia_key.is_none() && self.provider == "nvidia" {
+        if self.cfg.nvidia_key.is_none() && self.chat.provider == "nvidia" {
             self.choose_model("auto", "scoutcode");
         }
         self.keys_changed();
@@ -858,9 +962,9 @@ impl Core {
         self.cfg.kilo_enabled = enabled;
         self.cfg.kilo_key = key;
         self.login.kilo_check = None;
-        if !self.cfg.kilo_on() && self.provider == "kilo" {
+        if !self.cfg.kilo_on() && self.chat.provider == "kilo" {
             self.choose_model("auto", "scoutcode");
-        } else if self.cfg.only_kilo() && self.provider == "scoutcode" {
+        } else if self.cfg.only_kilo() && self.chat.provider == "scoutcode" {
             self.choose_model(config::KILO_DEFAULT_MODEL, "kilo");
         }
         self.keys_changed();
@@ -915,10 +1019,10 @@ impl Core {
     fn save_additional(&mut self, linked: Vec<config::LinkedProvider>) {
         config::save_one("additionalProviders", json!(linked));
         self.cfg.additional = linked;
-        if config::additional_provider(&self.provider).is_some() && self.cfg.linked(&self.provider).is_none() {
+        if config::additional_provider(&self.chat.provider).is_some() && self.cfg.linked(&self.chat.provider).is_none() {
             self.choose_model("auto", "scoutcode");
         }
-        if self.cfg.only_kilo() && self.provider == "scoutcode" {
+        if self.cfg.only_kilo() && self.chat.provider == "scoutcode" {
             self.choose_model(config::KILO_DEFAULT_MODEL, "kilo");
         }
         self.keys_changed();
@@ -939,7 +1043,7 @@ impl Core {
             Some(l) => l.key = key,
             None => linked.push(config::LinkedProvider { id: a.id.into(), key }),
         }
-        if self.provider == "scoutcode" && self.cfg.api_key.is_none() {
+        if self.chat.provider == "scoutcode" && self.cfg.api_key.is_none() {
             self.start_additional = Some(a.id);
         }
         self.save_additional(linked);
@@ -961,7 +1065,7 @@ impl Core {
         config::save_one("copilotUser", json!(user));
         self.cfg.copilot_token = token;
         self.cfg.copilot_user = user;
-        if self.cfg.copilot_token.is_none() && self.provider == "copilot" {
+        if self.cfg.copilot_token.is_none() && self.chat.provider == "copilot" {
             self.choose_model("auto", "scoutcode");
         }
         self.keys_changed();
@@ -1014,7 +1118,7 @@ impl Core {
     fn save_devin(&mut self, on: bool) {
         config::save_one("devinEnabled", json!(on));
         self.cfg.devin_enabled = on;
-        if !on && self.provider == "devin" {
+        if !on && self.chat.provider == "devin" {
             self.choose_model("auto", "scoutcode");
         }
         self.keys_changed();
@@ -1068,7 +1172,7 @@ impl Core {
     fn save_kiro(&mut self, on: bool) {
         config::save_one("kiroEnabled", json!(on));
         self.cfg.kiro_enabled = on;
-        if !on && self.provider == "kiro" {
+        if !on && self.chat.provider == "kiro" {
             self.choose_model("auto", "scoutcode");
         }
         self.keys_changed();
@@ -1082,11 +1186,169 @@ impl Core {
         }
     }
 
-    /// Stops a sign-in that's under way: `which` is "copilot", "devin" or "kiro".
+    /// Turns OpenCode on, which downloads its CLI for the free models, or off, which signs out of it too. Without it, a
+    /// model that ran on OpenCode moves back to ScoutCode.
+    pub fn set_opencode(&mut self, on: bool, uninstall: bool) {
+        if on {
+            self.login.opencode = Some(SignIn::default());
+            self.login.opencode_error = None;
+            let h = self.hooks.clone();
+            crate::opencode::set_up(move |u| h.send(Ev::Opencode(u)));
+            return;
+        }
+        self.opencode_sign_out();
+        self.save_opencode(false);
+        if uninstall {
+            crate::opencode::remove_runtime();
+        }
+    }
+
+    /// Starts signing in to an OpenCode account: the CLI downloads, then gives a code to enter in the browser.
+    pub fn opencode_sign_in(&mut self) {
+        let sign_in = SignIn::default();
+        let cancel = sign_in.cancel.clone();
+        self.login.opencode = Some(sign_in);
+        self.login.opencode_error = None;
+        let h = self.hooks.clone();
+        crate::opencode::sign_in(cancel, move |u| h.send(Ev::Opencode(u)));
+    }
+
+    fn opencode_update(&mut self, update: crate::opencode::Update) {
+        use crate::opencode::Update;
+        match update {
+            Update::Ready | Update::SignedIn => {
+                let signed_in = matches!(update, Update::SignedIn);
+                self.login.opencode = None;
+                if signed_in {
+                    config::save_one("opencodeSignedIn", json!(true));
+                    self.cfg.opencode_signed_in = true;
+                }
+                self.save_opencode(true);
+                if self.chat.provider != "opencode" {
+                    self.choose_model("auto", "opencode");
+                }
+            }
+            Update::Failed(e) => {
+                // Cancelling fails with no message.
+                self.login.opencode = None;
+                self.login.opencode_error = (!e.is_empty()).then_some(e);
+            }
+            Update::Progress { done, total } => {
+                if let Some(s) = &mut self.login.opencode {
+                    s.progress = (done, total);
+                }
+            }
+            Update::Code { code, url } => {
+                if let Some(s) = &mut self.login.opencode {
+                    s.code = Some((code, url));
+                }
+            }
+        }
+    }
+
+    fn save_opencode(&mut self, on: bool) {
+        config::save_one("opencodeEnabled", json!(on));
+        self.cfg.opencode_enabled = on;
+        if !on && self.chat.provider == "opencode" {
+            self.choose_model("auto", "scoutcode");
+        }
+        self.keys_changed();
+    }
+
+    /// Signs out of the OpenCode account. Its free models stay.
+    pub fn opencode_sign_out(&mut self) {
+        crate::opencode::sign_out();
+        config::save_one("opencodeSignedIn", json!(false));
+        self.cfg.opencode_signed_in = false;
+        self.keys_changed();
+    }
+
+    /// Starts signing in to Grok: the CLI downloads, then gives a code to confirm in the browser.
+    pub fn grok_sign_in(&mut self) {
+        let sign_in = SignIn::default();
+        let cancel = sign_in.cancel.clone();
+        self.login.grok = Some(sign_in);
+        self.login.grok_error = None;
+        let h = self.hooks.clone();
+        crate::grok::sign_in(cancel, move |u| h.send(Ev::Grok(u)));
+    }
+
+    /// Saves or forgets the xAI key. A new one downloads the CLI, which is what uses it.
+    pub fn save_grok_key(&mut self, key: Option<String>) {
+        config::save_one("grokKey", json!(key));
+        let adding = key.is_some();
+        self.cfg.grok_key = key;
+        if adding {
+            self.login.grok = Some(SignIn::default());
+            self.login.grok_error = None;
+            let h = self.hooks.clone();
+            crate::grok::set_up(move |u| h.send(Ev::Grok(u)));
+        } else {
+            self.grok_changed();
+        }
+    }
+
+    fn grok_update(&mut self, update: crate::grok::Update) {
+        use crate::grok::Update;
+        match update {
+            Update::Ready | Update::SignedIn => {
+                let signed_in = matches!(update, Update::SignedIn);
+                self.login.grok = None;
+                if signed_in {
+                    config::save_one("grokSignedIn", json!(true));
+                    self.cfg.grok_signed_in = true;
+                }
+                if self.chat.provider != "grok" {
+                    self.choose_model("auto", "grok");
+                }
+                self.grok_changed();
+            }
+            Update::Failed(e) => {
+                // Cancelling fails with no message.
+                self.login.grok = None;
+                self.login.grok_error = (!e.is_empty()).then_some(e);
+            }
+            Update::Progress { done, total } => {
+                if let Some(s) = &mut self.login.grok {
+                    s.progress = (done, total);
+                }
+            }
+            Update::Code { code, url } => {
+                if let Some(s) = &mut self.login.grok {
+                    s.code = Some((code, url));
+                }
+            }
+        }
+    }
+
+    /// With no sign-in or key left, a model that ran on Grok Build moves back to ScoutCode.
+    fn grok_changed(&mut self) {
+        if !self.cfg.grok_on() && self.chat.provider == "grok" {
+            self.choose_model("auto", "scoutcode");
+        }
+        self.keys_changed();
+    }
+
+    /// Signs out of Grok. Uninstalling forgets the key too, since nothing is left to use it.
+    pub fn grok_sign_out(&mut self, uninstall: bool) {
+        crate::grok::sign_out();
+        config::save_one("grokSignedIn", json!(false));
+        self.cfg.grok_signed_in = false;
+        if uninstall {
+            config::save_one("grokKey", Value::Null);
+            self.cfg.grok_key = None;
+            crate::grok::remove_runtime();
+        }
+        self.grok_changed();
+    }
+
+    /// Stops a sign-in that's under way: `which` is "copilot", "devin", "kiro", "opencode" or "grok".
     pub fn cancel_sign_in(&mut self, which: &str) {
         let slot = match which {
             "copilot" => &mut self.login.copilot,
             "devin" => &mut self.login.devin,
+            "opencode" => &mut self.login.opencode,
+            "grok" => &mut self.login.grok,
             _ => &mut self.login.kiro,
         };
         if let Some(s) = slot.take() {
@@ -1099,22 +1361,22 @@ impl Core {
         if provider == "kilo" && !self.cfg.kilo_enabled {
             self.cfg.kilo_enabled = true;
             config::save_one("kiloEnabled", json!(true));
-            if let Some(a) = &mut self.agent {
+            if let Some(a) = &mut self.chat.agent {
                 a.cfg.take_keys(&self.cfg);
             }
         }
         let model = self.models.iter().find(|m| m.id == key).map(|m| m.request_id(provider).to_string()).unwrap_or_else(|| key.to_string());
-        self.model = model.clone();
-        self.provider = provider.to_string();
-        *self.shared.model.lock().unwrap() = model.clone();
-        *self.shared.provider.lock().unwrap() = provider.to_string();
+        self.chat.model = model.clone();
+        self.chat.provider = provider.to_string();
+        *self.chat.shared.model.lock().unwrap() = model.clone();
+        *self.chat.shared.provider.lock().unwrap() = provider.to_string();
         config::save_one("model", json!(model));
         config::save_one("provider", json!(provider));
     }
 
     /// The list key of the model being used: its entry's id, or the id itself when the list doesn't have it (auto).
     fn current_key(&self) -> String {
-        self.models.iter().find(|m| m.request_id(&self.provider) == self.model).map(|m| m.id.clone()).unwrap_or_else(|| self.model.clone())
+        self.models.iter().find(|m| m.request_id(&self.chat.provider) == self.chat.model).map(|m| m.id.clone()).unwrap_or_else(|| self.chat.model.clone())
     }
 
     pub fn toggle_star(&mut self, id: String) {
@@ -1128,23 +1390,23 @@ impl Core {
 
     pub fn set_effort(&mut self, effort: &str) {
         if EFFORTS.contains(&effort) {
-            self.effort = effort.to_string();
-            *self.shared.effort.lock().unwrap() = self.effort.clone();
-            config::save_one("effort", json!(self.effort));
+            self.chat.effort = effort.to_string();
+            *self.chat.shared.effort.lock().unwrap() = self.chat.effort.clone();
+            config::save_one("effort", json!(self.chat.effort));
         }
     }
 
     pub fn set_mode(&mut self, mode: &str) {
         if MODES.contains(&mode) {
-            *self.shared.mode.lock().unwrap() = mode.to_string();
+            *self.chat.shared.mode.lock().unwrap() = mode.to_string();
         }
     }
 
     pub fn cycle_mode(&mut self) {
-        if !self.running {
-            let m = self.shared.mode();
+        if !self.chat.running {
+            let m = self.chat.shared.mode();
             let next = MODES[(MODES.iter().position(|x| *x == m).unwrap_or(0) + 1) % MODES.len()];
-            *self.shared.mode.lock().unwrap() = next.into();
+            *self.chat.shared.mode.lock().unwrap() = next.into();
         }
     }
 
@@ -1157,13 +1419,13 @@ impl Core {
         if text.is_empty() && files.is_empty() {
             return false;
         }
-        if self.running && text.starts_with('/') {
-            self.status = "Commands wait until Scout is done. Esc stops it.".into();
+        if self.chat.running && text.starts_with('/') {
+            self.chat.status = "Commands wait until Scout is done. Esc stops it.".into();
             return false;
         }
-        if self.running {
+        if self.chat.running {
             let o = Outgoing { text, files };
-            if steer { self.steer(o) } else { self.queue.push(o) }
+            if steer { self.steer(o) } else { self.chat.queue.push(o) }
             return true;
         }
         if let Some(cmd) = text.strip_prefix('/').filter(|_| files.is_empty()) {
@@ -1194,16 +1456,23 @@ impl Core {
 
     /// Starts a turn with the message.
     fn submit(&mut self, o: Outgoing) {
-        let Some(agent) = &mut self.agent else { return };
-        let (content, read) = attach::build(&self.cwd, &o.text, &o.files);
-        agent.read_files.extend(read);
+        if self.chat.agent.is_none() {
+            return;
+        }
+        let (cwd, files) = (self.chat.cwd.clone(), o.files.clone());
+        let text = o.text.clone();
         self.push(ItemKind::User { text: o.text, files: o.files });
-        self.start(move |agent, h| agent.turn(content, h).map_err(|e| agent.failed(e)));
+        // Off the window's thread: reading attachments takes a while when images have to be shrunk.
+        self.start(move |agent, h| {
+            let (content, read) = attach::build(&cwd, &text, &files);
+            agent.read_files.extend(read);
+            agent.turn(content, h).map_err(|e| agent.failed(e))
+        });
     }
 
     /// Carries on a turn that ran out of credit, on `model` (its list key and provider) when one is picked.
     pub fn retry(&mut self, model: Option<(String, String)>) {
-        if self.running || !matches!(self.items.last().map(|i| &i.kind), Some(ItemKind::OutOfCredit(_))) {
+        if self.chat.running || !matches!(self.chat.items.last().map(|i| &i.kind), Some(ItemKind::OutOfCredit(_))) {
             return;
         }
         if let Some((key, provider)) = model {
@@ -1214,27 +1483,28 @@ impl Core {
 
     /// Hands a message to the running turn, which adds it after the step it's on.
     fn steer(&mut self, o: Outgoing) {
-        let (content, read) = attach::build(&self.cwd, &o.text, &o.files);
-        self.shared.steer.lock().unwrap().push(Steer { text: o.text, files: o.files, content, read });
+        let (content, read) = attach::build(&self.chat.cwd, &o.text, &o.files);
+        self.chat.shared.steer.lock().unwrap().push(Steer { text: o.text, files: o.files, content, read });
     }
 
     /// Takes a message out of the queue and hands it back.
     pub fn unqueue(&mut self, i: usize) -> Option<Outgoing> {
-        (i < self.queue.len()).then(|| self.queue.remove(i))
+        (i < self.chat.queue.len()).then(|| self.chat.queue.remove(i))
     }
 
     /// Sends a queued message now: into the running turn, or as the next one.
     pub fn send_queued(&mut self, i: usize) {
-        if i < self.queue.len() {
-            let o = self.queue.remove(i);
-            if self.running { self.steer(o) } else { self.submit(o) }
+        if i < self.chat.queue.len() {
+            let o = self.chat.queue.remove(i);
+            if self.chat.running { self.steer(o) } else { self.submit(o) }
         }
     }
 
     /// Flashes the taskbar and/or shows a Windows notification, as the user chose, when the window isn't in front.
     fn alert(&self, title: &str, body: &str) {
         let Some(window) = self.handle.get_webview_window("main") else { return };
-        if window.is_focused().unwrap_or(true) {
+        // A chat behind the one on screen can't be seen even with the window in front.
+        if !self.behind && window.is_focused().unwrap_or(true) {
             return;
         }
         if self.cfg.notify_flash.unwrap_or(true) {
@@ -1246,12 +1516,17 @@ impl Core {
     }
 
     pub fn delete_chat(&mut self, id: &str) {
-        let current = self.agent.as_ref().is_some_and(|a| a.session.id == id);
-        if let Err(e) = session::delete_session(id) {
-            self.status = format!("Could not delete the chat: {e}");
+        let current = self.chat.session_id == id;
+        // The chat Scout is working in stays until it's done: it would only be saved again.
+        if std::iter::once(&self.chat).chain(&self.background).any(|c| c.session_id == id && c.running) {
             return;
         }
-        self.sessions = session::list_sessions();
+        if let Err(e) = session::delete_session(id) {
+            self.chat.status = format!("Could not delete the chat: {e}");
+            return;
+        }
+        self.background.retain(|c| c.session_id != id);
+        self.refresh_sessions();
         if current {
             self.new_chat();
         }
@@ -1260,14 +1535,14 @@ impl Core {
     /// Rewinds the chat to before item `n`, a message of the user's, restoring the files changed since, and sends
     /// `text` in its place with the same attachments.
     pub fn resend(&mut self, n: usize, text: String) {
-        if self.running {
+        if self.chat.running {
             return;
         }
-        let Some(ItemKind::User { text: old, files }) = self.items.get(n).map(|i| &i.kind) else { return };
+        let Some(ItemKind::User { text: old, files }) = self.chat.items.get(n).map(|i| &i.kind) else { return };
         let (old, files) = (old.clone(), files.clone());
         // The saved message with the same text, counted from the end, since later ones may repeat it.
-        let later = self.items[n + 1..].iter().filter(|i| matches!(&i.kind, ItemKind::User { text, .. } if *text == old)).count();
-        let Some(agent) = &mut self.agent else { return };
+        let later = self.chat.items[n + 1..].iter().filter(|i| matches!(&i.kind, ItemKind::User { text, .. } if *text == old)).count();
+        let Some(agent) = &mut self.chat.agent else { return };
         let at = agent
             .session
             .messages
@@ -1283,11 +1558,11 @@ impl Core {
         };
         let (restored, all) = agent.rewind(at);
         let s = agent.session.clone();
-        self.context = agent.context_tokens();
+        self.chat.context = agent.context_tokens();
         let items = rebuild(&s, &mut self.next_item);
         self.replace_items(items);
-        self.tool_index.clear();
-        self.todos.clear();
+        self.chat.tool_index.clear();
+        self.chat.todos.clear();
         self.files_epoch += 1;
         let mut note = String::new();
         if !restored.is_empty() {
@@ -1305,12 +1580,14 @@ impl Core {
 
     /// Hands the agent to a worker thread; it comes back in Ev::Finished.
     fn start(&mut self, work: impl FnOnce(&mut Agent, &Hooks) -> Result<(), String> + Send + 'static) {
-        let Some(mut agent) = self.agent.take() else { return };
+        let Some(mut agent) = self.chat.agent.take() else { return };
         agent.cfg.take_keys(&self.cfg);
-        self.running = true;
-        self.stopping = false;
-        self.shared.cancel.store(false, Ordering::Relaxed);
-        let h = self.hooks.clone();
+        self.chat.running = true;
+        self.chat.stopping = false;
+        self.chat.shared.cancel.store(false, Ordering::Relaxed);
+        self.refresh_sessions();
+        let mut h = self.hooks.clone();
+        h.chat = Some(self.chat.key);
         std::thread::Builder::new()
             .name("scout-agent".into())
             .spawn(move || {
@@ -1321,63 +1598,79 @@ impl Core {
     }
 
     pub fn stop(&mut self) {
-        if !self.running {
+        if !self.chat.running {
             return;
         }
-        self.stopping = true;
-        self.shared.cancel.store(true, Ordering::Relaxed);
+        self.chat.stopping = true;
+        self.chat.shared.cancel.store(true, Ordering::Relaxed);
         // Answering unblocks a worker waiting on the user.
-        if let Some(p) = self.permission.take() {
+        if let Some(p) = self.chat.permission.take() {
             let _ = p.reply.send(PermissionAnswer::Deny(String::new()));
         }
-        if let Some(p) = self.plan.take() {
+        if let Some(p) = self.chat.plan.take() {
             let _ = p.reply.send(PlanAnswer::Revise(String::new()));
         }
-        if let Some(p) = self.questions.take() {
+        if let Some(p) = self.chat.questions.take() {
             let _ = p.reply.send(QuestionAnswer::Skipped);
         }
-        self.status = "Stopping…".into();
+        self.chat.status = "Stopping…".into();
     }
 
     pub fn new_chat(&mut self) {
-        if self.running {
-            return;
-        }
-        let s = session::new_session(&self.cwd, &self.model);
+        let s = session::new_session(&self.chat.cwd, &self.chat.model);
         self.open_session(s);
     }
 
     pub fn open_chat(&mut self, id: &str) {
-        if let Some(s) = session::load_session(id) {
+        if self.chat.session_id == id {
+            self.focus_epoch += 1;
+        } else if let Some(i) = self.background.iter().position(|c| c.session_id == id) {
+            let chat = self.background.remove(i);
+            self.show(chat);
+        } else if let Some(s) = session::load_session(id) {
             self.open_session(s);
         }
     }
 
     fn open_session(&mut self, s: Session) {
-        if self.running {
-            return;
-        }
         let items = rebuild(&s, &mut self.next_item);
-        self.replace_items(items);
-        self.tool_index.clear();
-        self.todos.clear();
-        self.queue.clear();
-        self.totals = s.totals.clone();
-        self.sessions = session::list_sessions();
+        self.next_chat += 1;
+        let mut chat = Chat::new(self.next_chat, s, &self.cfg, self.chat.shared.for_new_chat());
+        chat.items = items;
+        self.show(chat);
+    }
+
+    /// Puts the chat on screen. The one there carries on behind it if Scout is working in it; if not, it's read back
+    /// from disk when it's next opened.
+    fn show(&mut self, mut chat: Chat) {
+        chat.reset = true;
+        chat.changed.clear();
+        chat.unread = false;
+        std::mem::swap(&mut self.chat, &mut chat);
+        if chat.running {
+            self.background.push(chat);
+        }
+        self.refresh_sessions();
         self.chat_epoch += 1;
-        self.cwd = s.cwd.clone();
-        self.enter_project(&s.cwd);
-        let mut agent = Agent::new(self.cfg.clone(), s, self.shared.clone());
-        agent.last_prompt_tokens = 0;
-        self.context = agent.context_tokens();
-        self.agent = Some(agent);
-        self.status.clear();
+        let cwd = self.chat.cwd.clone();
+        self.enter_project(&cwd);
+        self.files_epoch += 1;
         self.focus_epoch += 1;
+    }
+
+    /// Reads the sidebar's chats. A chat that's just started may not be on disk yet, but it's there to go back to.
+    fn refresh_sessions(&mut self) {
+        self.sessions = session::list_sessions();
+        for c in std::iter::once(&self.chat).chain(&self.background).filter(|c| c.running) {
+            if !self.sessions.iter().any(|s| s.id == c.session_id) {
+                self.sessions.insert(0, SessionInfo { id: c.session_id.clone(), cwd: c.cwd.clone(), title: c.title(), updated: session::now_ms() });
+            }
+        }
     }
 
     /// Starts a new chat in the folder.
     pub fn change_project(&mut self, dir: String) {
-        let s = session::new_session(&dir, &self.model);
+        let s = session::new_session(&dir, &self.chat.model);
         self.open_session(s);
     }
 
@@ -1389,7 +1682,7 @@ impl Core {
 
     /// The current folder's project name.
     fn project_label(&self) -> String {
-        self.project_index(&self.cwd).map(|i| self.projects[i].name.clone()).unwrap_or_else(|| project_name(&self.cwd))
+        self.project_index(&self.chat.cwd).map(|i| self.projects[i].name.clone()).unwrap_or_else(|| project_name(&self.chat.cwd))
     }
 
     fn save_projects(&self) {
@@ -1408,9 +1701,6 @@ impl Core {
 
     /// Starts a chat in the folder the user picked. True when it's a new project, which they then get to name.
     pub fn add_project(&mut self, dir: String) -> bool {
-        if self.running {
-            return false;
-        }
         let is_new = self.project_index(&dir).is_none();
         self.change_project(dir);
         is_new
@@ -1426,7 +1716,7 @@ impl Core {
 
     /// The open project stays, so the chat on screen always has one.
     pub fn remove_project(&mut self, path: &str) {
-        if session::same_dir(path, &self.cwd) {
+        if session::same_dir(path, &self.chat.cwd) {
             return;
         }
         if let Some(i) = self.project_index(path) {
@@ -1436,7 +1726,7 @@ impl Core {
     }
 
     pub fn undo(&mut self) {
-        let Some(agent) = &mut self.agent else { return };
+        let Some(agent) = &mut self.chat.agent else { return };
         let (msg, rebuilt) = match agent.undo() {
             None => ("Nothing to undo.".to_string(), None),
             Some((label, files, conv)) => {
@@ -1461,12 +1751,12 @@ impl Core {
     }
 
     pub fn prune(&mut self) {
-        let Some(agent) = &mut self.agent else { return };
+        let Some(agent) = &mut self.chat.agent else { return };
         let msg = match agent.prune(0, 0) {
             Some((n, freed)) => format!("Cleared {n} old tool output{} (~{}k tokens).", if n == 1 { "" } else { "s" }, freed / 1000),
             None => "No old tool output to clear.".into(),
         };
-        self.context = agent.context_tokens();
+        self.chat.context = agent.context_tokens();
         self.push(ItemKind::Notice(msg));
     }
 
@@ -1485,19 +1775,19 @@ impl Core {
     }
 
     pub fn answer_permission(&mut self, a: PermissionAnswer) {
-        if let Some(p) = self.permission.take() {
+        if let Some(p) = self.chat.permission.take() {
             let _ = p.reply.send(a);
         }
     }
 
     pub fn answer_plan(&mut self, a: PlanAnswer) {
-        if let Some(p) = self.plan.take() {
+        if let Some(p) = self.chat.plan.take() {
             let _ = p.reply.send(a);
         }
     }
 
     pub fn answer_questions(&mut self, a: QuestionAnswer) {
-        if let Some(p) = self.questions.take() {
+        if let Some(p) = self.chat.questions.take() {
             let _ = p.reply.send(a);
         }
     }
@@ -1510,23 +1800,23 @@ impl Core {
 
     /// The first thing asked in this chat, as its title.
     fn chat_title(&self) -> String {
-        let first = self.items.iter().find_map(|i| if let ItemKind::User { text, .. } = &i.kind { Some(text.lines().next().unwrap_or("").trim().to_string()) } else { None });
-        first.filter(|t| !t.is_empty()).unwrap_or_else(|| "New chat".into())
+        self.chat.title()
+    }
+
+    fn any_running(&self) -> bool {
+        self.chat.running || self.background.iter().any(|c| c.running)
     }
 
     /// Starts the new build on the same folder and chat. False when it can't: the window checks for unsaved edits first.
     pub fn restart_to_update(&mut self) -> bool {
-        if self.running {
+        if self.any_running() {
             return false;
         }
-        let mut args = vec![self.cwd.clone()];
-        if let Some(agent) = &self.agent {
-            args.extend(["--resume".to_string(), agent.session.id.clone()]);
-        }
+        let args = vec![self.chat.cwd.clone(), "--resume".to_string(), self.chat.session_id.clone()];
         match self.updater.restart(&args) {
             Ok(()) => true,
             Err(e) => {
-                self.status = e;
+                self.chat.status = e;
                 false
             }
         }
@@ -1592,17 +1882,17 @@ impl Core {
             self.stop_link("Off.");
             return;
         }
-        if self.cfg.api_key.is_none() || self.cwd.is_empty() {
+        if self.cfg.api_key.is_none() || self.chat.cwd.is_empty() {
             return;
         }
         let h = self.hooks.clone();
         self.link_log.clear();
         self.link_status = "Connecting…".into();
-        self.link = Some(crate::mcp::start_link(&self.cfg, &self.cwd, mode, move |e| h.send(Ev::Link(e))));
+        self.link = Some(crate::mcp::start_link(&self.cfg, &self.chat.cwd, mode, move |e| h.send(Ev::Link(e))));
     }
 
     pub fn set_status(&mut self, s: String) {
-        self.status = s;
+        self.chat.status = s;
     }
 
     // ---------- telling the window ----------
@@ -1611,8 +1901,8 @@ impl Core {
     fn view(&self) -> Vec<(&'static str, Value)> {
         let cfg = &self.cfg;
         let hub = crate::mcp_client::hub();
-        let steering: Vec<String> = self.shared.steer.lock().unwrap().iter().map(|s| s.text.clone()).collect();
-        let login_needed = cfg.api_key.is_none() && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && cfg.additional.is_empty();
+        let steering: Vec<String> = self.chat.shared.steer.lock().unwrap().iter().map(|s| s.text.clone()).collect();
+        let login_needed = cfg.api_key.is_none() && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() && cfg.additional.is_empty();
         let voice = match &self.voice {
             Voice::Idle => json!({ "state": "idle" }),
             // Rounded so that it only goes out when it moves.
@@ -1652,33 +1942,42 @@ impl Core {
                 "copilotUser": cfg.copilot_user,
                 "devin": cfg.devin_enabled,
                 "kiro": cfg.kiro_enabled,
+                "opencode": cfg.opencode_enabled,
+                "opencodeSignedIn": cfg.opencode_signed_in,
+                "grokSignedIn": cfg.grok_signed_in,
+                "grokKey": cfg.grok_key.as_deref().map(mask_key),
                 "additional": cfg.additional.iter().map(|l| json!({ "id": l.id, "masked": l.key.as_deref().map(mask_key) })).collect::<Vec<_>>(),
                 "notifyFlash": cfg.notify_flash,
                 "notifyToast": cfg.notify_toast,
                 "autoUpdate": cfg.auto_update,
                 "autoCompactTokens": cfg.auto_compact_tokens,
             })),
-            ("mode", json!(self.shared.mode())),
-            ("model", json!({ "id": self.model, "provider": self.provider, "key": self.current_key(), "short": crate::api::short_id(&self.model) })),
-            ("effort", json!(self.effort)),
+            ("mode", json!(self.chat.shared.mode())),
+            ("model", json!({ "id": self.chat.model, "provider": self.chat.provider, "key": self.current_key(), "short": crate::api::short_id(&self.chat.model) })),
+            ("effort", json!(self.chat.effort)),
             ("starred", json!(self.starred)),
             ("modelsLoading", json!(self.models_loading)),
             ("additionalErrors", json!(self.additional_errors)),
             ("kiroModelsError", json!(self.kiro_models_error)),
-            ("run", json!({ "running": self.running, "stopping": self.stopping, "status": self.status })),
-            ("todos", todos_json(&self.todos)),
-            ("totals", json!({ "totals": self.totals, "context": self.context })),
-            ("permission", json!(self.permission.as_ref().map(permission_json))),
-            ("plan", json!(self.plan.as_ref().map(|p| &p.text))),
-            ("questions", json!(self.questions.as_ref().map(|p| p.questions.iter().map(|q| json!({
+            ("opencodeModelsError", json!(self.opencode_models_error)),
+            ("grokModelsError", json!(self.grok_models_error)),
+            ("run", json!({ "running": self.chat.running, "stopping": self.chat.stopping, "status": self.chat.status, "anyRunning": self.any_running() })),
+            ("todos", todos_json(&self.chat.todos)),
+            ("totals", json!({ "totals": self.chat.totals, "context": self.chat.context })),
+            ("permission", json!(self.chat.permission.as_ref().map(permission_json))),
+            ("plan", json!(self.chat.plan.as_ref().map(|p| &p.text))),
+            ("questions", json!(self.chat.questions.as_ref().map(|p| p.questions.iter().map(|q| json!({
                 "question": q.question, "header": q.header, "multiSelect": q.multi_select,
                 "options": q.options.iter().map(|o| json!({ "label": o.label, "description": o.description })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>()))),
-            ("queue", json!(self.queue.iter().map(|q| json!({ "text": q.text, "files": q.files.len() })).collect::<Vec<_>>())),
+            ("queue", json!(self.chat.queue.iter().map(|q| json!({ "text": q.text, "files": q.files.len() })).collect::<Vec<_>>())),
             ("steering", json!(steering)),
-            ("sessions", json!(self.sessions.iter().map(|s| json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated) })).collect::<Vec<_>>())),
+            ("sessions", json!(self.sessions.iter().map(|s| {
+                let live = std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == s.id);
+                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "running": live.is_some_and(|c| c.running), "waiting": live.is_some_and(Chat::waiting), "unread": live.is_some_and(|c| c.unread) })
+            }).collect::<Vec<_>>())),
             ("projects", json!(self.projects)),
-            ("chat", json!({ "id": self.agent.as_ref().map(|a| a.session.id.clone()), "cwd": self.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch })),
+            ("chat", json!({ "id": self.chat.session_id, "cwd": self.chat.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch })),
             ("filesEpoch", json!(self.files_epoch)),
             ("focusEpoch", json!(self.focus_epoch)),
             ("login", json!({
@@ -1686,11 +1985,13 @@ impl Core {
                 "copilot": self.login.copilot.as_ref().map(SignIn::json), "copilotError": self.login.copilot_error,
                 "devin": self.login.devin.as_ref().map(SignIn::json), "devinError": self.login.devin_error,
                 "kiro": self.login.kiro.as_ref().map(SignIn::json), "kiroError": self.login.kiro_error,
+                "opencode": self.login.opencode.as_ref().map(SignIn::json), "opencodeError": self.login.opencode_error,
+                "grok": self.login.grok.as_ref().map(SignIn::json), "grokError": self.login.grok_error,
             })),
             ("skills", json!(self.skills.iter().map(|s| json!({ "name": s.name, "about": s.short_description(), "source": s.source, "dir": s.dir })).collect::<Vec<_>>())),
             ("link", json!({
                 "on": self.link.is_some(),
-                "cwd": self.link.as_ref().map(|l| l.cwd.clone()).unwrap_or_else(|| self.cwd.clone()),
+                "cwd": self.link.as_ref().map(|l| l.cwd.clone()).unwrap_or_else(|| self.chat.cwd.clone()),
                 "status": self.link_status, "log": self.link_log,
                 "permission": self.link_permission.as_ref().map(permission_json),
             })),
@@ -1720,13 +2021,13 @@ impl Core {
             self.models_changed = false;
             let _ = self.handle.emit("models", json!({ "seq": seq, "data": self.models.iter().map(model_json).collect::<Vec<_>>() }));
         }
-        if self.reset {
-            self.reset = false;
-            self.changed.clear();
-            let _ = self.handle.emit("items", json!({ "seq": seq, "reset": true, "items": self.items.iter().map(item_json).collect::<Vec<_>>() }));
-        } else if !self.changed.is_empty() {
-            let items: Vec<Value> = self.changed.iter().filter_map(|&i| self.items.get(i).map(|it| json!({ "at": i, "item": item_json(it) }))).collect();
-            self.changed.clear();
+        if self.chat.reset {
+            self.chat.reset = false;
+            self.chat.changed.clear();
+            let _ = self.handle.emit("items", json!({ "seq": seq, "reset": true, "items": self.chat.items.iter().map(item_json).collect::<Vec<_>>() }));
+        } else if !self.chat.changed.is_empty() {
+            let items: Vec<Value> = self.chat.changed.iter().filter_map(|&i| self.chat.items.get(i).map(|it| json!({ "at": i, "item": item_json(it) }))).collect();
+            self.chat.changed.clear();
             let _ = self.handle.emit("items", json!({ "seq": seq, "reset": false, "changes": items }));
         }
     }
@@ -1738,19 +2039,19 @@ impl Core {
             self.sent.insert(key, value.to_string());
             view.insert(key.to_string(), value);
         }
-        self.reset = false;
-        self.changed.clear();
+        self.chat.reset = false;
+        self.chat.changed.clear();
         self.models_changed = false;
         json!({
             "seq": self.seq,
             "view": view,
             "models": self.models.iter().map(model_json).collect::<Vec<_>>(),
-            "items": self.items.iter().map(item_json).collect::<Vec<_>>(),
+            "items": self.chat.items.iter().map(item_json).collect::<Vec<_>>(),
             "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m) })).collect::<Vec<_>>(),
             "efforts": EFFORTS,
             "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name, "needsKey": a.needs_key, "note": a.note, "keyUrl": a.key_url, "keyLink": a.key_link, "keyHint": a.key_hint })).collect::<Vec<_>>(),
             "kiloWarning": config::KILO_WARNING,
-            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL },
+            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL },
             "languages": crate::instructions::LANGUAGES,
             "exe": std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "Scout.exe".into()),
         })

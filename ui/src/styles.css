@@ -148,6 +148,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .session-row.selected { background: var(--surface-hi); }
 .session-row.selected .session-open { color: var(--strong); }
 .when { flex: none; }
+.session-state { flex: none; display: flex; }
+.session-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.session-dot.waiting { background: var(--accent); }
 .session-row:hover .when { display: none; }
 .no-chats { padding: 4px 12px; }
 .rename { padding: 5px 10px; }

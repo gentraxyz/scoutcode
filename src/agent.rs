@@ -84,6 +84,14 @@ pub enum Ev {
     Kiro(crate::kiro::Update),
     /// Why Kiro's models couldn't be listed, from the last time the lists were loaded.
     KiroModelsError(Option<String>),
+    /// How setting up OpenCode or signing in to it is going.
+    Opencode(crate::opencode::Update),
+    /// Why OpenCode's models couldn't be listed, from the last time the lists were loaded.
+    OpencodeModelsError(Option<String>),
+    /// How setting up Grok Build or signing in to it is going.
+    Grok(crate::grok::Update),
+    /// Why Grok Build's models couldn't be listed, from the last time the lists were loaded.
+    GrokModelsError(Option<String>),
     Finished(Box<Agent>, Result<(), String>),
     Models(Result<Vec<ModelInfo>, String>),
     /// How Settings' test of the Kilo connection went.
@@ -100,16 +108,24 @@ pub enum Ev {
     Voice(crate::voice::Update),
     /// From the link that lets web chatbots use Scout.
     Link(crate::mcp::LinkEvent),
+    /// An event from the worker of one chat, which may not be the one on screen.
+    ForChat(u64, Box<Ev>),
 }
 
 #[derive(Clone)]
 pub struct Hooks {
+    /// The chat this worker runs, whose events are marked with it. None for what isn't about a chat.
+    pub chat: Option<u64>,
     pub tx: Sender<Ev>,
     pub ctx: crate::waker::Waker,
 }
 
 impl Hooks {
     pub fn send(&self, ev: Ev) {
+        let ev = match self.chat {
+            Some(chat) => Ev::ForChat(chat, Box::new(ev)),
+            None => ev,
+        };
         let _ = self.tx.send(ev);
         self.ctx.request_repaint();
     }
@@ -120,14 +136,16 @@ pub struct Shared {
     pub mode: Mutex<String>,
     /// The id to send to `provider`.
     pub model: Mutex<String>,
-    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro" or an additional provider's id.
+    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok" or an additional provider's id.
     pub provider: Mutex<String>,
     pub effort: Mutex<String>,
     pub cancel: AtomicBool,
-    /// Each model's edit tool, from /v1/models once the window has the list.
-    pub edit_tools: Mutex<HashMap<String, EditTool>>,
+    /// Each model's edit tool, from /v1/models once the window has the list. The same for every chat.
+    pub edit_tools: Arc<Mutex<HashMap<String, EditTool>>>,
     /// Each model's name, from the same list.
-    pub model_names: Mutex<HashMap<String, String>>,
+    pub model_names: Arc<Mutex<HashMap<String, String>>>,
+    /// The models the same list says can't see images. One it doesn't mention is sent them and may refuse.
+    pub no_vision: Arc<Mutex<HashSet<String>>>,
     /// Messages to add to the running turn at its next step.
     pub steer: Mutex<Vec<Steer>>,
 }
@@ -137,11 +155,26 @@ pub struct Steer {
     pub text: String,
     pub files: Vec<String>,
     /// The text with the files' contents, as the model gets it.
-    pub content: String,
+    pub content: Content,
     pub read: Vec<PathBuf>,
 }
 
 impl Shared {
+    /// The settings for another chat: it starts on these, but stopping or changing one chat leaves the other alone.
+    pub fn for_new_chat(&self) -> Arc<Shared> {
+        Arc::new(Shared {
+            mode: Mutex::new(self.mode()),
+            model: Mutex::new(self.model.lock().unwrap().clone()),
+            provider: Mutex::new(self.provider.lock().unwrap().clone()),
+            effort: Mutex::new(self.effort.lock().unwrap().clone()),
+            cancel: Default::default(),
+            edit_tools: self.edit_tools.clone(),
+            model_names: self.model_names.clone(),
+            no_vision: self.no_vision.clone(),
+            steer: Default::default(),
+        })
+    }
+
     /// The edit tools that suit `model`; str_replace until the server says otherwise.
     pub fn edit_tool(&self, model: &str) -> EditTool {
         self.edit_tools.lock().unwrap().get(model).copied().unwrap_or_default()
@@ -214,10 +247,15 @@ pub fn command_prefix(cmd: &str) -> String {
     w.first().copied().unwrap_or("").to_string()
 }
 
+/// Roughly what the messages cost. An image is priced by its size on screen, not by the length of its base64.
 fn estimate_tokens(m: &[Message]) -> u64 {
-    serde_json::to_string(m).map(|s| s.len() as u64 / 4).unwrap_or(0)
+    let chars = serde_json::to_string(m).map(|s| s.len() as u64).unwrap_or(0);
+    let images: Vec<u64> = m.iter().filter_map(|m| if let Message::User { content } = m { Some(content.images()) } else { None }).flatten().map(|(_, data)| data.len() as u64).collect();
+    chars.saturating_sub(images.iter().sum()) / 4 + images.len() as u64 * IMAGE_TOKENS
 }
 
+/// About what a provider charges for an image at the size attachments are sent.
+const IMAGE_TOKENS: u64 = 1600;
 /// Tool output above this many characters is cut in the middle before it enters the conversation.
 const MAX_TOOL_CHARS: usize = 40_000;
 /// Tool results shorter than this are never cleared: the stub would save next to nothing.
@@ -279,7 +317,7 @@ pub struct Agent {
     /// The last turn stopped because the ScoutCode account can't pay for its model.
     pub out_of_credit: bool,
     /// A message whose turn failed before it joined the conversation, for a retry to send.
-    unsent: Option<String>,
+    unsent: Option<Content>,
     last_request_at: Option<Instant>,
     sys: Option<(String, EditTool, String, Message)>,
     preferences: crate::instructions::Preferences,
@@ -287,6 +325,55 @@ pub struct Agent {
     specs: (EditTool, Vec<Value>),
     read_only_specs: Vec<Value>,
 }
+
+/// A CLI that runs its own tools over the Agent Client Protocol: see `acp_run`.
+struct AcpCli {
+    /// What `Config::provider` says when a model runs here, and what its tool calls are called.
+    tool: &'static str,
+    name: &'static str,
+    installed: fn() -> bool,
+    ensure_runtime: fn(&mut dyn FnMut(u64, u64)) -> Result<(), String>,
+    start: fn(&str, &str, &str, &str, String, Vec<(String, String)>, bool) -> Result<crate::acp::Run, String>,
+    explain: fn(&str) -> String,
+    /// What to say when it finishes having said nothing.
+    no_reply: &'static str,
+    /// Removes a finished session from its history, where `Run::finish` can't.
+    forget: fn(&str),
+}
+
+static KIRO: AcpCli = AcpCli {
+    tool: "kiro",
+    name: "Kiro",
+    installed: crate::kiro::installed,
+    ensure_runtime: crate::kiro::ensure_runtime,
+    start: crate::kiro::start,
+    explain: crate::kiro::explain,
+    no_reply: "Kiro finished without replying. Try rephrasing, or say \"continue\".",
+    forget: |_| {},
+};
+
+static OPENCODE: AcpCli = AcpCli {
+    tool: "opencode",
+    name: "OpenCode",
+    installed: crate::opencode::installed,
+    ensure_runtime: crate::opencode::ensure_runtime,
+    start: crate::opencode::start,
+    explain: crate::opencode::explain,
+    // It reports a refused model, like one past its free limit, only in its own log.
+    no_reply: "OpenCode finished without replying. A free model may have hit its limit: try another, or sign in under Settings > Account.",
+    forget: crate::opencode::forget,
+};
+
+static GROK: AcpCli = AcpCli {
+    tool: "grok",
+    name: "Grok Build",
+    installed: crate::grok::installed,
+    ensure_runtime: crate::grok::ensure_runtime,
+    start: crate::grok::start,
+    explain: crate::grok::explain,
+    no_reply: "Grok Build finished without replying. Try rephrasing, or say \"continue\".",
+    forget: crate::grok::forget,
+};
 
 impl Agent {
     pub fn new(cfg: Config, session: Session, shared: Arc<Shared>) -> Self {
@@ -369,9 +456,28 @@ impl Agent {
         }
         // The same on Kiro, in its plan mode.
         if provider == "kiro" {
-            let content = self.kiro_run(messages, false, h)?;
+            let content = self.acp_run(&KIRO, messages, false, h)?;
             return Ok(StreamResult { content, ..Default::default() });
         }
+        if provider == "opencode" {
+            let content = self.acp_run(&OPENCODE, messages, false, h)?;
+            return Ok(StreamResult { content, ..Default::default() });
+        }
+        if provider == "grok" {
+            let content = self.acp_run(&GROK, messages, false, h)?;
+            return Ok(StreamResult { content, ..Default::default() });
+        }
+        // A model that can't see images would refuse the whole request, so it gets a note in their place.
+        let without_images: Vec<Message>;
+        let messages = if self.shared.no_vision.lock().unwrap().contains(&model) && messages.iter().any(|m| matches!(m, Message::User { content } if !content.images().is_empty())) {
+            if !quiet && matches!(messages.last(), Some(Message::User { content }) if !content.images().is_empty()) {
+                h.send(Ev::Notice(format!("{} can't see images, so it only got the file names. Pick a model with vision to have it look at them.", self.shared.model_name(&model))));
+            }
+            without_images = messages.iter().map(|m| if let Message::User { content } = m { Message::User { content: content.without_images() } } else { m.clone() }).collect();
+            &without_images[..]
+        } else {
+            messages
+        };
         // OpenRouter tries the user's keys in order. A key that fails hands the request to the next one.
         let mut cfgs: Vec<Config> = if provider == "openrouter" {
             self.cfg
@@ -733,7 +839,7 @@ impl Agent {
         }
         let model = self.shared.model.lock().unwrap().clone();
         let (system, prompt) = crate::copilot::as_prompt(messages);
-        let run = crate::copilot::Run::start(&self.cfg, &model, &self.session.cwd, system, prompt, specs).map_err(fail)?;
+        let run = crate::copilot::Run::start(&self.cfg, &model, &self.session.cwd, system, prompt, crate::copilot::newest_images(messages), specs).map_err(fail)?;
         let (mut text, mut resets, mut said) = (String::new(), None, false);
         let result = loop {
             if self.cancelled() {
@@ -844,7 +950,7 @@ impl Agent {
         if main {
             text_in = format!("<saved_instructions>\n{}</saved_instructions>\n\n{}\n{text_in}", self.preferences.prompt(&cwd), crate::memory::prompt_for_own_tools(&cwd));
         }
-        let run = crate::devin::Run::start(&model, &cwd, &self.shared.mode(), text_in, !main).map_err(fail)?;
+        let run = crate::devin::Run::start(&model, &cwd, &self.shared.mode(), text_in, crate::copilot::newest_images(messages), !main).map_err(fail)?;
         if main {
             h.send(Ev::RequestStart);
         }
@@ -1047,19 +1153,20 @@ impl Agent {
         result
     }
 
-    /// A conversation on Kiro, whose CLI loops over the model and runs its own tools. Scout shows them, and answers what
-    /// it asks permission for by the current mode, but they aren't Scout's to undo. With `main` false it's a one-off
-    /// answer in its plan mode, with everything it asks for refused.
-    fn kiro_run(&mut self, messages: &[Message], main: bool, h: &Hooks) -> Result<String, ApiError> {
-        use crate::kiro::Msg as KiroMsg;
+    /// A conversation on a CLI that loops over the model and runs its own tools. Scout shows them, and answers what it asks
+    /// permission for by the current mode, but they aren't Scout's to undo. With `main` false it's a one-off answer in its
+    /// plan mode, with everything it asks for refused.
+    fn acp_run(&mut self, cli: &AcpCli, messages: &[Message], main: bool, h: &Hooks) -> Result<String, ApiError> {
+        use crate::acp::Msg as CliMsg;
+        let (name, tool) = (cli.name, cli.tool);
         let fail = |message: String| ApiError { message, status: 400, retry_after: None, aborted: false };
-        if !crate::kiro::installed() {
+        if !(cli.installed)() {
             let (hooks, mut shown) = (h.clone(), 0);
-            crate::kiro::ensure_runtime(&mut |done, total| {
+            (cli.ensure_runtime)(&mut |done, total| {
                 let mb = done / 1_000_000;
                 if mb > shown {
                     shown = mb;
-                    hooks.send(Ev::Status(if total > 0 { format!("Downloading Kiro… {}%", done * 100 / total) } else { format!("Downloading Kiro… {mb} MB") }));
+                    hooks.send(Ev::Status(if total > 0 { format!("Downloading {name}… {}%", done * 100 / total) } else { format!("Downloading {name}… {mb} MB") }));
                 }
             })
             .map_err(fail)?;
@@ -1067,16 +1174,16 @@ impl Agent {
         let model = self.shared.model.lock().unwrap().clone();
         let effort = self.shared.effort.lock().unwrap().clone();
         let cwd = self.session.cwd.clone();
-        // Kiro has its own system prompt, and Scout's describes tools it doesn't have. The user's saved instructions and memory still count.
+        // It has its own system prompt, and Scout's describes tools it doesn't have. The user's saved instructions and memory still count.
         let (_, mut text_in) = crate::copilot::as_prompt(messages);
         if main {
             text_in = format!("<saved_instructions>\n{}</saved_instructions>\n\n{}\n{text_in}", self.preferences.prompt(&cwd), crate::memory::prompt_for_own_tools(&cwd));
         }
-        let run = crate::kiro::Run::start(&model, &cwd, &self.shared.mode(), &effort, text_in, !main).map_err(|e| fail(crate::kiro::explain(&e)))?;
+        let run = (cli.start)(&model, &cwd, &self.shared.mode(), &effort, text_in, crate::copilot::newest_images(messages), !main).map_err(|e| fail((cli.explain)(&e)))?;
         if main {
             h.send(Ev::RequestStart);
         }
-        let (mut text, mut said) = (String::new(), false);
+        let (mut text, mut said, mut refused) = (String::new(), false, false);
         // Its calls not finished yet: id → title, input.
         let mut open: HashMap<String, (String, Value)> = HashMap::new();
         let result = loop {
@@ -1086,40 +1193,40 @@ impl Agent {
             }
             let Some(msg) = run.next(Duration::from_millis(100)) else { continue };
             match msg {
-                KiroMsg::Text(t) => {
+                CliMsg::Text(t) => {
                     said = true;
                     text.push_str(&t);
                     if main {
                         h.send(Ev::Text(t));
                     }
                 }
-                KiroMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
-                KiroMsg::Reasoning(_) => {}
-                KiroMsg::Todos(t) if main => {
+                CliMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
+                CliMsg::Reasoning(_) => {}
+                CliMsg::Todos(t) if main => {
                     self.todos = t.clone();
                     h.send(Ev::Todos(t));
                 }
-                KiroMsg::Todos(_) => {}
+                CliMsg::Todos(_) => {}
                 // A call can be announced again as it fills in, and only the first shows.
-                KiroMsg::ToolStart { id, kind, title, input } => {
+                CliMsg::ToolStart { id, kind, title, input } => {
                     if main && !open.contains_key(&id) {
                         let title = if title.is_empty() { kind } else { title };
                         h.send(Ev::AssistantDone);
-                        h.send(Ev::ToolCall { id: id.clone(), name: "kiro".into(), label: title.clone() });
+                        h.send(Ev::ToolCall { id: id.clone(), name: tool.into(), label: title.clone() });
                         open.insert(id, (title, input));
                     }
                 }
-                KiroMsg::ToolEnd { id, failed, text: out } => {
+                CliMsg::ToolEnd { id, failed, text: out } => {
                     let Some((title, input)) = open.remove(&id) else { continue };
                     said = true;
                     let summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
                     h.send(Ev::ToolResult { id: id.clone(), result: ToolResult { output: out.clone(), is_error: failed, summary: Some(summary), display: None } });
-                    let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "kiro".into(), arguments: input.to_string() } };
+                    let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: tool.into(), arguments: input.to_string() } };
                     self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(&mut text)), tool_calls: Some(vec![call]), reasoning_content: None });
                     self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { title } else { out }) });
                     save_session(&mut self.session);
                 }
-                KiroMsg::Permission { id, kind, title, options } => {
+                CliMsg::Permission { id, kind, title, options } => {
                     let allow = main
                         && match self.shared.mode().as_str() {
                             "yolo" => true,
@@ -1127,14 +1234,16 @@ impl Agent {
                             "acceptEdits" if kind == "edit" => true,
                             _ => {
                                 let (tx, rx) = channel();
-                                h.send(Ev::AskPermission(PermissionRequest { tool: "kiro".into(), label: title, preview: None, prefix: None, reason: None }, tx));
+                                h.send(Ev::AskPermission(PermissionRequest { tool: tool.into(), label: title, preview: None, prefix: None, reason: None }, tx));
                                 !matches!(rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())), PermissionAnswer::Deny(_))
                             }
                         };
+                    refused |= !allow;
                     run.reply_permission(&id, allow, &options);
                 }
-                KiroMsg::Idle(stop) => {
-                    if stop == "cancelled" {
+                CliMsg::Idle(stop) => {
+                    // Grok ends its turn as cancelled when a tool is refused, which isn't the user stopping it.
+                    if stop == "cancelled" && !refused {
                         break Err(ApiError::aborted());
                     }
                     if !main {
@@ -1154,21 +1263,22 @@ impl Agent {
                         continue;
                     }
                     match stop.as_str() {
-                        "max_tokens" | "max_turn_requests" => h.send(Ev::Notice("Kiro hit its limit for one turn. Say \"continue\" to keep going.".into())),
-                        "refusal" => h.send(Ev::Notice("Kiro refused this request.".into())),
-                        _ if !said => h.send(Ev::Notice("Kiro finished without replying. Try rephrasing, or say \"continue\".".into())),
+                        "max_tokens" | "max_turn_requests" => h.send(Ev::Notice(format!("{name} hit its limit for one turn. Say \"continue\" to keep going."))),
+                        "refusal" => h.send(Ev::Notice(format!("{name} refused this request."))),
+                        "cancelled" => h.send(Ev::Notice(format!("{name} stopped, since it wasn't allowed to do that. Tell it what to do instead."))),
+                        _ if !said => h.send(Ev::Notice(cli.no_reply.into())),
                         _ => {}
                     }
                     break Ok(String::new());
                 }
-                KiroMsg::Failed(e) => break Err(fail(crate::kiro::explain(&e))),
+                CliMsg::Failed(e) => break Err(fail((cli.explain)(&e))),
             }
         };
         // Whatever it still had going stopped with it.
         for id in open.into_keys() {
             h.send(Ev::ToolResult { id, result: ToolResult::err("Interrupted.", "interrupted") });
         }
-        run.finish();
+        (cli.forget)(&run.finish());
         result
     }
 
@@ -1177,7 +1287,7 @@ impl Agent {
     fn kiro_turn_for_test(&mut self, text: &str, h: &Hooks) -> Result<(), ApiError> {
         self.session.messages.push(Message::User { content: Content::Text(text.into()) });
         let req = self.session.messages.clone();
-        self.kiro_run(&req, true, h).map(|_| ())
+        self.acp_run(&KIRO, &req, true, h).map(|_| ())
     }
 
     /// Tells the model the mode when it changed, at the end of the newest message: earlier messages stay byte-identical.
@@ -1188,7 +1298,11 @@ impl Agent {
         }
         match self.session.messages.last_mut() {
             Some(Message::User { content: Content::Text(t) }) | Some(Message::Tool { content: t, .. }) => t.push_str(&prompt::mode_note(&mode)),
-            Some(Message::User { content: Content::Parts(p) }) => p.push(json!({"type":"text","text":prompt::mode_note(&mode).trim()})),
+            // Onto the text, so that it reads back the same as a plain message.
+            Some(Message::User { content: Content::Parts(p) }) => match p.iter_mut().find_map(|x| x.get_mut("text")) {
+                Some(Value::String(t)) => t.push_str(&prompt::mode_note(&mode)),
+                _ => p.push(json!({"type":"text","text":prompt::mode_note(&mode)})),
+            },
             _ => return,
         }
         self.session.mode = Some(mode);
@@ -1452,7 +1566,7 @@ impl Agent {
         let mut shown = vec![];
         for s in steer {
             self.read_files.extend(s.read);
-            self.session.messages.push(Message::User { content: Content::Text(s.content) });
+            self.session.messages.push(Message::User { content: s.content });
             shown.push((s.text, s.files));
         }
         h.send(Ev::Steered(shown));
@@ -1460,15 +1574,15 @@ impl Agent {
     }
 
     /// Runs the agent loop for one user message until the model stops calling tools.
-    pub fn turn(&mut self, input: String, h: &Hooks) -> Result<(), ApiError> {
+    pub fn turn(&mut self, input: Content, h: &Hooks) -> Result<(), ApiError> {
         self.unsent = Some(input.clone());
         self.reload_instructions()?;
         self.auto_prune(h);
         if self.should_compact() {
             self.compact("", h)?;
         }
-        self.checkpoints.push(Checkpoint { at: self.session.messages.len(), label: input.clone(), files: HashMap::new() });
-        self.session.messages.push(Message::User { content: Content::Text(input) });
+        self.checkpoints.push(Checkpoint { at: self.session.messages.len(), label: input.text(), files: HashMap::new() });
+        self.session.messages.push(Message::User { content: input });
         self.unsent = None;
         save_session(&mut self.session);
         self.carry_on(h)
@@ -1512,12 +1626,14 @@ impl Agent {
             save_session(&mut self.session);
             return r;
         }
-        if *self.shared.provider.lock().unwrap() == "kiro" {
-            self.session.model = self.shared.model.lock().unwrap().clone();
-            let req = self.session.messages.clone();
-            let r = self.kiro_run(&req, true, h).map(|_| ());
-            save_session(&mut self.session);
-            return r;
+        for cli in [&KIRO, &OPENCODE, &GROK] {
+            if *self.shared.provider.lock().unwrap() == cli.tool {
+                self.session.model = self.shared.model.lock().unwrap().clone();
+                let req = self.session.messages.clone();
+                let r = self.acp_run(cli, &req, true, h).map(|_| ());
+                save_session(&mut self.session);
+                return r;
+            }
         }
 
         for step in 0..200 {
@@ -1599,6 +1715,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_workers_events_say_which_chat_they_are_from() {
+        let (tx, rx) = channel();
+        let h = Hooks { chat: Some(7), tx, ctx: crate::waker::Waker::default() };
+        h.clone().send(Ev::Status("working".into()));
+        assert!(matches!(rx.try_recv(), Ok(Ev::ForChat(7, ev)) if matches!(*ev, Ev::Status(ref s) if s == "working")));
+        Hooks { chat: None, ..h }.send(Ev::User("someone".into()));
+        assert!(matches!(rx.try_recv(), Ok(Ev::User(_))));
+    }
+
+    #[test]
+    fn chats_stop_and_change_settings_on_their_own() {
+        let a = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(true), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
+        a.steer.lock().unwrap().push(Steer { text: "t".into(), files: vec![], content: "t".into(), read: vec![] });
+        let b = a.for_new_chat();
+        assert_eq!((b.mode(), b.model.lock().unwrap().as_str(), b.provider.lock().unwrap().as_str()), ("plan".to_string(), "m", "kilo"));
+        assert!(!b.cancel.load(Ordering::Relaxed));
+        assert!(b.steer.lock().unwrap().is_empty());
+        *b.model.lock().unwrap() = "other".into();
+        assert_eq!(*a.model.lock().unwrap(), "m");
+        // The model list comes once, for all of them.
+        a.model_names.lock().unwrap().insert("m".into(), "M".into());
+        assert_eq!(b.model_name("m"), "M");
+    }
+
+    #[test]
     fn auto_mode_edits_stay_in_the_project() {
         let cwd = if cfg!(windows) { r"C:\work\app" } else { "/work/app" };
         assert!(inside_project(cwd, "src/main.rs"));
@@ -1622,10 +1763,10 @@ mod tests {
         assert!(!models.is_empty());
         let dir = std::env::temp_dir().join(format!("scout-kiro-{}", crate::session::now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("auto".into()), provider: Mutex::new("kiro".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("auto".into()), provider: Mutex::new("kiro".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&dir.to_string_lossy(), "auto"), shared.clone());
         let (tx, rx) = channel();
-        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let h = Hooks { chat: None, tx, ctx: crate::waker::Waker::default() };
         // Answers what Kiro asks with `allow`, and prints the rest. Returns how many times it was asked.
         let turn = |agent: &mut Agent, text: &str, allow: bool| {
             let mut asked = 0;
@@ -1684,11 +1825,12 @@ mod tests {
             cancel: AtomicBool::new(false),
             edit_tools: Default::default(),
             model_names: Default::default(),
+            no_vision: Default::default(),
             steer: Default::default(),
         });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&dir.to_string_lossy(), "auto"), shared.clone());
         let (tx, rx) = channel();
-        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let h = Hooks { chat: None, tx, ctx: crate::waker::Waker::default() };
         let show = |rx: &std::sync::mpsc::Receiver<Ev>| {
             let mut text = String::new();
             let mut tools = vec![];
@@ -1777,11 +1919,12 @@ mod tests {
             cancel: AtomicBool::new(false),
             edit_tools: Default::default(),
             model_names: Default::default(),
+            no_vision: Default::default(),
             steer: Default::default(),
         });
         let mut agent = Agent::new(cfg, crate::session::new_session(&dir.to_string_lossy(), "auto"), shared.clone());
         let (tx, rx) = channel();
-        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let h = Hooks { chat: None, tx, ctx: crate::waker::Waker::default() };
         let show = |rx: &std::sync::mpsc::Receiver<Ev>| {
             let mut text = String::new();
             for ev in rx.try_iter() {
@@ -1836,11 +1979,12 @@ mod tests {
             cancel: AtomicBool::new(false),
             edit_tools: Default::default(),
             model_names: Default::default(),
+            no_vision: Default::default(),
             steer: Default::default(),
         });
         let mut agent = Agent::new(cfg.clone(), crate::session::new_session(&cwd, &cfg.model), shared);
         let (tx, rx) = channel();
-        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let h = Hooks { chat: None, tx, ctx: crate::waker::Waker::default() };
         let r = agent.turn("Create a file hello.txt containing exactly `hi from scout`, then run a shell command that prints its contents. Reply in one short sentence.".into(), &h);
         let mut text = String::new();
         for ev in rx.try_iter() {
@@ -1901,11 +2045,11 @@ mod tests {
     }
 
     fn kilo_agent() -> (Agent, Hooks) {
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("kilo-auto/free".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("kilo-auto/free".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut cfg = config::load_config();
         (cfg.kilo_enabled, cfg.kilo_key) = (true, None);
         let (tx, _) = std::sync::mpsc::channel();
-        (Agent::new(cfg, crate::session::new_session(".", "kilo-auto/free"), shared), Hooks { tx, ctx: Default::default() })
+        (Agent::new(cfg, crate::session::new_session(".", "kilo-auto/free"), shared), Hooks { chat: None, tx, ctx: Default::default() })
     }
 
     // One test, since the URL is in the environment and tests run side by side.
@@ -1935,11 +2079,11 @@ mod tests {
 
     #[test]
     fn mcp_tools_need_permission() {
-        let shared = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(".", "m"), shared.clone());
         agent.cfg.allow.clear();
         let (tx, rx) = channel();
-        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let h = Hooks { chat: None, tx, ctx: crate::waker::Waker::default() };
         let call = ToolCall { id: "1".into(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "mcp__srv__do_it".into(), arguments: r#"{"a":1}"#.into() } };
         // Plan mode is read-only, and a server's tool might do anything.
         assert!(agent.run_tool(&call, &h).output.contains("read-only"));
@@ -1983,7 +2127,7 @@ mod tests {
         std::fs::write(&a, "v2").unwrap();
         std::fs::write(&b, "made in turn two").unwrap();
         let cwd = dir.to_string_lossy().to_string();
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&cwd, "m"), shared);
         let edit = |id: &str| Message::Assistant {
             content: None,

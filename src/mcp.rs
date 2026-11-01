@@ -37,13 +37,13 @@ fn bridge(cfg: &Config, cwd: &str, mode: &str) -> (Agent, Hooks, Receiver<Ev>) {
         effort: Mutex::new("none".into()),
         cancel: AtomicBool::new(false),
         edit_tools: Default::default(),
-        model_names: Default::default(),
+        model_names: Default::default(), no_vision: Default::default(),
         steer: Default::default(),
     });
     let mut agent = Agent::new(cfg.clone(), crate::session::new_session(cwd, &cfg.model), shared);
     agent.read_only_note = "Scout is read-only here. To allow edits and commands, the user has to choose another permission mode.";
     let (tx, rx) = channel();
-    (agent, Hooks { tx, ctx: crate::waker::Waker::default() }, rx)
+    (agent, Hooks { chat: None, tx, ctx: crate::waker::Waker::default() }, rx)
 }
 
 fn call_tool(agent: &mut Agent, h: &Hooks, id: &str, name: &str, args: &Value) -> ToolResult {

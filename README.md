@@ -83,6 +83,64 @@ To move to a new version, take it and the hashes from Kiro's
 `src/kiro.rs`. Read `kiro-cli acp --help` and the [ACP migration guide](https://kiro.dev/docs/cli/v3/acp-migration/), and run
 `cargo test -- --ignored live_kiro --nocapture` while signed in.
 
+### OpenCode
+
+Settings > Account or the model menu downloads OpenCode's CLI (about 80 MB, unpacking to about 200 MB, checked against the
+hashes in `src/opencode.rs`) to `~/.scoutcode/runtime/opencode`. `src/opencode.rs` runs it as `opencode acp --pure`, one
+process per turn, and speaks the Agent Client Protocol to it, through `src/acp.rs` as Kiro does. Its free models need no
+account. `opencode console login`, OpenCode's own device sign-in, adds an account's paid models.
+
+- OpenCode runs its own tools, so Scout shows them and answers what it asks permission for, but its edits are outside
+  Scout's diffs and undo. `OPENCODE_PERMISSION` makes it ask about everything that isn't only looking.
+- `OPENCODE_DISABLE_PROJECT_CONFIG` has to stay on: a repo's `opencode.json` otherwise wins over `OPENCODE_PERMISSION` and
+  can turn off every question.
+- **A project's own OpenCode code is refused.** OpenCode runs `.opencode/plugin*/*` as each prompt starts, before anything is
+  asked, whatever `--pure` and `OPENCODE_DISABLE_PROJECT_CONFIG` say (`packages/core/src/config.ts` has no check as of
+  1.19.5), and agents can change what's asked. So `project_code` looks first, every turn, and Scout doesn't start OpenCode
+  in a project that has any. Check this again with each new version.
+- Scout's copy is separate from any other OpenCode on the PC: its sign-in, settings and history are in
+  `~/.scoutcode/runtime/opencode-home`, through the `XDG_*` variables, and every `OPENCODE_*` variable from outside is dropped.
+- It brings its own system prompt. Scout sends the conversation as text, with the user's saved instructions. A finished
+  session is deleted from its history with `opencode session delete`, since ACP has no call for that.
+- When a model refuses, such as past a free limit, the turn ends normally with no text and the reason only in OpenCode's log.
+
+To move to a new version, take it and the SHA-256 digests from
+[its GitHub release](https://github.com/anomalyco/opencode/releases), and change `VERSION` and `PACKAGES` in `src/opencode.rs`.
+Free models need 1.18.0 or newer. Then run this, which checks all of the above against the real CLI in a throwaway home:
+`SCOUT_HOME=<temp> cargo test -- --ignored live_opencode --nocapture`. It can't cover signing in, which needs an account.
+
+### Grok Build
+
+Settings > Account or the model menu downloads xAI's Grok Build CLI (about 50 MB from npm, unpacking to about 150-175 MB, checked
+against the hashes in `src/grok.rs`) to `~/.scoutcode/runtime/grok`. `src/grok.rs` runs it as `grok agent --no-leader stdio`, one
+process per turn, and speaks the Agent Client Protocol to it, through `src/acp.rs` as Kiro and OpenCode do. It works on a Grok
+sign-in, through `grok login --device-auth`, or on an xAI key saved in Scout, passed as `XAI_API_KEY`. With both, the CLI uses
+the sign-in.
+
+- Grok Build runs its own tools, so Scout shows them and answers what it asks permission for, but its edits are outside Scout's
+  diffs and undo. It doesn't ask about what it counts as read-only, including `mkdir` and `touch`.
+- **A project's own Grok code stays off because the folder is never trusted.** Hooks, plugins, MCP and LSP servers, agents,
+  skills, permission rules and `AGENTS.md` all wait on folder trust, which only `--trust` or a prompt can grant, and Scout does
+  neither. `GROK_FOLDER_TRUST=0` would turn the check off, so every `GROK_*` variable from outside is dropped.
+- **The home folder and drive roots are refused.** The CLI treats them as trusted without asking, and a repo's hooks and MCP
+  servers really do run there as of 1.0.70, so `start` doesn't run it in them. Check this again with each new version.
+- Scout's copy is separate from any other Grok on the PC: its sign-in, settings and history are in
+  `~/.scoutcode/runtime/grok-home`, through `GROK_HOME`. `src/grok.rs` rewrites its `config.toml` before every run, which turns
+  off Claude Code and Cursor compatibility, updates, telemetry and remembered approvals.
+- It still loads the permission rules in `~/.claude/settings.json`, and no setting stops that. As of 1.0.70 they didn't skip
+  Scout's question for a shell command, even with `Bash(*)` allowed and `defaultMode` on `bypassPermissions`.
+- Refusing a tool ends Grok's turn with `cancelled`, so `acp_run` tells that apart from the user stopping it.
+- It brings its own system prompt. Scout sends the conversation as text, with the user's saved instructions. A finished session
+  is deleted from its history with `grok sessions delete`, since ACP has no call for that. It also asks the model for a session
+  title on each new session, which a key pays for.
+- The ACP handshake only offers `xai.api_key` once a request to `/v1/api-key` accepts the key, so a bad key shows up as
+  "Authentication required".
+
+To move to a new version, use the `latest` tag of `@xai-official/grok` on npm (`alpha` is ahead of it), hash each
+`@xai-official/grok-<platform>` package for `PACKAGES`, and change `VERSION` in `src/grok.rs`. A package's own `latest` tag is
+out of date, so ask for the version by name. Then run this, which checks all of the above against the real CLI in a throwaway
+home: `SCOUT_HOME=<temp> SCOUT_GROK_TEST_KEY=<key> cargo test -- --ignored live_grok --nocapture`. It can't cover signing in.
+
 ### Publishing a release
 
 ```powershell

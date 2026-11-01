@@ -355,6 +355,8 @@ struct Server {
     child: Child,
     conn: Arc<Conn>,
     terminals: Terminals,
+    /// It said it takes images in a prompt.
+    images: bool,
 }
 
 impl Server {
@@ -398,13 +400,15 @@ impl Server {
             // Whoever is still waiting hears it stopped.
             reader_conn.waiting.lock().unwrap().clear();
         });
-        let server = Server { child, conn, terminals };
+        let mut server = Server { child, conn, terminals, images: false };
         // Offering files and a terminal is what makes Devin send its reads, writes and commands here.
         let hello = json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": true, "writeTextFile": true}, "terminal": true}, "clientInfo": {"name": "scout-desktop", "version": env!("CARGO_PKG_VERSION")}});
         match server.conn.call("initialize", hello, Duration::from_secs(30)) {
-            Ok(_) => Ok(server),
+            Ok(r) => {
+                server.images = crate::acp::takes_images(&r);
+                Ok(server)
+            }
             Err(e) => {
-                let mut server = server;
                 server.stop();
                 Err(e)
             }
@@ -459,7 +463,7 @@ pub struct Run {
 
 impl Run {
     /// Starts a session and sends `prompt`. `quiet` is a one-off answer from Devin's summarizer, which has no tools.
-    pub fn start(model: &str, cwd: &str, mode: &str, prompt: String, quiet: bool) -> Result<Run, String> {
+    pub fn start(model: &str, cwd: &str, mode: &str, prompt: String, images: Vec<(String, String)>, quiet: bool) -> Result<Run, String> {
         let mut args = vec!["acp"];
         if model != "auto" {
             args.extend(["--model", model]);
@@ -481,7 +485,7 @@ impl Run {
             let _ = server.conn.call("session/set_mode", json!({"sessionId": session, "modeId": mode_for(mode)}), Duration::from_secs(10));
         }
         let run = Run { rx, tx, server, session };
-        run.send(prompt);
+        run.send_prompt(crate::acp::prompt_blocks(prompt, if run.server.images { &images } else { &[] }));
         Ok(run)
     }
 
@@ -491,7 +495,11 @@ impl Run {
 
     /// Sends a prompt; Msg::Idle says when it's done. Only one runs at a time, and the agent waits for that.
     pub fn send(&self, text: String) {
-        let answer = self.server.conn.ask("session/prompt", json!({"sessionId": self.session, "prompt": [{"type": "text", "text": text}]}));
+        self.send_prompt(crate::acp::prompt_blocks(text, &[]));
+    }
+
+    fn send_prompt(&self, prompt: Value) {
+        let answer = self.server.conn.ask("session/prompt", json!({"sessionId": self.session, "prompt": prompt}));
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let _ = tx.send(match answer.recv() {

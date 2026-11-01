@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod acp;
 mod agent;
 mod attach;
 mod api;
@@ -11,12 +12,14 @@ mod devin;
 mod kiro;
 mod diff;
 mod dock;
+mod grok;
 mod instructions;
 mod mcp;
 mod mcp_client;
 mod memory;
 mod notify;
 mod oauth;
+mod opencode;
 mod patch;
 mod prompt;
 mod session;

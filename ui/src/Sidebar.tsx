@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { act, invoke, openExternal } from './api';
+import { act, invoke, openExternal, type View } from './api';
 import { ui, useCore, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
 import logo from '../../assets/icon.png';
@@ -12,18 +12,26 @@ export async function addProject() {
   if (dir) ui.set({ renaming: dir });
 }
 
-function SessionRow({ s, current, enabled, tip }: { s: { id: string; title: string; ago: string }; current: boolean; enabled: boolean; tip?: string }) {
-  const { running } = useView('run');
+/** How a chat is doing, for one that isn't on screen as well as the one that is. */
+function SessionState({ s }: { s: View['sessions'][number] }) {
+  if (s.waiting) return <span className="session-dot waiting" title="Scout needs your answer" />;
+  if (s.running) return <span className="session-state" title="Scout is working"><Spinner size={11} /></span>;
+  if (s.unread) return <span className="session-dot" title="Finished" />;
+  return null;
+}
+
+function SessionRow({ s, current, tip }: { s: View['sessions'][number]; current: boolean; tip?: string }) {
   return (
     <div className={`session-row ${current ? 'selected' : ''}`} title={tip}>
-      <button type="button" className="session-open" disabled={!enabled} onClick={() => act('openChat', { id: s.id })}>
+      <button type="button" className="session-open" onClick={() => act('openChat', { id: s.id })}>
+        <SessionState s={s} />
         <span className="ellipsis grow">{s.title}</span>
         <span className="tiny dim when">{s.ago}</span>
       </button>
       <Popover width={150} trigger={(_, toggle) => <IconButton icon="more" tip="More" size={24} className="row-more" onClick={toggle} />}>
         {(close) => (
           // The chat Scout is working in stays until it's done.
-          <MenuItem disabled={current && running} onClick={() => { close(); ui.set({ deleting: { id: s.id, title: s.title } }); }}>Delete…</MenuItem>
+          <MenuItem disabled={s.running} onClick={() => { close(); ui.set({ deleting: { id: s.id, title: s.title } }); }}>Delete…</MenuItem>
         )}
       </Popover>
     </div>
@@ -34,7 +42,6 @@ function Projects() {
   const projects = useView('projects');
   const sessions = useView('sessions');
   const chat = useView('chat');
-  const { running } = useView('run');
   const renaming = useUi((u) => u.renaming);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState('');
@@ -74,11 +81,11 @@ function Projects() {
                   <Icon name="folder" size={15} />
                   <span className="ellipsis">{p.name}</span>
                 </button>
-                <IconButton icon="plus" tip="New chat here" size={24} className="row-more" disabled={running} onClick={() => act('changeProject', { dir: p.path })} />
+                <IconButton icon="plus" tip="New chat here" size={24} className="row-more" onClick={() => act('changeProject', { dir: p.path })} />
                 <Popover width={170} trigger={(_, toggle) => <IconButton icon="more" tip="More" size={24} className="row-more" onClick={toggle} />}>
                   {(close) => (
                     <>
-                      <MenuItem disabled={running} onClick={() => { close(); act('changeProject', { dir: p.path }); }}>New chat</MenuItem>
+                      <MenuItem onClick={() => { close(); act('changeProject', { dir: p.path }); }}>New chat</MenuItem>
                       <MenuItem onClick={() => { close(); ui.set({ renaming: p.path }); }}>Rename</MenuItem>
                       {/* The open project stays, so the chat on screen always has one. */}
                       {!here && <MenuItem onClick={() => { close(); act('removeProject', { path: p.path }); }}>Remove from list</MenuItem>}
@@ -89,7 +96,7 @@ function Projects() {
             )}
             {open && (
               <div className="project-chats">
-                {list.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} enabled={!running} />)}
+                {list.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} />)}
                 {list.length === 0 && <div className="small dim no-chats">No chats yet</div>}
               </div>
             )}
@@ -105,7 +112,6 @@ function SearchResults({ query }: { query: string }) {
   const sessions = useView('sessions');
   const projects = useView('projects');
   const chat = useView('chat');
-  const { running } = useView('run');
   const [hits, setHits] = useState<{ q: string; ids: Set<string> } | null>(null);
   const q = query.trim();
   useEffect(() => {
@@ -119,7 +125,7 @@ function SearchResults({ query }: { query: string }) {
     <>
       <div className="row side-label"><SectionLabel>Results</SectionLabel>{!found && <Spinner size={11} />}</div>
       <div className="side-scroll">
-        {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} enabled={!running} tip={projects.find((p) => sameDir(p.path, s.cwd))?.name} />)}
+        {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} tip={projects.find((p) => sameDir(p.path, s.cwd))?.name} />)}
         {rows.length === 0 && found && <div className="small dim no-chats">No chats match.</div>}
       </div>
     </>
@@ -130,7 +136,7 @@ function Profile() {
   const cfg = useView('cfg');
   const { additionalProviders } = useCore((s) => s.statics);
   const linked = additionalProviders.find((a) => a.id === cfg.additional[0]?.id)?.name;
-  const name = cfg.username ?? (cfg.browserSignIn ? 'Signed in' : cfg.hasKey ? 'API key' : cfg.openrouterKeys.length ? 'OpenRouter key' : cfg.nvidiaKey ? 'NVIDIA key' : linked ?? 'Kilo Code');
+  const name = cfg.username ?? (cfg.browserSignIn ? 'Signed in' : cfg.hasKey ? 'API key' : cfg.openrouterKeys.length ? 'OpenRouter key' : cfg.nvidiaKey ? 'NVIDIA key' : cfg.opencode ? 'OpenCode' : cfg.grokSignedIn || cfg.grokKey ? 'Grok Build' : linked ?? 'Kilo Code');
   return (
     <div className="profile">
       <Popover side="top" className="profile-menu" width={240} trigger={(_, toggle) => (
@@ -154,7 +160,6 @@ function Profile() {
 }
 
 export function Sidebar() {
-  const { running } = useView('run');
   const [search, setSearch] = useState('');
   const [width, setWidth] = useState(264);
   return (
@@ -165,7 +170,7 @@ export function Sidebar() {
         <span className="grow" data-tauri-drag-region />
         <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />
       </div>
-      <button type="button" className="new-chat" disabled={running} onClick={() => act('newChat')}>
+      <button type="button" className="new-chat" onClick={() => act('newChat')}>
         <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
       </button>
       <div className="side-search">
@@ -178,7 +183,7 @@ export function Sidebar() {
           <div className="row side-label">
             <SectionLabel>Projects</SectionLabel>
             <span className="grow" />
-            <IconButton icon="plus" tip="Add a project folder" size={24} disabled={running} onClick={addProject} />
+            <IconButton icon="plus" tip="Add a project folder" size={24} onClick={addProject} />
           </div>
           <Projects />
         </>

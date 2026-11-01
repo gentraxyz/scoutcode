@@ -6,6 +6,9 @@ import { Link, Spinner } from './widgets';
 
 export const COPILOT_NOTE = "Uses your own GitHub account's Copilot plan, from this PC. Each request counts against that plan's allowance, so don't share an account or run it unattended at volume. Signing in downloads about 150 MB.";
 export const KIRO_NOTE = "Uses your own Kiro account and plan, from this PC, so your chats go to AWS and its model providers, and Kiro's free plan allows 50 credits a month. Don't share an account. Kiro runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. Signing in downloads about 330 MB and shares the sign-in with any other Kiro CLI on this PC.";
+export const OPENCODE_WARNING = "Some of OpenCode's free models may keep your prompts or use them to improve the model, so don't send them anything private.";
+export const OPENCODE_NOTE = `Its free models need no account, and signing in to your OpenCode account adds the paid ones, billed by OpenCode. ${OPENCODE_WARNING} OpenCode runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It downloads about 80 MB, and keeps its sign-in and settings apart from any other OpenCode on this PC.`;
+export const GROK_NOTE = "Uses your own Grok sign-in, or an xAI API key billed per token, from this PC, so your chats go to xAI. Don't share an account. Grok Build runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It doesn't read a project's AGENTS.md or other Grok settings, and won't run in your home folder. It downloads about 50 MB, and keeps its sign-in and settings apart from any other Grok on this PC.";
 export const DEVIN_NOTE = "Uses your own Devin account and plan, from this PC, so your chats go to Cognition and its model providers. Don't share an account. Scout's permissions and undo cover Devin's edits and commands; its searches run inside Devin. Signing in downloads about 75 MB and shares the sign-in with any other Devin CLI on this PC.";
 
 /** A password field and a button under it. */
@@ -56,14 +59,50 @@ export function NvidiaEntry() {
   );
 }
 
+/** Turning on OpenCode for its free models, or signing in for the rest. Either one downloads its CLI. */
+export function OpencodeEntry() {
+  const login = useView('login');
+  if (login.opencode) return <SignInEntry which="opencode" />;
+  return (
+    <div className="stack">
+      <button type="button" className="button wide" onClick={() => act('setOpencode', { on: true, uninstall: false })}>Use OpenCode's free models</button>
+      <SignInEntry which="opencode" />
+    </div>
+  );
+}
+
+/** Signing in to Grok, or an API key instead. Either one downloads its CLI. */
+export function GrokEntry() {
+  const login = useView('login');
+  if (login.grok) return <SignInEntry which="grok" />;
+  return (
+    <div className="stack">
+      <SignInEntry which="grok" />
+      <GrokKeyEntry />
+    </div>
+  );
+}
+
+export function GrokKeyEntry() {
+  return (
+    <div className="stack">
+      <div className="small dim">Or use an API key:</div>
+      <Link href="https://console.x.ai" className="small">Make a key at console.x.ai</Link>
+      <KeyField hint="xai-…" button="Save xAI key" onSave={(key) => act('saveGrokKey', { key })} />
+    </div>
+  );
+}
+
 const SIGN_INS = {
   copilot: { name: 'Copilot', button: 'Sign in with GitHub' },
   devin: { name: 'Devin', button: 'Sign in to Devin' },
   kiro: { name: 'Kiro', button: 'Sign in to Kiro' },
+  opencode: { name: 'OpenCode', button: 'Sign in to OpenCode' },
+  grok: { name: 'Grok Build', button: 'Sign in to Grok' },
 };
 
 /** The sign-in button, or the code and the download's progress while it's going on. */
-export function SignInEntry({ which }: { which: 'copilot' | 'devin' | 'kiro' }) {
+export function SignInEntry({ which }: { which: 'copilot' | 'devin' | 'kiro' | 'opencode' | 'grok' }) {
   const login = useView('login');
   const s = login[which];
   const error = login[`${which}Error`];
@@ -76,7 +115,8 @@ export function SignInEntry({ which }: { which: 'copilot' | 'devin' | 'kiro' }) 
       </div>
     );
   }
-  const line = s.installed ? `${name} is installed.`
+  const line = (which === 'opencode' || which === 'grok') && s.code ? 'Waiting for you to approve the code.'
+    : s.installed ? `${name} is installed.`
     : s.waiting ? 'Finish signing in with the browser window that opened.'
     : s.total > 0 ? `Installing ${name}… ${Math.floor((s.done * 100) / s.total)}%`
     : `Installing ${name}…`;
@@ -85,7 +125,7 @@ export function SignInEntry({ which }: { which: 'copilot' | 'devin' | 'kiro' }) 
       {s.code ? (
         <>
           <div className="sign-in-code">{s.code}</div>
-          <div className="small dim">Enter this code on GitHub to sign in. Your browser should have opened the page.</div>
+          <div className="small dim">Enter this code on {which === 'opencode' ? 'OpenCode' : which === 'grok' ? 'xAI' : 'GitHub'} to sign in. Your browser should have opened the page.</div>
           {s.url && <Link href={s.url} className="small">Open the page again</Link>}
         </>
       ) : <Spinner />}

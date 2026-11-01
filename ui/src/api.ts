@@ -19,8 +19,8 @@ export type Item =
 
 export type Model = {
   id: string; label: string; description: string | null; context: number | null; tools: boolean | null; vision: boolean | null; cost: string | null;
-  providers: string[]; routesTo: string[]; available: boolean | null; openrouterId: string | null; nvidiaId: string | null; kiloId: string | null; kiloFree: boolean;
-  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
+  providers: string[]; routesTo: string[]; available: boolean | null; openrouterId: string | null; nvidiaId: string | null; opencodeId: string | null; kiloId: string | null; kiloFree: boolean;
+  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; grokId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
   tier: number | null; openrouterTier: number | null;
 };
 
@@ -49,7 +49,7 @@ export type UpdateStatus =
 export type View = {
   cfg: {
     loginNeeded: boolean; hasKey: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
-    nvidiaKey: string | null; kiloKey: string | null; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean;
+    nvidiaKey: string | null; kiloKey: string | null; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null;
     additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; autoUpdate: boolean; autoCompactTokens: number;
   };
   mode: string;
@@ -59,7 +59,9 @@ export type View = {
   modelsLoading: number;
   additionalErrors: string[];
   kiroModelsError: string | null;
-  run: { running: boolean; stopping: boolean; status: string };
+  opencodeModelsError: string | null;
+  grokModelsError: string | null;
+  run: { running: boolean; stopping: boolean; status: string; anyRunning: boolean };
   todos: Todo[];
   totals: { totals: { promptTokens: number; completionTokens: number; cost: number; requests: number; balance?: number; cachedTokens: number }; context: number };
   permission: Permission | null;
@@ -67,14 +69,14 @@ export type View = {
   questions: Question[] | null;
   queue: { text: string; files: number }[];
   steering: string[];
-  sessions: { id: string; cwd: string; title: string; ago: string }[];
+  sessions: { id: string; cwd: string; title: string; ago: string; running: boolean; waiting: boolean; unread: boolean }[];
   projects: { name: string; path: string }[];
   chat: { id: string | null; cwd: string; project: string; title: string; epoch: number };
   filesEpoch: number;
   focusEpoch: number;
   login: {
     busy: boolean; url: string | null; error: string | null; kiloCheck: { ok: boolean; message: string } | null;
-    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null;
+    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null; opencode: SignIn | null; opencodeError: string | null; grok: SignIn | null; grokError: string | null;
   };
   skills: { name: string; about: string; source: string | null; dir: string }[];
   link: { on: boolean; cwd: string; status: string; log: string[]; permission: Permission | null };
@@ -89,7 +91,7 @@ export type Statics = {
   efforts: string[];
   additionalProviders: { id: string; name: string; needsKey: boolean; note: string; keyUrl: string; keyLink: string; keyHint: string }[];
   kiloWarning: string;
-  plans: { copilot: string; devin: string; kiro: string };
+  plans: { copilot: string; devin: string; kiro: string; opencode: string; grok: string };
   languages: [string, string][];
   exe: string;
 };

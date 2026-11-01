@@ -36,15 +36,41 @@ pub enum Content {
 }
 
 impl Content {
+    /// What was written, without the images.
     pub fn text(&self) -> String {
         match self {
             Content::Text(s) => s.clone(),
-            Content::Parts(p) => p
-                .iter()
-                .map(|x| x.get("text").and_then(Value::as_str).unwrap_or("[image]"))
-                .collect::<Vec<_>>()
-                .join(" "),
+            Content::Parts(p) => p.iter().filter_map(|x| x.get("text").and_then(Value::as_str)).collect(),
         }
+    }
+
+    /// The images sent as data URLs, as (media type, base64).
+    pub fn images(&self) -> Vec<(String, String)> {
+        let Content::Parts(p) = self else { return vec![] };
+        p.iter()
+            .filter_map(|x| x.pointer("/image_url/url")?.as_str()?.strip_prefix("data:")?.split_once(";base64,"))
+            .map(|(mime, data)| (mime.to_string(), data.to_string()))
+            .collect()
+    }
+
+    /// The same, with each image replaced by a note, for a model that can't see them.
+    pub fn without_images(&self) -> Content {
+        match self {
+            Content::Text(s) => Content::Text(s.clone()),
+            Content::Parts(p) => Content::Parts(p.iter().map(|x| if x.get("image_url").is_some() { json!({"type": "text", "text": "\n\n[An image was attached here, but this model can't see images.]"}) } else { x.clone() }).collect()),
+        }
+    }
+}
+
+impl From<String> for Content {
+    fn from(s: String) -> Self {
+        Content::Text(s)
+    }
+}
+
+impl From<&str> for Content {
+    fn from(s: &str) -> Self {
+        Content::Text(s.to_string())
     }
 }
 
@@ -211,6 +237,8 @@ pub struct ModelInfo {
     pub openrouter_id: Option<String>,
     /// The id NVIDIA NIM knows it by, when NIM serves it too. Set for NIM's own entries as well.
     pub nvidia_id: Option<String>,
+    /// The id OpenCode knows it by. OpenCode's entries are their own too, under "opencode/…", for the same reason.
+    pub opencode_id: Option<String>,
     /// The id Kilo knows it by, when Kilo serves it.
     pub kilo_id: Option<String>,
     /// Costs nothing on Kilo.
@@ -223,6 +251,8 @@ pub struct ModelInfo {
     pub devin_id: Option<String>,
     /// The id Kiro knows it by. Kiro's entries are their own too, under "kiro/…", for the same reason.
     pub kiro_id: Option<String>,
+    /// The id Grok Build knows it by. Its entries are their own too, under "grok/…", for the same reason.
+    pub grok_id: Option<String>,
     /// The additional provider that serves it, and the id it knows it by. These entries are their own too, under "ovh/…"
     /// and the like: the same name there can be a different build at a different price.
     pub additional: Option<(&'static str, String)>,
@@ -274,12 +304,14 @@ impl ModelInfo {
             edit_tool: crate::tools::EditTool::parse(m.get("edit_tool").and_then(Value::as_str).unwrap_or("")),
             openrouter_id: None,
             nvidia_id: None,
+            opencode_id: None,
             kilo_id: None,
             kilo_free: false,
             kilo_tier: None,
             copilot_id: None,
             devin_id: None,
             kiro_id: None,
+            grok_id: None,
             additional: None,
             hosted: false,
             free,
@@ -298,6 +330,9 @@ impl ModelInfo {
 
     /// The id to send for this model to `provider`.
     pub fn request_id(&self, provider: &str) -> &str {
+        if let ("opencode", Some(id)) = (provider, &self.opencode_id) {
+            return id;
+        }
         if let ("copilot", Some(id)) = (provider, &self.copilot_id) {
             return id;
         }
@@ -305,6 +340,9 @@ impl ModelInfo {
             return id;
         }
         if let ("kiro", Some(id)) = (provider, &self.kiro_id) {
+            return id;
+        }
+        if let ("grok", Some(id)) = (provider, &self.grok_id) {
             return id;
         }
         if let Some((_, id)) = self.additional.as_ref().filter(|(p, _)| *p == provider) {

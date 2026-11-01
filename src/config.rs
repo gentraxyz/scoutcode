@@ -98,9 +98,17 @@ pub struct Config {
     pub devin_enabled: bool,
     /// The user has signed in to Kiro here. Its CLI keeps the token; Scout never sees it.
     pub kiro_enabled: bool,
+    /// The user has turned on OpenCode here. Its free models need no account.
+    pub opencode_enabled: bool,
+    /// The user has signed in to an OpenCode account here. Its CLI keeps the token; Scout never sees it.
+    pub opencode_signed_in: bool,
+    /// The user has signed in to Grok here. Its CLI keeps the token; Scout never sees it.
+    pub grok_signed_in: bool,
+    /// The user's own xAI key, for Grok Build without a sign-in.
+    pub grok_key: Option<String>,
     /// The additional providers the user has linked, in the order they linked them.
     pub additional: Vec<LinkedProvider>,
-    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro" or an additional provider's id. The model is that provider's id for it.
+    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok" or an additional provider's id. The model is that provider's id for it.
     pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
     pub username: Option<String>,
@@ -203,6 +211,10 @@ pub fn load_config() -> Config {
         copilot_user: s.get("copilotUser").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         devin_enabled: s.get("devinEnabled").and_then(Value::as_bool).unwrap_or(false),
         kiro_enabled: s.get("kiroEnabled").and_then(Value::as_bool).unwrap_or(false),
+        opencode_enabled: s.get("opencodeEnabled").and_then(Value::as_bool).unwrap_or(false),
+        opencode_signed_in: s.get("opencodeSignedIn").and_then(Value::as_bool).unwrap_or(false),
+        grok_signed_in: s.get("grokSignedIn").and_then(Value::as_bool).unwrap_or(false),
+        grok_key: s.get("grokKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         additional: s
             .get("additionalProviders")
             .and_then(|v| serde_json::from_value::<Vec<LinkedProvider>>(v.clone()).ok())
@@ -265,9 +277,13 @@ impl Config {
         self.kilo_enabled || self.kilo_key.is_some()
     }
 
+    pub fn grok_on(&self) -> bool {
+        self.grok_signed_in || self.grok_key.is_some()
+    }
+
     /// Whether Kilo is the only provider there's a way to use.
     pub fn only_kilo(&self) -> bool {
-        self.kilo_on() && self.api_key.is_none() && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && self.additional.is_empty()
+        self.kilo_on() && self.api_key.is_none() && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.opencode_enabled && !self.grok_on() && self.additional.is_empty()
     }
 
     /// The additional provider `id`, if the user has linked it.
@@ -314,6 +330,10 @@ impl Config {
         self.copilot_user = other.copilot_user.clone();
         self.devin_enabled = other.devin_enabled;
         self.kiro_enabled = other.kiro_enabled;
+        self.opencode_enabled = other.opencode_enabled;
+        self.opencode_signed_in = other.opencode_signed_in;
+        self.grok_signed_in = other.grok_signed_in;
+        self.grok_key = other.grok_key.clone();
         self.additional = other.additional.clone();
     }
 }

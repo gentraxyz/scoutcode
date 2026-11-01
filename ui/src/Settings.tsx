@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type McpServer, type UsageInfo } from './api';
-import { AdditionalKey, AdditionalOptions, COPILOT_NOTE, DEVIN_NOTE, KIRO_NOTE, KeyField, NvidiaEntry, SignInEntry } from './Accounts';
+import { AdditionalKey, AdditionalOptions, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GrokEntry, GrokKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, OPENCODE_NOTE, OpencodeEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
 
@@ -381,6 +381,38 @@ function Account() {
       <OwnAccount which="devin" title="Devin" note={DEVIN_NOTE} who={cfg.devin ? 'Signed in' : null} planText="See Devin's plans" planUrl={plans.devin} />
       <OwnAccount which="kiro" title="Kiro" note={KIRO_NOTE} who={cfg.kiro ? 'Signed in' : null} planText="See Kiro's plans" planUrl={plans.kiro} />
       <div className="stack">
+        <SectionLabel>OpenCode</SectionLabel>
+        <p className="small dim">{OPENCODE_NOTE}</p>
+        {cfg.opencode ? (
+          <>
+            <SettingRow title="OpenCode account" sub={cfg.opencodeSignedIn ? 'Signed in' : 'Not signed in: free models only'}>
+              {cfg.opencodeSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'opencode', uninstall: false })}>Sign out</button>}
+              <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: false })}>Turn off</button>
+              <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: true })}>Turn off and uninstall</button>
+            </SettingRow>
+            {!cfg.opencodeSignedIn && <div className="field-420"><SignInEntry which="opencode" /></div>}
+            <Link href={plans.opencode} className="small">Open the OpenCode console</Link>
+          </>
+        ) : <div className="field-420"><OpencodeEntry /></div>}
+      </div>
+      <div className="stack">
+        <SectionLabel>Grok Build</SectionLabel>
+        <p className="small dim">{GROK_NOTE}</p>
+        {cfg.grokSignedIn || cfg.grokKey ? (
+          <>
+            <SettingRow title="Grok account" sub={cfg.grokSignedIn ? 'Signed in' : 'Not signed in'}>
+              {cfg.grokSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: false })}>Sign out</button>}
+              <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: true })}>Remove and uninstall</button>
+            </SettingRow>
+            {!cfg.grokSignedIn && <div className="field-420"><SignInEntry which="grok" /></div>}
+            {cfg.grokKey
+              ? <SettingRow title="xAI key" sub={cfg.grokSignedIn ? `${cfg.grokKey}: used when signed out` : cfg.grokKey}><button type="button" className="button" onClick={() => act('saveGrokKey', { key: null })}>Remove</button></SettingRow>
+              : !login.grok && <div className="field-420"><GrokKeyEntry /></div>}
+            <Link href={plans.grok} className="small">Open the xAI console</Link>
+          </>
+        ) : <div className="field-420"><GrokEntry /></div>}
+      </div>
+      <div className="stack">
         <SectionLabel>Kilo Code (free)</SectionLabel>
         <p className="small dim">Its free models need no account or key, so they're always in the model menu. {kiloWarning}</p>
         {cfg.kiloKey ? <SettingRow title="Kilo key" sub={cfg.kiloKey}><button type="button" className="button" onClick={() => act('removeKiloKey')}>Remove</button></SettingRow> : (
@@ -486,7 +518,7 @@ function Mcp() {
   );
   return (
     <>
-      <Heading title="MCP servers" sub="Give Scout more tools by connecting it to MCP servers, on this computer or remote. Scout asks before each call until you choose to always allow a tool. A server runs with your access to this computer, so only add ones you trust. Devin and Kiro use their own tools, so they don't get these." />
+      <Heading title="MCP servers" sub="Give Scout more tools by connecting it to MCP servers, on this computer or remote. Scout asks before each call until you choose to always allow a tool. A server runs with your access to this computer, so only add ones you trust. Devin, Kiro, OpenCode and Grok Build use their own tools, so they don't get these." />
       {error && <div className="small red">{error}</div>}
       {servers.length === 0 && <p className="small dim">None yet.</p>}
       {servers.map((s) => (
@@ -585,7 +617,7 @@ export function restartBlocker(running: boolean, dirty: boolean): string | null 
 function Updates() {
   const { enabled, version, status } = useView('updater');
   const { autoUpdate } = useView('cfg');
-  const { running } = useView('run');
+  const { anyRunning } = useView('run');
   const dirty = useUi((u) => u.editorDirty);
   const title = `Scout ${version}`;
   if (!enabled) return (
@@ -594,7 +626,7 @@ function Updates() {
       <SettingRow title={title} sub="This copy doesn't update itself. Only the installed app does, not a development build." />
     </>
   );
-  const blocker = restartBlocker(running, dirty);
+  const blocker = restartBlocker(anyRunning, dirty);
   let line = '';
   let notes: string | null = null;
   switch (status.state) {

@@ -160,7 +160,7 @@ fn clean_folder(exe: &Path, keep: Option<&Path>) {
 }
 
 impl Updater {
-    pub fn start(ctx: &eframe::egui::Context, auto: bool) -> Self {
+    pub fn start(ctx: &crate::waker::Waker, auto: bool) -> Self {
         let status = Arc::new(Mutex::new(Status::Idle));
         let auto = Arc::new(AtomicBool::new(auto));
         let mut worker = None;
@@ -224,7 +224,7 @@ impl Updater {
 struct Worker {
     status: Arc<Mutex<Status>>,
     auto: Arc<AtomicBool>,
-    ctx: eframe::egui::Context,
+    ctx: crate::waker::Waker,
     /// What the last check found, for a download the user asks for.
     found: Option<Release>,
 }

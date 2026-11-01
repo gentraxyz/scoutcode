@@ -1,12 +1,12 @@
 # Scout Desktop
 
-A native desktop app for Scout, separate from the CLI. It's written in Rust with [egui](https://github.com/emilk/egui):
-no webview, no Node and no bundled browser. It ships as one ~18 MB executable, opens its window in under half a
-second and uses about 120 MB of memory. It redraws only when something changes (or to blink the cursor), so it is
-close to idle while you read.
+The desktop app for Scout, built with [Tauri](https://tauri.app): the agent, its tools and everything else that touches
+the computer are Rust (`src/`), and the window is React and TypeScript (`ui/`) in the system's WebView2. It still ships as
+one executable with nothing beside it, since the UI and WebView2's loader are built in (see `src/webview2.rs`).
+Windows 11 has the WebView2 runtime, as do most copies of Windows 10; without it Scout offers the download and stops.
 
-It shares the CLI's login, settings, allow list and sessions (`~/.scoutcode`), so a chat started in one can be
-continued in the other.
+It keeps its login, settings, allow list and sessions in `~/.scoutcode`. Chats saved by the old Scout CLI, which has
+been removed, are in the same format and still open.
 
 ## Install
 
@@ -14,7 +14,7 @@ continued in the other.
 powershell -ExecutionPolicy Bypass -File gui\install.ps1
 ```
 
-This builds the release binary, copies it to `%LOCALAPPDATA%\Programs\Scout\Scout.exe`, and adds a Start menu entry,
+This builds the web UI and the release binary, copies it to `%LOCALAPPDATA%\Programs\Scout\Scout.exe`, and adds a Start menu entry,
 so Windows search finds "Scout". It also lists Scout under Settings > Apps, where you can uninstall it. Run the script
 again to update. Add `-Desktop` for a desktop shortcut, or `-Uninstall` to remove everything except your chats and
 login in `~/.scoutcode`. Launched from the Start menu, Scout opens the last folder you opened (your home folder the
@@ -36,14 +36,61 @@ Only an installed release build (`Scout.exe`) updates itself, never `cargo run`.
 `SCOUT_UPDATE_URL` points it at another manifest. Nothing is installed unless its signature checks out against the key
 built into the app and its SHA-256 matches, so control of the site or the bucket isn't enough to push code to people.
 
+### GitHub Copilot
+
+Settings > Account signs in to the user's own GitHub account with Scout's OAuth App (device flow). That also downloads
+GitHub's runtime (about 150 MB, checked against the hashes in `src/copilot.rs`) to `~/.scoutcode/runtime`, which needs no
+Node. Scout's tools and permissions do the work; the runtime's own tools are off. To move to a new version, change the
+`github-copilot-sdk` version in `Cargo.toml` together with `VERSION` and `PACKAGES` in `src/copilot.rs`. The first build
+also downloads the runtime to a per-user cache: the crate's build script does it, and Scout's binary doesn't contain it.
+
+### Devin
+
+Settings > Account downloads Cognition's Devin CLI (about 75 MB, unpacking to about 200 MB, checked against the hashes in
+`src/devin.rs`) to `~/.scoutcode/runtime/devin` and signs in with the browser. `src/devin.rs` runs it as `devin acp`, one
+process per turn, and speaks the Agent Client Protocol to it. Devin works in the user's own account and plan.
+
+- Scout offers ACP's file and terminal calls, so Devin's reads, writes and commands come back here and go through Scout's
+  permissions, diffs and undo. Searches and any web or MCP tools run inside Devin; Scout only shows them, and asks first
+  when Devin asks for permission.
+- Devin brings its own system prompt, and reads `AGENTS.md` and its own settings. Scout sends the conversation as text,
+  with the user's saved instructions.
+- The CLI keeps the token and Scout never sees it. On Windows nothing moves where it's kept (`XDG_*` and `APPDATA` are
+  ignored, and overriding `USERPROFILE` stops the CLI), so the sign-in is shared with any other Devin CLI on the PC.
+
+To move to a new version, take it and the archive URLs from the
+[ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json), then change `VERSION` and hash each
+archive for `ARCHIVES` in `src/devin.rs`. Read `devin acp --help`, and run `cargo test -- --ignored live_devin --nocapture`
+while signed in: the CLI's ACP extensions aren't documented, so a new version can change them.
+
+### Kiro
+
+Settings > Account downloads AWS's Kiro CLI (about 330 MB on Windows, unpacking to about 470 MB, checked against the hashes
+in `src/kiro.rs`) to `~/.scoutcode/runtime/kiro` and signs in with the browser. On Windows the only package is an MSI, which
+is unpacked with `msiexec /a` and never installed. `src/kiro.rs` runs it as `kiro-cli acp --agent-engine=v3`, one process
+per turn, and speaks the Agent Client Protocol to it. Kiro works in the user's own account and plan.
+
+- Kiro runs its own tools and offers no file or terminal calls, so Scout shows them and answers what it asks permission
+  for, but its edits are outside Scout's diffs and undo. Each session turns its `autopilot` off, so that it asks first,
+  unless the mode is Yolo. Each also turns `contentCollection` off.
+- Kiro brings its own system prompt and settings. Scout sends the conversation as text, with the user's saved instructions.
+- The CLI keeps the token and Scout never sees it. The sign-in is shared with any other Kiro CLI on the PC.
+- Kiro's FAQ doesn't allow its subscriptions to be used through "third-party automation harnesses", and doesn't say whether
+  an app like Scout counts as one. It does allow "ACP compatible IDEs". Settle that with AWS before this goes in a release.
+
+To move to a new version, take it and the hashes from Kiro's
+[release manifest](https://prod.download.cli.kiro.dev/stable/latest/manifest.json), and change `VERSION` and `PACKAGES` in
+`src/kiro.rs`. Read `kiro-cli acp --help` and the [ACP migration guide](https://kiro.dev/docs/cli/v3/acp-migration/), and run
+`cargo test -- --ignored live_kiro --nocapture` while signed in.
+
 ### Publishing a release
 
 ```powershell
-# After bumping `version` in gui/Cargo.toml:
+# After bumping `version` in gui/Cargo.toml (Tauri reads it from there):
 npm run release:desktop -- --notes "What changed"
 ```
 
-This builds for x64 and ARM64 (the two `*-pc-windows-gnullvm` targets, with llvm-mingw on the PATH), signs both and
+This builds the web UI once, then for x64 and ARM64 (the two `*-pc-windows-gnullvm` targets, with llvm-mingw on the PATH), signs both and
 uploads them to the public `desktop-releases` bucket in Supabase, then publishes `latest.json`. Each installed copy
 fetches its own architecture. The site's download button gives x64, and `/download/windows?arch=arm64` gives ARM64. It
 needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, and the private key in `~/.scoutcode/desktop-release-key.pem` (or
@@ -55,37 +102,60 @@ publish the old code under a new number.
 
 ```bash
 cd gui
-cargo run --release -- path/to/project
+npm --prefix ui ci
+npx --prefix ui tauri dev -- -- path/to/project
 ```
 
-The binary is `target/release/scout-desktop.exe`. Arguments:
+That runs the UI from Vite on port 5183, so changes to `ui/` show at once and only Rust changes rebuild. For a build like
+the installed one, run `npm --prefix ui run build` and then `cargo build --release`: the UI in `ui/dist` goes into the
+binary, `target/release/scout-desktop.exe`. Arguments:
 
 - `[folder]`: the project to open. Without one it uses the current directory, or the last folder you opened when
   started from a shortcut.
 - `--resume <session id>`: reopen a saved conversation (ids are the file names in `~/.scoutcode/sessions`).
 
-It draws with OpenGL. Set `SCOUT_RENDERER=wgpu` to use DirectX 12/Vulkan instead, which takes about 3× the
-memory but works on machines without OpenGL drivers.
-
 ## What it does
 
-The same agent as the CLI, ported to Rust: the same tools (`view`, `write_file`, `edit_file` and `multi_edit` or
+The agent's tools are `view`, `write_file`, `edit_file` and `multi_edit` or
 `apply_patch` depending on the model's `edit_tool` from `/v1/models`,
-`list_dir`, `glob`, `grep`, `bash` with background shells, `web_fetch`, `todo_write`, `task` sub-agents), the same
-permission modes, plan mode, prompt-cache-friendly system prompt, automatic pruning and compaction, and `/undo`.
+`list_dir`, `glob`, `grep`, `bash` with background shells, `web_fetch`, `todo_write` and `task` sub-agents. It has permission
+modes, plan mode, prompt-cache-friendly system prompt, automatic pruning and compaction, and `/undo`.
 
 - Edits and commands ask in a card above the input, with the diff. "Always" allows all edits for the session, or
-  the command prefix for this project (saved to the same allow list the CLI uses).
+  the command prefix for this project (saved to the allow list in `~/.scoutcode`).
 - Model, reasoning effort and permission mode are in the top bar; shift+tab cycles the mode. **Auto** runs edits and
   commands without asking, but holds dangerous commands (flagged by the server's rules or by Jev) and edits outside
   the project for review, with the reason on the card.
 - Enter sends, shift+enter adds a line, ↑/↓ walk history, esc stops, ctrl+N starts a new chat.
+- **Settings > Instructions** saves general preferences for all desktop chats, instructions for the current project,
+  and a response language (Auto follows the conversation, or choose Russian and other supported languages).
+  These preferences are private to this computer in `~/.scoutcode/instructions.json`; they are kept outside chat
+  history and included in the system prompt after compaction too. Project rules override general preferences.
+  Saving applies from the next message in new or existing chats. Existing `SCOUT.md`, `AGENTS.md` and `CLAUDE.md`
+  files still apply and are refreshed at the start of each turn. The website's settings are separate.
+- **Memory** carries facts between chats: `.scout/memory.md` at the repo's root is about the project and can be
+  committed, and `~/.scoutcode/memory.md` is about the user. Both go in every prompt (1,200 and 600 tokens at most; a
+  file edited past that loses its last sections, with a pointer to them) and are refreshed at the start of each turn.
+  The agent is told to keep them current with `update_memory`, which runs under the same permissions as a file edit,
+  shows a diff and can be undone. It refuses secrets and text that tries to steer the agent. Kiro and Devin edit the
+  files with their own tools instead. You can read and edit both in **Settings > Memory**.
 - While Scout works, Enter queues a message: it's sent when the turn ends (unless you stopped Scout). Each queued
   message has a **Steer** button that sends it into the running turn instead, which Scout reads after the step it's
   on; ctrl+enter does that straight away.
 - Attach files by dropping them on the window, with the paperclip button, or by typing `@` and picking from the
-  project's files. Their contents go in with the message as `<file path="…">` blocks, like the CLI's (300 KB at
+  project's files. Their contents go in with the message as `<file path="…">` blocks (300 KB at
   most each; a dropped folder sends its listing).
+- **Skills** are folders with a `SKILL.md` of instructions, kept in `~/.scoutcode/skills`. Type `@` and a skill's name in
+  a message (the picker lists skills before files) and its instructions go along as a `<skill>` block, with the paths of
+  its supporting files. Nothing is sent otherwise: Scout doesn't pick skills by itself. **Settings > Skills** uploads a
+  folder, a `.zip` or a single `.md`, and searches and installs from the [skills.sh](https://skills.sh) directory.
+  Installing only copies files; what a skill then asks for goes through Scout's permissions.
+- **MCP servers**: **Settings > MCP servers** connects Scout to servers on this computer (a command, over stdio) or remote
+  (a URL, over Streamable HTTP, with any token in a header). They're kept in `~/.scoutcode/mcp.json` in the usual
+  `mcpServers` format, so a setup from a server's docs can be pasted in. Their tools reach the model as
+  `mcp__server__tool` and are asked about like commands: plan mode refuses them, and "Always" allows that one tool in this
+  project. Only Yolo skips asking, and Auto doesn't review them. Sub-agents and Devin don't get them, and `Scout.exe mcp`
+  doesn't pass them on. OAuth sign-in and the older SSE transport aren't supported.
 - Click the mic (or press Ctrl+Shift+Space) to dictate, and again to stop: what you said goes into the box. The
   recording (16 kHz mono WAV) is sent to ScoutCode's `/v1/audio/transcriptions`, which transcribes it with Deepgram.
 - Hover a message of yours and click the pencil to edit it and send it again. The chat is rewound to before it and
@@ -98,7 +168,7 @@ permission modes, plan mode, prompt-cache-friendly system prompt, automatic prun
 - The icons next to the window buttons open a panel on the right with three tabs (click a lit icon again to
   close it; ctrl+` toggles the terminal):
   - **Terminal**: a real shell (PowerShell 7 if installed, else Windows PowerShell; `SCOUT_TERMINAL` overrides it)
-    in a pseudo console, so colors, prompts and full-screen programs work. Drag to select, ctrl+C copies a selection
+    in a pseudo console and xterm.js, so colors, prompts and full-screen programs work. Drag to select, ctrl+C copies a selection
     (or interrupts without one), ctrl+V pastes, the wheel scrolls back.
   - **Changes**: every file that differs from the last commit, with line counts; click one for its diff,
     double-click to open it.
@@ -109,17 +179,29 @@ permission modes, plan mode, prompt-cache-friendly system prompt, automatic prun
 
 ## Layout
 
+Rust owns the state and the web UI draws it. `src/core.rs` builds a view of what the window needs and sends only the parts
+that changed as `view`, `models` and `items` events; the UI calls back through the commands in `src/bridge.rs`. What's only
+about drawing, like open menus and drafts, stays in the UI. Keys don't reach the webview: it gets them masked. Replies are
+Markdown without raw HTML, and the CSP stops the page fetching anything.
+
 | File | |
 | --- | --- |
-| `src/agent.rs` | The agent loop on a worker thread; talks to the window over a channel |
+| `src/agent.rs` | The agent loop on a worker thread; talks to the core over a channel |
 | `src/api.rs` | Streaming chat completions (SSE) with one pooled HTTP connection |
 | `src/tools.rs`, `src/patch.rs` | File, search, shell and web tools; `apply_patch` |
-| `src/app.rs` | The window: transcript (only on-screen items are laid out), composer, permission and plan cards |
-| `src/markdown.rs` | Markdown for replies |
+| `src/core.rs` | The app's state: the transcript, sign-ins, the queue, and what's sent to the window |
+| `src/bridge.rs` | The commands the UI can call |
+| `src/dock.rs` | The right panel's backend: the shell in a pseudo console, git, files |
+| `src/webview2.rs` | WebView2's loader, built into the exe so that nothing has to sit beside it |
 | `src/attach.rs` | Attached files: building and reading back the `<file>` blocks, and the @ picker's file list |
+| `src/skills.rs` | Installed skills, uploads and the skills.sh directory |
+| `src/mcp_client.rs` | The user's MCP servers, whose tools the model can call (`src/mcp.rs` is the opposite: Scout's tools for chatbots) |
 | `src/notify.rs` | Windows notifications |
 | `src/update.rs` | Checking for, verifying and installing updates, and installing from `ScoutSetup.exe` |
-| `src/dock/` | The right panel: `terminal.rs` (ConPTY + vt100), `changes.rs` (git), `files.rs` (tree and editor), `highlight.rs` |
-| `src/config.rs`, `src/session.rs`, `src/prompt.rs`, `src/oauth.rs`, `src/diff.rs` | Ports of the CLI's modules |
+| `src/config.rs`, `src/session.rs`, `src/prompt.rs`, `src/oauth.rs`, `src/diff.rs` | Settings, saved chats, the system prompt, browser sign-in and diffs |
+| `ui/src/store.ts`, `ui/src/api.ts` | What Rust last said, and the shapes it says it in |
+| `ui/src/App.tsx`, `Sidebar.tsx`, `Transcript.tsx`, `Composer.tsx`, `ModelMenu.tsx` | The window, the chat and its menus |
+| `ui/src/Settings.tsx`, `Accounts.tsx` | Settings, and the sign-ins several screens share |
+| `ui/src/Dock.tsx` | The right panel: terminal (xterm.js), changes, files and the editor (CodeMirror) |
 
 `cargo test -- --ignored live_turn --nocapture` runs one real turn against your account in a temporary folder.

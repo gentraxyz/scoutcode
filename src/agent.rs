@@ -1,5 +1,7 @@
 use crate::api::{self, ApiError, ChatRequest, Content, Delta, Message, ModelInfo, StreamResult, ToolCall};
 use crate::config::{self, Config};
+use crate::copilot::Msg as CopilotMsg;
+use crate::devin::Msg as DevinMsg;
 use crate::prompt;
 use crate::session::{Session, Totals, save_session};
 use crate::tools::{self, Ctx, Display, EditTool, Permission, Todo, ToolResult};
@@ -72,14 +74,22 @@ pub enum Ev {
     AskPermission(PermissionRequest, Sender<PermissionAnswer>),
     AskPlan(String, Sender<PlanAnswer>),
     AskQuestions(Vec<Question>, Sender<QuestionAnswer>),
-    /// The project's files for the @ picker: the folder, and its files relative to it.
-    FileIndex(String, Vec<String>),
-    /// Chats matching a sidebar search: the query, and their ids.
-    ChatSearch(String, Vec<String>),
     /// Messages sent while Scout worked, now in the conversation: each one's text and attached files.
     Steered(Vec<(String, Vec<String>)>),
+    /// How signing in to GitHub Copilot is going.
+    Copilot(crate::copilot::Update),
+    /// How signing in to Devin is going.
+    Devin(crate::devin::Update),
+    /// How signing in to Kiro is going.
+    Kiro(crate::kiro::Update),
+    /// Why Kiro's models couldn't be listed, from the last time the lists were loaded.
+    KiroModelsError(Option<String>),
     Finished(Box<Agent>, Result<(), String>),
     Models(Result<Vec<ModelInfo>, String>),
+    /// How Settings' test of the Kilo connection went.
+    KiloCheck(Result<String, String>),
+    /// Why linked additional providers didn't list their models, from the last time the lists were loaded.
+    AdditionalErrors(Vec<String>),
     /// The account the key belongs to, from the model list.
     User(String),
     /// The account's limits for Settings > Usage, and what to say when it follows a change.
@@ -95,7 +105,7 @@ pub enum Ev {
 #[derive(Clone)]
 pub struct Hooks {
     pub tx: Sender<Ev>,
-    pub ctx: eframe::egui::Context,
+    pub ctx: crate::waker::Waker,
 }
 
 impl Hooks {
@@ -110,7 +120,7 @@ pub struct Shared {
     pub mode: Mutex<String>,
     /// The id to send to `provider`.
     pub model: Mutex<String>,
-    /// "scoutcode", "openrouter" or "nvidia".
+    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro" or an additional provider's id.
     pub provider: Mutex<String>,
     pub effort: Mutex<String>,
     pub cancel: AtomicBool,
@@ -233,6 +243,28 @@ fn args_of(c: &ToolCall) -> Value {
     serde_json::from_str(&c.function.arguments).unwrap_or(json!({}))
 }
 
+/// The tool name and arguments one of Devin's own calls goes under, in the window and the session.
+fn devin_shown(kind: &str, input: &Value, cwd: &str) -> (String, Value) {
+    let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "read" => {
+            let path = tools::resolve(cwd, s("file_path")).map_or_else(|_| s("file_path").to_string(), |abs| tools::rel(cwd, &abs));
+            ("view".into(), json!({"path": path}))
+        }
+        "search" => ("grep".into(), json!({"pattern": s("query"), "path": s("path")})),
+        "fetch" => ("web_fetch".into(), json!({"url": s("url")})),
+        _ => ("devin".into(), input.clone()),
+    }
+}
+
+/// What a Copilot session is for: the conversation itself, a sub-agent (by its description), or a one-off answer.
+#[derive(Clone, Copy)]
+enum CopilotRole<'a> {
+    Main,
+    Sub(&'a str),
+    Quiet,
+}
+
 pub struct Agent {
     pub cfg: Config,
     pub session: Session,
@@ -244,8 +276,13 @@ pub struct Agent {
     pub last_prompt_tokens: u64,
     /// What a refused call is told in plan mode.
     pub read_only_note: &'static str,
+    /// The last turn stopped because the ScoutCode account can't pay for its model.
+    pub out_of_credit: bool,
+    /// A message whose turn failed before it joined the conversation, for a retry to send.
+    unsent: Option<String>,
     last_request_at: Option<Instant>,
     sys: Option<(String, EditTool, String, Message)>,
+    preferences: crate::instructions::Preferences,
     /// The tool list for the edit tool it was built for.
     specs: (EditTool, Vec<Value>),
     read_only_specs: Vec<Value>,
@@ -262,8 +299,11 @@ impl Agent {
             todos: vec![],
             last_prompt_tokens: 0,
             read_only_note: "Plan mode is read-only. Call present_plan with your plan first.",
+            out_of_credit: false,
+            unsent: None,
             last_request_at: None,
             sys: None,
+            preferences: Default::default(),
             specs: (EditTool::StrReplace, tools::specs(None, EditTool::StrReplace)),
             read_only_specs: tools::specs(Some(&tools::READ_ONLY), EditTool::StrReplace),
         }
@@ -273,13 +313,19 @@ impl Agent {
         self.shared.cancel.load(Ordering::Relaxed)
     }
 
-    /// Built once and then sent unchanged, so providers that cache prompt prefixes bill the repeat as cached input.
+    /// Reload at turn boundaries; the prompt stays byte-identical within a turn until compaction or a model change.
+    fn reload_instructions(&mut self) -> Result<(), ApiError> {
+        self.preferences = crate::instructions::Preferences::load().map_err(|e| ApiError { message: format!("{e} Open Settings > Instructions to review it."), status: 0, retry_after: None, aborted: false })?;
+        self.sys = None;
+        Ok(())
+    }
+
     fn system(&mut self) -> Message {
         let model = self.shared.model.lock().unwrap().clone();
         let edit = self.shared.edit_tool(&model);
         let name = self.shared.model_name(&model);
         if self.sys.as_ref().is_none_or(|(cwd, e, n, _)| *cwd != self.session.cwd || *e != edit || *n != name) {
-            let msg = Message::System { content: prompt::system_prompt(&self.session.cwd, edit, &name) };
+            let msg = Message::System { content: prompt::system_prompt(&self.session.cwd, edit, &name, &self.preferences) };
             self.sys = Some((self.session.cwd.clone(), edit, name, msg));
         }
         self.sys.as_ref().unwrap().3.clone()
@@ -311,6 +357,21 @@ impl Agent {
     fn request(&mut self, messages: &[Message], read_only: bool, quiet: bool, model: Option<String>, no_tools: bool, h: &Hooks) -> Result<StreamResult, ApiError> {
         let model = model.unwrap_or_else(|| self.shared.model.lock().unwrap().clone());
         let provider = self.shared.provider.lock().unwrap().clone();
+        // Only compaction gets here on Copilot; turns and sub-agents have their own way in, since it runs the tool loop.
+        if provider == "copilot" {
+            let content = self.copilot_run(messages, &[], CopilotRole::Quiet, h)?;
+            return Ok(StreamResult { content, ..Default::default() });
+        }
+        // The same on Devin. Its summarizer has no tools.
+        if provider == "devin" {
+            let content = self.devin_run(messages, false, h)?;
+            return Ok(StreamResult { content, ..Default::default() });
+        }
+        // The same on Kiro, in its plan mode.
+        if provider == "kiro" {
+            let content = self.kiro_run(messages, false, h)?;
+            return Ok(StreamResult { content, ..Default::default() });
+        }
         // OpenRouter tries the user's keys in order. A key that fails hands the request to the next one.
         let mut cfgs: Vec<Config> = if provider == "openrouter" {
             self.cfg
@@ -330,7 +391,8 @@ impl Agent {
         if self.specs.0 != edit {
             self.specs = (edit, tools::specs(None, edit));
         }
-        let tools = if read_only { &self.read_only_specs } else { &self.specs.1 };
+        // Only sub-agents and a retried summary are read-only, and neither gets the user's MCP tools.
+        let tools = if read_only { self.read_only_specs.clone() } else { self.all_specs() };
         for attempt in 0.. {
             if !quiet {
                 h.send(Ev::RequestStart);
@@ -338,11 +400,11 @@ impl Agent {
             let req = ChatRequest {
                 model: &model,
                 messages,
-                tools: Some(tools),
+                tools: Some(&tools),
                 tool_choice_none: no_tools,
                 temperature: self.cfg.temperature,
-                // ScoutCode and OpenRouter drop it for models without it; NIM isn't known to.
-                effort: (provider != "nvidia").then_some(effort.as_str()),
+                // ScoutCode and OpenRouter drop it for models without it; NIM isn't known to, and some of OVH's models refuse it.
+                effort: (provider != "nvidia" && config::additional_provider(&provider).is_none()).then_some(effort.as_str()),
             };
             // Whether any of the answer has been shown: once it has, another key would repeat it, so it isn't retried.
             let shown = Cell::new(false);
@@ -376,6 +438,10 @@ impl Agent {
                     if !e.retryable() || attempt >= 4 {
                         return Err(e);
                     }
+                    // Kilo's limit is per hour, so a retry seconds later fails too and burns what's left. Only its own short wait gets one.
+                    if provider == "kilo" && e.status == 429 && !(attempt == 0 && e.retry_after.is_some_and(|s| s <= 60)) {
+                        return Err(ApiError { message: "Kilo's free models allow 200 requests an hour from your network, and that's used up. Switch provider in the model menu, use a paid model with a Kilo key (Settings > Account), or try again later.".into(), ..e });
+                    }
                     let wait = e.retry_after.unwrap_or(2u64.pow(attempt + 1)).min(60);
                     h.send(Ev::Status(format!("{} · retrying in {wait}s ({}/4)", e.message.chars().take(120).collect::<String>(), attempt + 1)));
                     let until = Instant::now() + Duration::from_secs(wait);
@@ -389,6 +455,13 @@ impl Agent {
             }
         }
         unreachable!()
+    }
+
+    /// Scout's own tools, then those of the user's MCP servers.
+    fn all_specs(&self) -> Vec<Value> {
+        let mut all = self.specs.1.clone();
+        all.extend(crate::mcp_client::hub().specs());
+        all
     }
 
     fn set_mode(&self, mode: &str, h: &Hooks) {
@@ -410,12 +483,19 @@ impl Agent {
         }
         let mut reason = None;
         if perm == Permission::Edit && mode == "auto" {
-            match edit_targets(args).into_iter().find(|p| !inside_project(&self.session.cwd, p)) {
+            let targets = if name == "update_memory" { crate::memory::target(&self.session.cwd, args).map(|p| p.to_string_lossy().to_string()).into_iter().collect() } else { edit_targets(args) };
+            match targets.into_iter().find(|p| !inside_project(&self.session.cwd, p)) {
                 None => return PermissionAnswer::Allow,
                 Some(p) => reason = Some(format!("It writes {p}, outside the project's own files.")),
             }
         }
         let mut prefix = None;
+        if tools::is_mcp(name) {
+            if self.cfg.allow.get(&self.session.cwd).is_some_and(|rules| rules.iter().any(|r| r == name)) {
+                return PermissionAnswer::Allow;
+            }
+            prefix = Some(name.to_string());
+        }
         if name == "bash" {
             let cmd = args.get("command").and_then(Value::as_str).unwrap_or("").trim().to_string();
             if !has_operators(&cmd) {
@@ -439,9 +519,14 @@ impl Agent {
         }
         let mut noop = |_: &str| {};
         let ctx = Ctx { cwd: &self.session.cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
-        let preview = tools::preview(name, args, &ctx);
+        // What an MCP tool is about to do is all in its arguments.
+        let (label, preview) = if tools::is_mcp(name) {
+            (name.trim_start_matches(tools::MCP_PREFIX).replacen("__", " / ", 1), Some(Display::Text(serde_json::to_string_pretty(args).unwrap_or_default())))
+        } else {
+            (tools::label(name, args), tools::preview(name, args, &ctx))
+        };
         let (tx, rx) = channel();
-        h.send(Ev::AskPermission(PermissionRequest { tool: name.to_string(), label: tools::label(name, args), preview, prefix: prefix.clone(), reason }, tx));
+        h.send(Ev::AskPermission(PermissionRequest { tool: name.to_string(), label, preview, prefix: prefix.clone(), reason }, tx));
         // A dropped sender means the window was closed or the turn stopped.
         let answer = rx.recv().unwrap_or(PermissionAnswer::Deny(String::new()));
         if let PermissionAnswer::Always = answer {
@@ -476,8 +561,8 @@ impl Agent {
     }
 
     fn run_tool_inner(&mut self, name: &str, args: &Value, id: &str, h: &Hooks) -> ToolResult {
-        if !tools::known(name) {
-            let names: Vec<String> = self.specs.1.iter().filter_map(|s| s["function"]["name"].as_str().map(String::from)).collect();
+        if !tools::known(name) && !tools::is_mcp(name) {
+            let names: Vec<String> = self.all_specs().iter().filter_map(|s| s["function"]["name"].as_str().map(String::from)).collect();
             return ToolResult { output: format!("Unknown tool {name}. Available: {}", names.join(", ")), is_error: true, ..Default::default() };
         }
         if name == "present_plan" {
@@ -540,6 +625,15 @@ impl Agent {
             };
         }
 
+        // Memory edited with the ordinary file tools gets update_memory's check too.
+        if tools::permission(name) == Permission::Edit && name != "update_memory" {
+            let cwd = &self.session.cwd;
+            if edit_targets(args).iter().any(|p| tools::resolve(cwd, p).is_ok_and(|f| crate::memory::is_memory_file(cwd, &f))) {
+                if let Some(why) = crate::memory::refuse_args(args) {
+                    return ToolResult::err(format!("Not saved. {why}"), "refused");
+                }
+            }
+        }
         match self.permit(name, args, h) {
             PermissionAnswer::Deny(fb) => {
                 return ToolResult::err(
@@ -553,10 +647,17 @@ impl Agent {
             _ => {}
         }
         if tools::permission(name) == Permission::Edit {
-            let paths: Vec<PathBuf> = tools::edit_paths(name, args).iter().filter_map(|p| tools::resolve(&self.session.cwd, p).ok()).collect();
+            let paths: Vec<PathBuf> = if name == "update_memory" {
+                crate::memory::target(&self.session.cwd, args).into_iter().collect()
+            } else {
+                tools::edit_paths(name, args).iter().filter_map(|p| tools::resolve(&self.session.cwd, p).ok()).collect()
+            };
             for p in paths {
                 self.snapshot(p);
             }
+        }
+        if tools::is_mcp(name) {
+            return crate::mcp_client::hub().call(name, args, &self.shared.cancel);
         }
         let cwd = self.session.cwd.clone();
         let mut progress = |t: &str| h.send(Ev::ToolProgress { id: id.to_string(), text: t.to_string() });
@@ -573,7 +674,11 @@ impl Agent {
 
     /// A read-only agent with its own context. Its tool calls show as status lines.
     fn run_subagent(&mut self, description: &str, task: &str, h: &Hooks) -> Result<String, ApiError> {
-        let mut messages = vec![Message::System { content: prompt::subagent_prompt(&self.session.cwd) }, Message::User { content: Content::Text(task.into()) }];
+        let mut messages = vec![Message::System { content: prompt::subagent_prompt(&self.session.cwd, &self.preferences) }, Message::User { content: Content::Text(task.into()) }];
+        if *self.shared.provider.lock().unwrap() == "copilot" {
+            let specs = self.read_only_specs.clone();
+            return self.copilot_run(&messages, &specs, CopilotRole::Sub(description), h);
+        }
         // A browser sign-in may only use the approved models, which the sub-agent model may not be, and OpenRouter and
         // NIM have none of ours; use the session's model for those.
         let on_scout = *self.shared.provider.lock().unwrap() == "scoutcode";
@@ -587,23 +692,492 @@ impl Agent {
                 return Ok(r.content);
             }
             for c in calls {
-                let (n, args) = tools::canonical(&c.function.name, args_of(&c));
-                let n = n.as_str();
-                let out = if !tools::READ_ONLY.contains(&n) {
-                    format!("Error: Unknown tool {n}.")
-                } else {
-                    h.send(Ev::Status(format!("task: {description} · {n} {}", tools::label(n, &args)).chars().take(140).collect()));
-                    let mut noop = |_: &str| {};
-                    let mut ctx = Ctx { cwd: &cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
-                    match tools::run(n, &args, &mut ctx) {
-                        Ok(r) => r.output,
-                        Err(e) => format!("Error: {e}"),
-                    }
-                };
+                let out = self.subagent_tool(description, &c, &cwd, h);
                 messages.push(Message::Tool { tool_call_id: c.id, content: out });
             }
         }
         Ok("The sub-agent stopped after 60 steps without a final answer.".into())
+    }
+
+    /// One tool call from a sub-agent, which can only read.
+    fn subagent_tool(&mut self, description: &str, c: &ToolCall, cwd: &str, h: &Hooks) -> String {
+        let (n, args) = tools::canonical(&c.function.name, args_of(c));
+        let n = n.as_str();
+        if !tools::READ_ONLY.contains(&n) {
+            return format!("Error: Unknown tool {n}.");
+        }
+        h.send(Ev::Status(format!("task: {description} · {n} {}", tools::label(n, &args)).chars().take(140).collect()));
+        let mut noop = |_: &str| {};
+        let mut ctx = Ctx { cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
+        match tools::run(n, &args, &mut ctx) {
+            Ok(r) => r.output,
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// A conversation on Copilot, whose runtime loops over the model by itself: its tool calls come back here to run
+    /// like any other, with the same permissions, and what they did goes in the session as usual. Returns the last text.
+    fn copilot_run(&mut self, messages: &[Message], specs: &[Value], role: CopilotRole, h: &Hooks) -> Result<String, ApiError> {
+        let fail = |message: String| ApiError { message, status: 400, retry_after: None, aborted: false };
+        let main = matches!(role, CopilotRole::Main);
+        if !crate::copilot::installed() {
+            let (hooks, mut shown) = (h.clone(), 0);
+            crate::copilot::ensure_runtime(&mut |done, total| {
+                let mb = done / 1_000_000;
+                if mb > shown {
+                    shown = mb;
+                    hooks.send(Ev::Status(if total > 0 { format!("Downloading Copilot… {}%", done * 100 / total) } else { format!("Downloading Copilot… {mb} MB") }));
+                }
+            })
+            .map_err(fail)?;
+        }
+        let model = self.shared.model.lock().unwrap().clone();
+        let (system, prompt) = crate::copilot::as_prompt(messages);
+        let run = crate::copilot::Run::start(&self.cfg, &model, &self.session.cwd, system, prompt, specs).map_err(fail)?;
+        let (mut text, mut resets, mut said) = (String::new(), None, false);
+        let result = loop {
+            if self.cancelled() {
+                run.abort();
+                break Err(ApiError::aborted());
+            }
+            let Some(msg) = run.next(Duration::from_millis(100)) else { continue };
+            match msg {
+                CopilotMsg::Text(t) => {
+                    said = true;
+                    text.push_str(&t);
+                    if main {
+                        h.send(Ev::Text(t));
+                    }
+                }
+                CopilotMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
+                CopilotMsg::Reasoning(_) => {}
+                CopilotMsg::RequestStart if main => h.send(Ev::RequestStart),
+                CopilotMsg::RequestStart => {}
+                CopilotMsg::RequestEnd => {}
+                CopilotMsg::Usage { prompt, completion, cached, resets: r } => {
+                    resets = r.or(resets);
+                    self.add_usage(&StreamResult { usage: Some(api::Usage { prompt, completion, cached }), ..Default::default() }, main, h);
+                    if main {
+                        self.last_request_at = Some(Instant::now());
+                    }
+                }
+                CopilotMsg::Tool { id, name, arguments, reply } => {
+                    said = true;
+                    let call = ToolCall { id, kind: "function".into(), extra_content: None, function: api::FunctionCall { name, arguments } };
+                    let out = match role {
+                        CopilotRole::Main => {
+                            self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(&mut text)), tool_calls: Some(vec![call.clone()]), reasoning_content: None });
+                            h.send(Ev::AssistantDone);
+                            let res = self.run_tool(&call, h);
+                            let out = cap_output(res.output);
+                            self.session.messages.push(Message::Tool { tool_call_id: call.id.clone(), content: out.clone() });
+                            save_session(&mut self.session);
+                            out
+                        }
+                        CopilotRole::Sub(d) => {
+                            let cwd = self.session.cwd.clone();
+                            self.subagent_tool(d, &call, &cwd, h)
+                        }
+                        CopilotRole::Quiet => "This request has no tools.".to_string(),
+                    };
+                    let _ = reply.send(out);
+                }
+                CopilotMsg::Idle => {
+                    if !main {
+                        break Ok(std::mem::take(&mut text));
+                    }
+                    if !text.is_empty() {
+                        self.session.messages.push(Message::Assistant { content: Some(std::mem::take(&mut text)), tool_calls: None, reasoning_content: None });
+                        h.send(Ev::AssistantDone);
+                    }
+                    save_session(&mut self.session);
+                    // A message sent while it worked gets its answer now, in this turn.
+                    let before = self.session.messages.len();
+                    if self.take_steer(h) {
+                        let new: Vec<String> = self.session.messages[before..].iter().filter_map(|m| if let Message::User { content } = m { Some(content.text()) } else { None }).collect();
+                        save_session(&mut self.session);
+                        run.send(new.join("\n\n"));
+                        continue;
+                    }
+                    if !said {
+                        h.send(Ev::Notice("Copilot finished without replying. Try rephrasing, or say \"continue\".".into()));
+                    }
+                    break Ok(String::new());
+                }
+                CopilotMsg::Failed { message, kind } => break Err(fail(crate::copilot::explain(&message, &kind, resets.as_deref()))),
+            }
+        };
+        run.finish();
+        result
+    }
+
+    /// One of Devin's writes or commands, run like any other tool, with what it did going in the session as usual.
+    fn devin_tool(&mut self, call: ToolCall, text: &mut String, h: &Hooks) -> ToolResult {
+        self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(text)), tool_calls: Some(vec![call.clone()]), reasoning_content: None });
+        h.send(Ev::AssistantDone);
+        let res = self.run_tool(&call, h);
+        self.session.messages.push(Message::Tool { tool_call_id: call.id, content: cap_output(res.output.clone()) });
+        save_session(&mut self.session);
+        res
+    }
+
+    /// A conversation on Devin, whose CLI loops over the model by itself. Its writes and commands come back here and run
+    /// like any other tool, with the same permissions and undo. Its reads come back too, for their exact text. What it
+    /// does on its own, such as searching, is only shown. With `main` false it's a one-off answer with no tools.
+    fn devin_run(&mut self, messages: &[Message], main: bool, h: &Hooks) -> Result<String, ApiError> {
+        let fail = |message: String| ApiError { message, status: 400, retry_after: None, aborted: false };
+        if !crate::devin::installed() {
+            let (hooks, mut shown) = (h.clone(), 0);
+            crate::devin::ensure_runtime(&mut |done, total| {
+                let mb = done / 1_000_000;
+                if mb > shown {
+                    shown = mb;
+                    hooks.send(Ev::Status(if total > 0 { format!("Downloading Devin… {}%", done * 100 / total) } else { format!("Downloading Devin… {mb} MB") }));
+                }
+            })
+            .map_err(fail)?;
+        }
+        let model = self.shared.model.lock().unwrap().clone();
+        let cwd = self.session.cwd.clone();
+        // Devin has its own system prompt, and Scout's describes tools it doesn't have. The user's saved instructions and memory still count.
+        let (_, mut text_in) = crate::copilot::as_prompt(messages);
+        if main {
+            text_in = format!("<saved_instructions>\n{}</saved_instructions>\n\n{}\n{text_in}", self.preferences.prompt(&cwd), crate::memory::prompt_for_own_tools(&cwd));
+        }
+        let run = crate::devin::Run::start(&model, &cwd, &self.shared.mode(), text_in, !main).map_err(fail)?;
+        if main {
+            h.send(Ev::RequestStart);
+        }
+        let (mut text, mut said) = (String::new(), false);
+        // Its calls not settled yet: id → kind, title, input. Writes and commands wait here for their callback.
+        let mut open: HashMap<String, (String, String, Value)> = HashMap::new();
+        // Calls Scout ran itself, whose own updates are not to be shown as well.
+        let mut handled: HashSet<String> = HashSet::new();
+        // Commands that came back before Devin announced their call.
+        let mut ran: Vec<String> = vec![];
+        let mut next_id = 0;
+        let result = loop {
+            if self.cancelled() {
+                run.abort();
+                break Err(ApiError::aborted());
+            }
+            let Some(msg) = run.next(Duration::from_millis(100)) else { continue };
+            match msg {
+                DevinMsg::Text(t) => {
+                    said = true;
+                    text.push_str(&t);
+                    if main {
+                        h.send(Ev::Text(t));
+                    }
+                }
+                DevinMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
+                DevinMsg::Reasoning(_) => {}
+                DevinMsg::Todos(t) if main => {
+                    self.todos = t.clone();
+                    h.send(Ev::Todos(t));
+                }
+                DevinMsg::Todos(_) => {}
+                DevinMsg::Usage { prompt, completion, cached } => {
+                    self.add_usage(&StreamResult { usage: Some(api::Usage { prompt, completion, cached }), ..Default::default() }, main, h);
+                    if main {
+                        self.last_request_at = Some(Instant::now());
+                    }
+                }
+                DevinMsg::ToolStart { id, kind, title, input } => {
+                    let command = input.get("command").and_then(Value::as_str);
+                    if let Some(i) = command.filter(|_| kind == "execute").and_then(|c| ran.iter().position(|r| r == c)) {
+                        ran.remove(i);
+                        handled.insert(id);
+                        continue;
+                    }
+                    if handled.contains(&id) || !main {
+                        continue;
+                    }
+                    if kind != "edit" && kind != "execute" {
+                        let (name, args) = devin_shown(&kind, &input, &cwd);
+                        let label = Some(tools::label(&name, &args)).filter(|l| !l.is_empty()).unwrap_or_else(|| title.clone());
+                        h.send(Ev::AssistantDone);
+                        h.send(Ev::ToolCall { id: id.clone(), name, label });
+                    }
+                    open.insert(id, (kind, title, input));
+                }
+                DevinMsg::ToolEnd { id, failed, text: out } => {
+                    if handled.remove(&id) {
+                        continue;
+                    }
+                    let Some((kind, title, input)) = open.remove(&id) else { continue };
+                    said = true;
+                    let (name, args) = devin_shown(&kind, &input, &cwd);
+                    // An edit or command that ends without coming back here wasn't run by Scout, so it hasn't been shown.
+                    if kind == "edit" || kind == "execute" {
+                        h.send(Ev::AssistantDone);
+                        h.send(Ev::ToolCall { id: id.clone(), name: name.clone(), label: title.clone() });
+                    }
+                    let summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
+                    h.send(Ev::ToolResult { id: id.clone(), result: ToolResult { output: out.clone(), is_error: failed, summary: Some(summary), display: None } });
+                    let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name, arguments: args.to_string() } };
+                    self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(&mut text)), tool_calls: Some(vec![call]), reasoning_content: None });
+                    self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { title } else { out }) });
+                    save_session(&mut self.session);
+                }
+                DevinMsg::Read { id, path, line, limit } => {
+                    if !main {
+                        run.reply_err(&id, "This request has no tools.");
+                        continue;
+                    }
+                    match tools::read_raw(&cwd, &path, line, limit) {
+                        Ok((abs, content)) => {
+                            self.read_files.insert(abs);
+                            run.reply(&id, json!({"content": content}));
+                        }
+                        Err(e) => run.reply_err(&id, &e),
+                    }
+                }
+                DevinMsg::Write { id, path, content, tool } => {
+                    if let Some(t) = &tool {
+                        open.remove(t);
+                        handled.insert(t.clone());
+                    }
+                    if !main {
+                        run.reply_err(&id, "This request has no tools.");
+                        continue;
+                    }
+                    // Devin saves its plan to a file by default, which plan mode has no prompt for: the reply is the plan.
+                    if self.shared.mode() == "plan" {
+                        run.reply_err(&id, "Plan mode is read-only here, so nothing can be saved. Give your plan as your reply.");
+                        continue;
+                    }
+                    let Ok(abs) = tools::resolve(&cwd, &path) else {
+                        run.reply_err(&id, "That path isn't valid.");
+                        continue;
+                    };
+                    // Devin reads a file itself before changing it.
+                    self.read_files.insert(abs.clone());
+                    next_id += 1;
+                    let call = ToolCall { id: tool.unwrap_or_else(|| format!("devin-{next_id}")), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "write_file".into(), arguments: json!({"path": tools::rel(&cwd, &abs), "content": content}).to_string() } };
+                    let res = self.devin_tool(call, &mut text, h);
+                    said = true;
+                    if res.is_error {
+                        run.reply_err(&id, &res.output);
+                    } else {
+                        run.reply(&id, json!({}));
+                    }
+                }
+                DevinMsg::Exec { id, command, cwd: dir } => {
+                    let known = open.iter().find(|(_, o)| o.0 == "execute" && o.2.get("command").and_then(Value::as_str) == Some(command.as_str())).map(|(k, _)| k.clone());
+                    match &known {
+                        Some(k) => {
+                            open.remove(k);
+                            handled.insert(k.clone());
+                        }
+                        None => ran.push(command.clone()),
+                    }
+                    let here = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+                    if !main {
+                        run.reply_terminal(&id, "This request has no tools.".into(), 1);
+                    } else if self.shared.mode() == "plan" {
+                        run.reply_terminal(&id, "Plan mode is read-only here, so commands don't run. Use your read and search tools.".into(), 1);
+                    } else if !dir.is_empty() && here(&dir) != here(&cwd) {
+                        run.reply_terminal(&id, format!("Scout runs commands in the project folder, {cwd}. To use another, put a cd in the command."), 1);
+                    } else {
+                        next_id += 1;
+                        let call = ToolCall { id: known.unwrap_or_else(|| format!("devin-{next_id}")), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "bash".into(), arguments: json!({"command": command, "timeout_ms": 600_000}).to_string() } };
+                        let res = self.devin_tool(call, &mut text, h);
+                        said = true;
+                        let code = if res.is_error { crate::devin::exit_code(&res.output) } else { 0 };
+                        run.reply_terminal(&id, res.output, code);
+                    }
+                }
+                DevinMsg::Permission { id, tool, is_command, options } => {
+                    let call = open.get(&tool).cloned();
+                    // A write or command comes back here to be asked about when it runs, so asking now would be asking twice.
+                    let later = is_command || handled.contains(&tool) || call.as_ref().is_some_and(|c| c.0 == "edit" || c.0 == "execute");
+                    let allow = later
+                        || (main
+                            && match self.shared.mode().as_str() {
+                                "yolo" => true,
+                                "plan" => false,
+                                _ => {
+                                    let label = call.map_or_else(|| tool.clone(), |c| c.1);
+                                    let (tx, rx) = channel();
+                                    h.send(Ev::AskPermission(PermissionRequest { tool: "devin".into(), label, preview: None, prefix: None, reason: None }, tx));
+                                    !matches!(rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())), PermissionAnswer::Deny(_))
+                                }
+                            });
+                    run.reply_permission(&id, allow, &options);
+                }
+                DevinMsg::Idle(stop) => {
+                    if stop == "cancelled" {
+                        break Err(ApiError::aborted());
+                    }
+                    if !main {
+                        break Ok(std::mem::take(&mut text));
+                    }
+                    if !text.is_empty() {
+                        self.session.messages.push(Message::Assistant { content: Some(std::mem::take(&mut text)), tool_calls: None, reasoning_content: None });
+                        h.send(Ev::AssistantDone);
+                    }
+                    save_session(&mut self.session);
+                    // A message sent while it worked gets its answer now, in this turn.
+                    let before = self.session.messages.len();
+                    if self.take_steer(h) {
+                        let new: Vec<String> = self.session.messages[before..].iter().filter_map(|m| if let Message::User { content } = m { Some(content.text()) } else { None }).collect();
+                        save_session(&mut self.session);
+                        run.send(new.join("\n\n"));
+                        continue;
+                    }
+                    match stop.as_str() {
+                        "max_tokens" | "max_turn_requests" => h.send(Ev::Notice("Devin hit its limit for one turn. Say \"continue\" to keep going.".into())),
+                        "refusal" => h.send(Ev::Notice("Devin refused this request.".into())),
+                        _ if !said => h.send(Ev::Notice("Devin finished without replying. Try rephrasing, or say \"continue\".".into())),
+                        _ => {}
+                    }
+                    break Ok(String::new());
+                }
+                DevinMsg::Failed(e) => break Err(fail(crate::devin::explain(&e))),
+            }
+        };
+        // Whatever it still had going stopped with it.
+        for (id, (kind, ..)) in open {
+            if kind != "edit" && kind != "execute" {
+                h.send(Ev::ToolResult { id, result: ToolResult::err("Interrupted.", "interrupted") });
+            }
+        }
+        run.finish();
+        result
+    }
+
+    /// A conversation on Kiro, whose CLI loops over the model and runs its own tools. Scout shows them, and answers what
+    /// it asks permission for by the current mode, but they aren't Scout's to undo. With `main` false it's a one-off
+    /// answer in its plan mode, with everything it asks for refused.
+    fn kiro_run(&mut self, messages: &[Message], main: bool, h: &Hooks) -> Result<String, ApiError> {
+        use crate::kiro::Msg as KiroMsg;
+        let fail = |message: String| ApiError { message, status: 400, retry_after: None, aborted: false };
+        if !crate::kiro::installed() {
+            let (hooks, mut shown) = (h.clone(), 0);
+            crate::kiro::ensure_runtime(&mut |done, total| {
+                let mb = done / 1_000_000;
+                if mb > shown {
+                    shown = mb;
+                    hooks.send(Ev::Status(if total > 0 { format!("Downloading Kiro… {}%", done * 100 / total) } else { format!("Downloading Kiro… {mb} MB") }));
+                }
+            })
+            .map_err(fail)?;
+        }
+        let model = self.shared.model.lock().unwrap().clone();
+        let effort = self.shared.effort.lock().unwrap().clone();
+        let cwd = self.session.cwd.clone();
+        // Kiro has its own system prompt, and Scout's describes tools it doesn't have. The user's saved instructions and memory still count.
+        let (_, mut text_in) = crate::copilot::as_prompt(messages);
+        if main {
+            text_in = format!("<saved_instructions>\n{}</saved_instructions>\n\n{}\n{text_in}", self.preferences.prompt(&cwd), crate::memory::prompt_for_own_tools(&cwd));
+        }
+        let run = crate::kiro::Run::start(&model, &cwd, &self.shared.mode(), &effort, text_in, !main).map_err(|e| fail(crate::kiro::explain(&e)))?;
+        if main {
+            h.send(Ev::RequestStart);
+        }
+        let (mut text, mut said) = (String::new(), false);
+        // Its calls not finished yet: id → title, input.
+        let mut open: HashMap<String, (String, Value)> = HashMap::new();
+        let result = loop {
+            if self.cancelled() {
+                run.abort();
+                break Err(ApiError::aborted());
+            }
+            let Some(msg) = run.next(Duration::from_millis(100)) else { continue };
+            match msg {
+                KiroMsg::Text(t) => {
+                    said = true;
+                    text.push_str(&t);
+                    if main {
+                        h.send(Ev::Text(t));
+                    }
+                }
+                KiroMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
+                KiroMsg::Reasoning(_) => {}
+                KiroMsg::Todos(t) if main => {
+                    self.todos = t.clone();
+                    h.send(Ev::Todos(t));
+                }
+                KiroMsg::Todos(_) => {}
+                // A call can be announced again as it fills in, and only the first shows.
+                KiroMsg::ToolStart { id, kind, title, input } => {
+                    if main && !open.contains_key(&id) {
+                        let title = if title.is_empty() { kind } else { title };
+                        h.send(Ev::AssistantDone);
+                        h.send(Ev::ToolCall { id: id.clone(), name: "kiro".into(), label: title.clone() });
+                        open.insert(id, (title, input));
+                    }
+                }
+                KiroMsg::ToolEnd { id, failed, text: out } => {
+                    let Some((title, input)) = open.remove(&id) else { continue };
+                    said = true;
+                    let summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
+                    h.send(Ev::ToolResult { id: id.clone(), result: ToolResult { output: out.clone(), is_error: failed, summary: Some(summary), display: None } });
+                    let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "kiro".into(), arguments: input.to_string() } };
+                    self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(&mut text)), tool_calls: Some(vec![call]), reasoning_content: None });
+                    self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { title } else { out }) });
+                    save_session(&mut self.session);
+                }
+                KiroMsg::Permission { id, kind, title, options } => {
+                    let allow = main
+                        && match self.shared.mode().as_str() {
+                            "yolo" => true,
+                            "plan" => false,
+                            "acceptEdits" if kind == "edit" => true,
+                            _ => {
+                                let (tx, rx) = channel();
+                                h.send(Ev::AskPermission(PermissionRequest { tool: "kiro".into(), label: title, preview: None, prefix: None, reason: None }, tx));
+                                !matches!(rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())), PermissionAnswer::Deny(_))
+                            }
+                        };
+                    run.reply_permission(&id, allow, &options);
+                }
+                KiroMsg::Idle(stop) => {
+                    if stop == "cancelled" {
+                        break Err(ApiError::aborted());
+                    }
+                    if !main {
+                        break Ok(std::mem::take(&mut text));
+                    }
+                    if !text.is_empty() {
+                        self.session.messages.push(Message::Assistant { content: Some(std::mem::take(&mut text)), tool_calls: None, reasoning_content: None });
+                        h.send(Ev::AssistantDone);
+                    }
+                    save_session(&mut self.session);
+                    // A message sent while it worked gets its answer now, in this turn.
+                    let before = self.session.messages.len();
+                    if self.take_steer(h) {
+                        let new: Vec<String> = self.session.messages[before..].iter().filter_map(|m| if let Message::User { content } = m { Some(content.text()) } else { None }).collect();
+                        save_session(&mut self.session);
+                        run.send(new.join("\n\n"));
+                        continue;
+                    }
+                    match stop.as_str() {
+                        "max_tokens" | "max_turn_requests" => h.send(Ev::Notice("Kiro hit its limit for one turn. Say \"continue\" to keep going.".into())),
+                        "refusal" => h.send(Ev::Notice("Kiro refused this request.".into())),
+                        _ if !said => h.send(Ev::Notice("Kiro finished without replying. Try rephrasing, or say \"continue\".".into())),
+                        _ => {}
+                    }
+                    break Ok(String::new());
+                }
+                KiroMsg::Failed(e) => break Err(fail(crate::kiro::explain(&e))),
+            }
+        };
+        // Whatever it still had going stopped with it.
+        for id in open.into_keys() {
+            h.send(Ev::ToolResult { id, result: ToolResult::err("Interrupted.", "interrupted") });
+        }
+        run.finish();
+        result
+    }
+
+    /// Runs one real Kiro turn on the CLI's sign-in from a test; see `live_kiro_turns`.
+    #[cfg(test)]
+    fn kiro_turn_for_test(&mut self, text: &str, h: &Hooks) -> Result<(), ApiError> {
+        self.session.messages.push(Message::User { content: Content::Text(text.into()) });
+        let req = self.session.messages.clone();
+        self.kiro_run(&req, true, h).map(|_| ())
     }
 
     /// Tells the model the mode when it changed, at the end of the newest message: earlier messages stay byte-identical.
@@ -750,6 +1324,7 @@ impl Agent {
 
     /// Replaces the older part of the conversation with a summary, keeping the latest turns as they were.
     pub fn compact(&mut self, focus: &str, h: &Hooks) -> Result<bool, ApiError> {
+        self.reload_instructions()?;
         if self.session.messages.len() < 2 {
             return Ok(false);
         }
@@ -771,7 +1346,7 @@ impl Agent {
         }
         let mut msgs = vec![
             Message::User { content: Content::Text(format!("This session continues an earlier conversation that was compacted. Summary of it:\n\n{summary}")) },
-            Message::Assistant { content: Some("Understood. I have the context from the summary and will continue from there.".into()), tool_calls: None, reasoning_content: None },
+            Message::Assistant { content: Some("✓".into()), tool_calls: None, reasoning_content: None },
         ];
         msgs.extend(tail.iter().cloned());
         self.session.messages = msgs;
@@ -886,13 +1461,64 @@ impl Agent {
 
     /// Runs the agent loop for one user message until the model stops calling tools.
     pub fn turn(&mut self, input: String, h: &Hooks) -> Result<(), ApiError> {
+        self.unsent = Some(input.clone());
+        self.reload_instructions()?;
         self.auto_prune(h);
         if self.should_compact() {
             self.compact("", h)?;
         }
         self.checkpoints.push(Checkpoint { at: self.session.messages.len(), label: input.clone(), files: HashMap::new() });
         self.session.messages.push(Message::User { content: Content::Text(input) });
+        self.unsent = None;
         save_session(&mut self.session);
+        self.carry_on(h)
+    }
+
+    /// Picks a stopped turn up where it left off, on whichever model is chosen now.
+    pub fn retry(&mut self, h: &Hooks) -> Result<(), ApiError> {
+        match self.unsent.take() {
+            Some(input) => self.turn(input, h),
+            None => self.carry_on(h),
+        }
+    }
+
+    /// What to show for a failed turn, noting whether it failed because the account can't pay.
+    pub fn failed(&mut self, e: ApiError) -> String {
+        self.out_of_credit = e.status == 402 && *self.shared.provider.lock().unwrap() == "scoutcode";
+        e.message
+    }
+
+    /// Asks the model until it stops calling tools, from the conversation as it stands.
+    fn carry_on(&mut self, h: &Hooks) -> Result<(), ApiError> {
+        if *self.shared.provider.lock().unwrap() == "copilot" {
+            self.announce_mode();
+            self.session.model = self.shared.model.lock().unwrap().clone();
+            let model = self.session.model.clone();
+            let edit = self.shared.edit_tool(&model);
+            if self.specs.0 != edit {
+                self.specs = (edit, tools::specs(None, edit));
+            }
+            let (specs, mut req) = (self.all_specs(), vec![self.system()]);
+            req.extend_from_slice(&self.session.messages);
+            let r = self.copilot_run(&req, &specs, CopilotRole::Main, h).map(|_| ());
+            save_session(&mut self.session);
+            return r;
+        }
+
+        if *self.shared.provider.lock().unwrap() == "devin" {
+            self.session.model = self.shared.model.lock().unwrap().clone();
+            let req = self.session.messages.clone();
+            let r = self.devin_run(&req, true, h).map(|_| ());
+            save_session(&mut self.session);
+            return r;
+        }
+        if *self.shared.provider.lock().unwrap() == "kiro" {
+            self.session.model = self.shared.model.lock().unwrap().clone();
+            let req = self.session.messages.clone();
+            let r = self.kiro_run(&req, true, h).map(|_| ());
+            save_session(&mut self.session);
+            return r;
+        }
 
         for step in 0..200 {
             if step > 0 {
@@ -984,6 +1610,216 @@ mod tests {
         assert_eq!(edit_targets(&patch), ["a.rs", "../b.rs"]);
     }
 
+    /// Runs a real Kiro turn on the CLI's sign-in: `cargo test -- --ignored live_kiro_turns --nocapture`. Checks the models
+    /// list, that a refused tool does nothing while Kiro asks first, and that an allowed one works. Uses up Kiro credits.
+    #[test]
+    #[ignore]
+    fn live_kiro_turns() {
+        crate::kiro::ensure_runtime(&mut |_, _| {}).unwrap();
+        assert!(crate::kiro::signed_in(), "sign in to Kiro first");
+        let models = crate::kiro::list_models().unwrap();
+        println!("models: {models:?}");
+        assert!(!models.is_empty());
+        let dir = std::env::temp_dir().join(format!("scout-kiro-{}", crate::session::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("auto".into()), provider: Mutex::new("kiro".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
+        let mut agent = Agent::new(config::load_config(), crate::session::new_session(&dir.to_string_lossy(), "auto"), shared.clone());
+        let (tx, rx) = channel();
+        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        // Answers what Kiro asks with `allow`, and prints the rest. Returns how many times it was asked.
+        let turn = |agent: &mut Agent, text: &str, allow: bool| {
+            let mut asked = 0;
+            std::thread::scope(|s| {
+                let run = s.spawn(|| agent.kiro_turn_for_test(text, &h));
+                while !run.is_finished() {
+                    for ev in rx.try_iter() {
+                        match ev {
+                            Ev::Text(t) => print!("{t}"),
+                            Ev::ToolCall { label, .. } => println!("\ntool: {label}"),
+                            Ev::ToolResult { result, .. } => println!("  -> {:?}", result.summary),
+                            Ev::Notice(n) => println!("notice: {n}"),
+                            Ev::AskPermission(req, reply) => {
+                                asked += 1;
+                                println!("\nasked: {} -> {allow}", req.label);
+                                let _ = reply.send(if allow { PermissionAnswer::Allow } else { PermissionAnswer::Deny(String::new()) });
+                            }
+                            _ => {}
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                run.join().unwrap().unwrap();
+            });
+            asked
+        };
+        let target = dir.join("kiro-note.txt");
+        let write = "Create a file named kiro-note.txt in the current folder containing exactly the word hello. Use your file tool, and don't ask me questions.";
+        let asked = turn(&mut agent, write, false);
+        assert!(asked > 0, "Kiro must ask first: autopilot should be off");
+        assert!(!target.exists(), "a refused write must not happen");
+        let asked = turn(&mut agent, write, true);
+        assert!(asked > 0);
+        assert!(target.exists(), "an allowed write happens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs real Devin turns on the CLI's sign-in: `cargo test -- --ignored live_devin_turns --nocapture`. Checks that Scout's
+    /// tools do the work, that a refused command doesn't run, that the next turn remembers the last, undo and compaction.
+    #[test]
+    #[ignore]
+    fn live_devin_turns() {
+        crate::devin::ensure_runtime(&mut |_, _| {}).unwrap();
+        assert!(crate::devin::signed_in(), "sign in to Devin first");
+        let models = crate::devin::list_models();
+        println!("models: {models:?}");
+        assert!(!models.is_empty());
+        let dir = std::env::temp_dir().join(format!("scout-devin-{}", crate::session::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("seed.txt"), "first\nsecond\n").unwrap();
+        let shared = Arc::new(Shared {
+            mode: Mutex::new("yolo".into()),
+            model: Mutex::new("auto".into()),
+            provider: Mutex::new("devin".into()),
+            effort: Mutex::new("low".into()),
+            cancel: AtomicBool::new(false),
+            edit_tools: Default::default(),
+            model_names: Default::default(),
+            steer: Default::default(),
+        });
+        let mut agent = Agent::new(config::load_config(), crate::session::new_session(&dir.to_string_lossy(), "auto"), shared.clone());
+        let (tx, rx) = channel();
+        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let show = |rx: &std::sync::mpsc::Receiver<Ev>| {
+            let mut text = String::new();
+            let mut tools = vec![];
+            for ev in rx.try_iter() {
+                match ev {
+                    Ev::Text(t) => text.push_str(&t),
+                    Ev::ToolCall { name, label, .. } => {
+                        println!("tool: {name} {label}");
+                        tools.push(name);
+                    }
+                    Ev::ToolResult { result, .. } => println!("  -> {:?}", result.summary),
+                    Ev::Notice(n) => println!("notice: {n}"),
+                    _ => {}
+                }
+            }
+            println!("reply: {text}");
+            (text, tools)
+        };
+
+        agent.turn("Read seed.txt, change the word second in it to SECOND, create hello.txt containing exactly: hi from scout, then run a shell command that prints hello.txt. Reply in one short sentence.".into(), &h).unwrap();
+        let (_, used) = show(&rx);
+        assert_eq!(std::fs::read_to_string(dir.join("hello.txt")).unwrap().trim(), "hi from scout");
+        assert_eq!(std::fs::read_to_string(dir.join("seed.txt")).unwrap().replace("\r\n", "\n"), "first\nSECOND\n");
+        assert!(used.iter().any(|n| n == "write_file") && used.iter().any(|n| n == "bash"), "Scout's tools did the work: {used:?}");
+
+        agent.turn("What was the name of the file you just created? Answer with the file name only, and don't use any tools.".into(), &h).unwrap();
+        assert!(show(&rx).0.contains("hello.txt"), "the second turn remembers the first");
+
+        // Refused by the user: the window's answer to the prompt.
+        *shared.mode.lock().unwrap() = "default".into();
+        let (answer_tx, answer_rx) = channel::<()>();
+        let refused = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                agent.turn("Run this shell command: rm hello.txt".into(), &h).unwrap();
+                let _ = answer_tx.send(());
+                (agent, dir, h)
+            })
+        };
+        let mut denied = 0;
+        while answer_rx.try_recv().is_err() {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ev::AskPermission(req, reply)) => {
+                    println!("asked: {} {}", req.tool, req.label);
+                    denied += 1;
+                    let _ = reply.send(PermissionAnswer::Deny("Not now.".into()));
+                }
+                Ok(Ev::Text(t)) => print!("{t}"),
+                _ => {}
+            }
+        }
+        let (mut agent, dir, h) = refused.join().unwrap();
+        assert!(denied > 0, "Scout asked before running it");
+        assert!(dir.join("hello.txt").exists(), "the refused command didn't run");
+
+        *shared.mode.lock().unwrap() = "yolo".into();
+        let (label, restored, _) = {
+            let _ = agent.undo();
+            agent.undo().unwrap()
+        };
+        println!("undid: {label} → {restored:?}");
+        let _ = agent.undo();
+        println!("files after undo: {:?}", std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
+        assert!(!dir.join("hello.txt").exists(), "undo removed the file Devin created");
+
+        agent.turn("Reply with the word ok.".into(), &h).unwrap();
+        assert!(agent.compact("", &h).is_ok());
+        show(&rx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs real Copilot turns on the saved sign-in: `cargo test -- --ignored live_copilot --nocapture`. Checks that Scout's
+    /// tools do the work, that the next turn remembers the last, that a refused command doesn't run, and undo.
+    #[test]
+    #[ignore]
+    fn live_copilot() {
+        let cfg = config::load_config();
+        assert!(cfg.copilot_token.is_some(), "sign in to Copilot in the app first");
+        let dir = std::env::temp_dir().join(format!("scout-copilot-{}", crate::session::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Arc::new(Shared {
+            mode: Mutex::new("yolo".into()),
+            model: Mutex::new("auto".into()),
+            provider: Mutex::new("copilot".into()),
+            effort: Mutex::new("low".into()),
+            cancel: AtomicBool::new(false),
+            edit_tools: Default::default(),
+            model_names: Default::default(),
+            steer: Default::default(),
+        });
+        let mut agent = Agent::new(cfg, crate::session::new_session(&dir.to_string_lossy(), "auto"), shared.clone());
+        let (tx, rx) = channel();
+        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let show = |rx: &std::sync::mpsc::Receiver<Ev>| {
+            let mut text = String::new();
+            for ev in rx.try_iter() {
+                match ev {
+                    Ev::Text(t) => text.push_str(&t),
+                    Ev::ToolCall { name, label, .. } => println!("tool: {name} {label}"),
+                    Ev::ToolResult { result, .. } => println!("  -> {:?}", result.summary),
+                    Ev::Notice(n) => println!("notice: {n}"),
+                    _ => {}
+                }
+            }
+            println!("reply: {text}");
+            text
+        };
+
+        agent.turn("Create a file hello.txt containing exactly `hi from scout`, then run a shell command that prints its contents. Reply in one short sentence.".into(), &h).unwrap();
+        show(&rx);
+        assert_eq!(std::fs::read_to_string(dir.join("hello.txt")).unwrap().trim(), "hi from scout");
+        assert!(agent.session.messages.iter().any(|m| matches!(m, Message::Tool { .. })), "the tool calls are in the session");
+
+        agent.turn("What was the name of the file you just created? Answer with the file name only, and don't use any tools.".into(), &h).unwrap();
+        assert!(show(&rx).contains("hello.txt"), "the second turn remembers the first");
+
+        *shared.mode.lock().unwrap() = "plan".into();
+        agent.turn("Use the bash tool to run: echo refused > refused.txt".into(), &h).unwrap();
+        show(&rx);
+        assert!(!dir.join("refused.txt").exists(), "plan mode refused the command");
+        *shared.mode.lock().unwrap() = "yolo".into();
+
+        agent.compact("", &h).unwrap();
+        assert!(matches!(&agent.session.messages[0], Message::User { content: Content::Text(t) } if t.contains("compacted")));
+
+        println!("totals: {:?}", agent.session.totals);
+        assert!(agent.session.totals.requests > 0 && agent.session.totals.prompt_tokens > 0);
+        let _ = std::fs::remove_file(crate::config::home().join("sessions").join(format!("{}.json", agent.session.id)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Runs one real turn against the configured account: `cargo test -- --ignored live_turn --nocapture`.
     #[test]
     #[ignore]
@@ -1004,7 +1840,7 @@ mod tests {
         });
         let mut agent = Agent::new(cfg.clone(), crate::session::new_session(&cwd, &cfg.model), shared);
         let (tx, rx) = channel();
-        let h = Hooks { tx, ctx: eframe::egui::Context::default() };
+        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
         let r = agent.turn("Create a file hello.txt containing exactly `hi from scout`, then run a shell command that prints its contents. Reply in one short sentence.".into(), &h);
         let mut text = String::new();
         for ev in rx.try_iter() {
@@ -1022,6 +1858,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A stand-in for Kilo: lists two free models and a paid one, and answers every chat with a 429, with a short
+    /// Retry-After when asked. Keeps each chat's headers.
+    fn kilo_stub(retry_after: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let chats = Arc::new(Mutex::new(vec![]));
+        let seen = chats.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                // All of it: closing with some of it unread would look like a network failure to the client.
+                let (mut req, mut buf) = (String::new(), [0; 65536]);
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    req.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    let Some((head, body)) = req.split_once("\r\n\r\n") else {
+                        if n == 0 {
+                            break;
+                        }
+                        continue;
+                    };
+                    let want = head.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                    if n == 0 || body.len() >= want {
+                        break;
+                    }
+                }
+                let reply = if req.starts_with("GET") {
+                    let body = r#"{"data":[{"id":"kilo-auto/free","isFree":true,"supported_parameters":["tools"]},{"id":"music/free","isFree":true,"supported_parameters":[]},{"id":"paid/one","isFree":false,"supported_parameters":["tools"]}]}"#;
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                } else {
+                    seen.lock().unwrap().push(req);
+                    let extra = if retry_after { "Retry-After: 1\r\n" } else { "" };
+                    let body = r#"{"error":{"message":"Rate limit exceeded for free models.","code":429}}"#;
+                    format!("HTTP/1.1 429 Too Many Requests\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (url, chats)
+    }
+
+    fn kilo_agent() -> (Agent, Hooks) {
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("kilo-auto/free".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
+        let mut cfg = config::load_config();
+        (cfg.kilo_enabled, cfg.kilo_key) = (true, None);
+        let (tx, _) = std::sync::mpsc::channel();
+        (Agent::new(cfg, crate::session::new_session(".", "kilo-auto/free"), shared), Hooks { tx, ctx: Default::default() })
+    }
+
+    // One test, since the URL is in the environment and tests run side by side.
+    #[test]
+    fn kilo_needs_no_key_and_does_not_burn_its_limit_on_retries() {
+        let say = [Message::User { content: Content::Text("hi".into()) }];
+
+        let (url, chats) = kilo_stub(false);
+        unsafe { std::env::set_var("KILO_BASE_URL", &url) };
+        let (mut agent, h) = kilo_agent();
+        let listed: Vec<String> = api::list_kilo(&agent.cfg).unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(listed, ["kilo-auto/free"], "no key: only free models that have tools");
+        let e = agent.request(&say, false, true, None, false, &h).unwrap_err();
+        assert!(e.message.contains("200 requests an hour"), "{}", e.message);
+        assert_eq!(chats.lock().unwrap().len(), 1, "a 429 is not retried");
+        assert!(!chats.lock().unwrap()[0].to_lowercase().contains("authorization"), "no key means no header");
+
+        let (url, chats) = kilo_stub(true);
+        unsafe { std::env::set_var("KILO_BASE_URL", &url) };
+        agent.cfg.kilo_key = Some("k".into());
+        assert_eq!(api::list_kilo(&agent.cfg).unwrap().len(), 2, "with a key: paid models too");
+        agent.request(&say, false, true, None, false, &h).unwrap_err();
+        assert_eq!(chats.lock().unwrap().len(), 2, "its own short wait gets one retry");
+        assert!(chats.lock().unwrap()[0].to_lowercase().contains("authorization: bearer k"));
+        unsafe { std::env::remove_var("KILO_BASE_URL") };
+    }
+
+    #[test]
+    fn mcp_tools_need_permission() {
+        let shared = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), steer: Default::default() });
+        let mut agent = Agent::new(config::load_config(), crate::session::new_session(".", "m"), shared.clone());
+        agent.cfg.allow.clear();
+        let (tx, rx) = channel();
+        let h = Hooks { tx, ctx: crate::waker::Waker::default() };
+        let call = ToolCall { id: "1".into(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "mcp__srv__do_it".into(), arguments: r#"{"a":1}"#.into() } };
+        // Plan mode is read-only, and a server's tool might do anything.
+        assert!(agent.run_tool(&call, &h).output.contains("read-only"));
+
+        for mode in ["default", "acceptEdits", "auto"] {
+            *shared.mode.lock().unwrap() = mode.into();
+            let (asked_tx, asked_rx) = channel();
+            let waiter = std::thread::scope(|s| {
+                let hooks = &h;
+                let agent = &mut agent;
+                let call = &call;
+                let run = s.spawn(move || agent.run_tool(call, hooks));
+                for ev in rx.iter() {
+                    if let Ev::AskPermission(req, reply) = ev {
+                        asked_tx.send((req.label.clone(), req.prefix.clone())).unwrap();
+                        reply.send(PermissionAnswer::Deny(String::new())).unwrap();
+                        break;
+                    }
+                }
+                run.join().unwrap()
+            });
+            assert!(waiter.is_error && waiter.output.contains("denied"), "{mode}: {}", waiter.output);
+            let (label, prefix) = asked_rx.recv().unwrap();
+            assert_eq!((label.as_str(), prefix.as_deref()), ("srv / do_it", Some("mcp__srv__do_it")), "{mode}");
+        }
+
+        // Allowed for this project: no question, and with no such server it says so.
+        *shared.mode.lock().unwrap() = "default".into();
+        agent.cfg.allow.insert(agent.session.cwd.clone(), vec!["mcp__srv__do_it".into()]);
+        let r = agent.run_tool(&call, &h);
+        assert!(r.is_error && r.output.contains("isn't connected"), "{}", r.output);
+        assert!(!rx.try_iter().any(|e| matches!(e, Ev::AskPermission(..))));
+        assert!(!tools::READ_ONLY.contains(&"mcp__srv__do_it"));
+    }
+
     #[test]
     fn rewind_restores_files_changed_since() {
         let dir = std::env::temp_dir().join(format!("scout-rewind-{}", crate::session::now_ms()));
@@ -1034,7 +1987,7 @@ mod tests {
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&cwd, "m"), shared);
         let edit = |id: &str| Message::Assistant {
             content: None,
-            tool_calls: Some(vec![ToolCall { id: id.into(), kind: "function".into(), function: api::FunctionCall { name: "write_file".into(), arguments: "{}".into() } }]),
+            tool_calls: Some(vec![ToolCall { id: id.into(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "write_file".into(), arguments: "{}".into() } }]),
             reasoning_content: None,
         };
         let user = |t: &str| Message::User { content: Content::Text(t.into()) };

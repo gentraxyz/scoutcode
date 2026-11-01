@@ -17,7 +17,7 @@ pub struct Totals {
     pub cached_tokens: u64,
 }
 
-/// The CLI's session format, so a conversation started in one can be resumed in the other.
+/// A saved conversation. The old CLI used the same format, so its chats can still be resumed.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Session {
     pub id: String,

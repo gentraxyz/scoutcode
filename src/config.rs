@@ -7,6 +7,66 @@ pub const MODES: [&str; 5] = ["default", "acceptEdits", "auto", "plan", "yolo"];
 pub const EFFORTS: [&str; 4] = ["none", "low", "medium", "high"];
 pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 pub const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1";
+pub const KILO_URL: &str = "https://ai-gateway.kilo.ai/api/v1";
+pub const KILO_DEFAULT_MODEL: &str = "kilo-auto/free";
+pub const KILO_WARNING: &str = "Kilo's free models may log your prompts and train on them, so don't send them anything private. They allow 200 requests an hour per network, and every tool call is a request.";
+
+/// A smaller provider, listed together under Additional Providers in the model menu. All of them speak OpenAI's API.
+pub struct AdditionalProvider {
+    /// What `Config::provider` says when a model runs here.
+    pub id: &'static str,
+    pub name: &'static str,
+    pub url: &'static str,
+    /// Without a key it can't be used at all. Otherwise a key is only for higher limits.
+    pub needs_key: bool,
+    pub note: &'static str,
+    pub key_url: &'static str,
+    pub key_link: &'static str,
+    pub key_hint: &'static str,
+    /// What to start on when there's nothing else to run on, if it's still listed.
+    pub default_model: &'static str,
+}
+
+pub static ADDITIONAL: [AdditionalProvider; 2] = [
+    AdditionalProvider {
+        id: "ovh",
+        name: "OVH Cloud",
+        url: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+        needs_key: false,
+        note: "Free, with no account or key. It allows 2 requests a minute per model, and every tool call is a request, so Scout often pauses to wait for the limit.",
+        key_url: "https://www.ovhcloud.com/en/public-cloud/ai-endpoints/",
+        key_link: "Get a key from OVH Cloud",
+        key_hint: "OVH AI Endpoints key",
+        default_model: "Qwen3.8-27B",
+    },
+    AdditionalProvider {
+        id: "google",
+        name: "Google AI Studio",
+        url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        needs_key: true,
+        note: "Gemini models, with your own key. Saved on this PC. On Google's free tier, your prompts may be used to improve its products.",
+        key_url: "https://aistudio.google.com/apikey",
+        key_link: "Make a key in Google AI Studio",
+        key_hint: "AIza…",
+        default_model: "gemini-flash-latest",
+    },
+];
+
+pub fn additional_provider(id: &str) -> Option<&'static AdditionalProvider> {
+    ADDITIONAL.iter().find(|a| a.id == id)
+}
+
+/// An additional provider the user has linked, with their key if it has one.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LinkedProvider {
+    pub id: String,
+    pub key: Option<String>,
+}
+
+/// Where Kilo is: KILO_BASE_URL overrides it for testing.
+pub fn kilo_url() -> String {
+    std::env::var("KILO_BASE_URL").map(|u| u.trim_end_matches('/').to_string()).unwrap_or_else(|_| KILO_URL.to_string())
+}
 
 pub fn mode_label(mode: &str) -> &'static str {
     match mode {
@@ -18,7 +78,7 @@ pub fn mode_label(mode: &str) -> &'static str {
     }
 }
 
-/// Same file and fields as the CLI (~/.scoutcode/config.json), so one login and one allow list serve both.
+/// ~/.scoutcode/config.json, the file the old CLI used too, so its login and allow list carry over.
 #[derive(Clone, Debug)]
 pub struct Config {
     pub api_key: Option<String>,
@@ -26,7 +86,21 @@ pub struct Config {
     pub openrouter_keys: Vec<OpenRouterKey>,
     /// The user's own NVIDIA key, for models on NVIDIA NIM.
     pub nvidia_key: Option<String>,
-    /// Where the chosen model runs: "scoutcode", "openrouter" or "nvidia". The model is that provider's id for it.
+    /// The user has chosen Kilo Code. Its models are listed either way, since they need no key.
+    pub kilo_enabled: bool,
+    /// The user's own Kilo key. Only paid models need it.
+    pub kilo_key: Option<String>,
+    /// The user's own GitHub token for Copilot, from signing in or COPILOT_GITHUB_TOKEN.
+    pub copilot_token: Option<String>,
+    /// The GitHub account that token belongs to, for Settings.
+    pub copilot_user: Option<String>,
+    /// The user has signed in to Devin here. Its CLI keeps the token; Scout never sees it.
+    pub devin_enabled: bool,
+    /// The user has signed in to Kiro here. Its CLI keeps the token; Scout never sees it.
+    pub kiro_enabled: bool,
+    /// The additional providers the user has linked, in the order they linked them.
+    pub additional: Vec<LinkedProvider>,
+    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro" or an additional provider's id. The model is that provider's id for it.
     pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
     pub username: Option<String>,
@@ -123,6 +197,19 @@ pub fn load_config() -> Config {
         api_key: s.get("apiKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         openrouter_keys: saved_openrouter_keys(&s),
         nvidia_key: s.get("nvidiaKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        kilo_enabled: s.get("kiloEnabled").and_then(Value::as_bool).unwrap_or(false),
+        kilo_key: s.get("kiloKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        copilot_token: s.get("copilotToken").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        copilot_user: s.get("copilotUser").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        devin_enabled: s.get("devinEnabled").and_then(Value::as_bool).unwrap_or(false),
+        kiro_enabled: s.get("kiroEnabled").and_then(Value::as_bool).unwrap_or(false),
+        additional: s
+            .get("additionalProviders")
+            .and_then(|v| serde_json::from_value::<Vec<LinkedProvider>>(v.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|l| additional_provider(&l.id).is_some())
+            .collect(),
         provider: str_("provider", "scoutcode"),
         username: s.get("username").and_then(Value::as_str).filter(|u| !u.is_empty()).map(String::from),
         base_url: str_("baseUrl", "https://scoutcode.dev/v1"),
@@ -157,13 +244,39 @@ pub fn load_config() -> Config {
     if let Ok(k) = std::env::var("NVIDIA_API_KEY") {
         cfg.nvidia_key = Some(k);
     }
+    if let Ok(k) = std::env::var("KILO_API_KEY") {
+        cfg.kilo_key = Some(k);
+        cfg.kilo_enabled = true;
+    }
+    if let Ok(k) = std::env::var("COPILOT_GITHUB_TOKEN") {
+        cfg.copilot_token = Some(k);
+    }
     cfg.base_url = cfg.base_url.trim_end_matches('/').to_string();
+    // With nothing else to run on, models run on Kilo.
+    if cfg.provider == "scoutcode" && cfg.only_kilo() {
+        cfg.provider = "kilo".into();
+        cfg.model = KILO_DEFAULT_MODEL.into();
+    }
     cfg
 }
 
 impl Config {
+    pub fn kilo_on(&self) -> bool {
+        self.kilo_enabled || self.kilo_key.is_some()
+    }
+
+    /// Whether Kilo is the only provider there's a way to use.
+    pub fn only_kilo(&self) -> bool {
+        self.kilo_on() && self.api_key.is_none() && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && self.additional.is_empty()
+    }
+
+    /// The additional provider `id`, if the user has linked it.
+    pub fn linked(&self, id: &str) -> Option<&LinkedProvider> {
+        self.additional.iter().find(|l| l.id == id)
+    }
+
     /// The same settings pointed at the provider a request goes to: ScoutCode's server, OpenRouter with its first key,
-    /// or NVIDIA NIM with its key.
+    /// or NVIDIA NIM, Kilo or an additional provider with its key.
     pub fn for_provider(&self, provider: &str) -> Config {
         let mut c = self.clone();
         if provider == "openrouter" {
@@ -172,6 +285,12 @@ impl Config {
         } else if provider == "nvidia" {
             c.base_url = NVIDIA_URL.to_string();
             c.api_key = self.nvidia_key.clone();
+        } else if provider == "kilo" {
+            c.base_url = kilo_url();
+            c.api_key = self.kilo_key.clone();
+        } else if let Some(a) = additional_provider(provider) {
+            c.base_url = a.url.to_string();
+            c.api_key = self.linked(a.id).and_then(|l| l.key.clone());
         }
         c
     }
@@ -189,10 +308,17 @@ impl Config {
         self.api_key = other.api_key.clone();
         self.openrouter_keys = other.openrouter_keys.clone();
         self.nvidia_key = other.nvidia_key.clone();
+        self.kilo_enabled = other.kilo_enabled;
+        self.kilo_key = other.kilo_key.clone();
+        self.copilot_token = other.copilot_token.clone();
+        self.copilot_user = other.copilot_user.clone();
+        self.devin_enabled = other.devin_enabled;
+        self.kiro_enabled = other.kiro_enabled;
+        self.additional = other.additional.clone();
     }
 }
 
-/// Saves the OpenRouter keys in order. The first is also kept as `openrouterKey`, for older builds and the CLI.
+/// Saves the OpenRouter keys in order. The first is also kept as `openrouterKey`, for older builds.
 pub fn save_openrouter_keys(keys: &[OpenRouterKey]) {
     let mut m = Map::new();
     m.insert("openrouterKeys".into(), json!(keys));

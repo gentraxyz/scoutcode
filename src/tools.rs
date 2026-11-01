@@ -66,6 +66,13 @@ const MAX_OUTPUT: usize = 30_000;
 
 pub const READ_ONLY: [&str; 5] = ["view", "list_dir", "glob", "grep", "web_fetch"];
 
+/// What the names of tools from the user's MCP servers start with (see mcp_client.rs).
+pub const MCP_PREFIX: &str = "mcp__";
+
+pub fn is_mcp(name: &str) -> bool {
+    name.starts_with(MCP_PREFIX)
+}
+
 /// How a model edits files, as /v1/models says for each (admins pick it): the edit tool it was trained on.
 /// StrReplace is Anthropic's exact old→new text (edit_file, multi_edit); ApplyPatch is OpenAI's diff-style patch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -81,7 +88,7 @@ impl EditTool {
     }
 }
 
-/// Tool specs in the same order as the CLI's, with the edit tools that suit the model. The list doesn't change with
+/// Tool specs, with the edit tools that suit the model. The list doesn't change with
 /// the mode, since a change would void the prompt cache (switching models voids it anyway).
 pub fn specs(only: Option<&[&str]>, edit: EditTool) -> Vec<Value> {
     let all = [
@@ -116,6 +123,8 @@ pub fn specs(only: Option<&[&str]>, edit: EditTool) -> Vec<Value> {
             json!({"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"]})),
         ("ask_questions", "Ask the user one to four questions and wait for their answers. Use it when a decision or a detail only the user can give would otherwise be a guess. Give each question 2-4 short options; the user can always type their own answer instead. Ask only what you need.",
             json!({"type":"object","properties":{"questions":{"type":"array","maxItems":4,"items":{"type":"object","properties":{"question":{"type":"string","description":"The full question, ending in a question mark"},"header":{"type":"string","description":"A very short label, 16 characters or fewer"},"options":{"type":"array","maxItems":6,"items":{"type":"object","properties":{"label":{"type":"string","description":"1-5 words"},"description":{"type":"string","description":"What picking it means"}},"required":["label"]}},"multiSelect":{"type":"boolean","description":"Whether the user may pick several options"}},"required":["question","options"]}}},"required":["questions"]})),
+        ("update_memory", "Change a memory that carries over between chats (its text is in the system prompt). add puts text at the end of a section, creating it if needed. replace and remove need old_text, copied exactly. Keep entries short and specific.",
+            json!({"type":"object","properties":{"memory":{"type":"string","enum":["project","user"],"description":"project: facts about this repo, nothing personal. user: facts about the person."},"action":{"type":"string","enum":["add","replace","remove"]},"section":{"type":"string","description":"For add: the section name, e.g. Pitfalls"},"text":{"type":"string","description":"For add and replace: the new text, usually one bullet"},"old_text":{"type":"string","description":"For replace and remove: the exact text to change"}},"required":["memory","action"]})),
     ];
     all.into_iter()
         .filter(|(n, ..)| only.is_none_or(|o| o.contains(n)))
@@ -155,13 +164,15 @@ pub fn canonical(name: &str, args: Value) -> (String, Value) {
 }
 
 pub fn known(name: &str) -> bool {
-    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "todo_write" | "task" | "present_plan" | "ask_questions")
+    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory")
 }
 
 pub fn permission(name: &str) -> Permission {
     match name {
-        "write_file" | "edit_file" | "multi_edit" | "apply_patch" => Permission::Edit,
+        "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "update_memory" => Permission::Edit,
         "bash" => Permission::Exec,
+        // Anything could be behind one, so it's asked about like a command.
+        n if is_mcp(n) => Permission::Exec,
         _ => Permission::Read,
     }
 }
@@ -202,6 +213,7 @@ pub fn label(name: &str, a: &Value) -> String {
         "todo_write" => format!("{} items", a.get("todos").and_then(Value::as_array).map_or(0, Vec::len)),
         "task" => s(a, "description").into(),
         "present_plan" => "plan".into(),
+        "update_memory" => format!("{} memory", s(a, "memory")),
         "ask_questions" => {
             let qs = a.get("questions").and_then(Value::as_array);
             let first = qs
@@ -213,6 +225,7 @@ pub fn label(name: &str, a: &Value) -> String {
                 n => format!("{first} (+{} more)", n - 1),
             }
         }
+        n if is_mcp(n) => a.to_string().chars().take(160).collect(),
         _ => String::new(),
     }
 }
@@ -238,6 +251,7 @@ pub fn run(name: &str, a: &Value, ctx: &mut Ctx) -> R {
         "shell_output" => shell_output(a),
         "kill_shell" => kill_shell(a),
         "web_fetch" => web_fetch(a, ctx),
+        "update_memory" => crate::memory::run(a, ctx),
         _ => Err(format!("Unknown tool {name}. To search the code, use grep.")),
     }
 }
@@ -259,6 +273,7 @@ pub fn preview(name: &str, a: &Value, ctx: &Ctx) -> Option<Display> {
             })
         }
         "apply_patch" => Some(crate::patch::preview(a, ctx)),
+        "update_memory" => Some(crate::memory::preview(a, ctx)),
         _ => None,
     }
 }
@@ -498,6 +513,33 @@ fn view(a: &Value, ctx: &mut Ctx) -> R {
         out.push_str(&format!("\n\n(lines {from}-{end} of {}; view again with start: {} for more)", lines.len(), end + 1));
     }
     Ok(ToolResult::ok(out, format!("{} lines", slice.len())))
+}
+
+/// A file's exact text for Devin, which keeps what it reads to write it back: unlike `view`, no line numbers and no
+/// cut-off long lines. The same files are off limits. `line` is 1-based, and with `limit` picks a range of lines.
+pub fn read_raw(cwd: &str, path: &str, line: Option<usize>, limit: Option<usize>) -> Result<(PathBuf, String), String> {
+    let abs = resolve(cwd, path)?;
+    let meta = std::fs::metadata(&abs).map_err(|_| format!("No file at {path}."))?;
+    // Symlinks are resolved first, so a link can't lead out of the project.
+    let Ok(inside) = canon(&abs).strip_prefix(canon(Path::new(cwd))).map(|r| r.to_string_lossy().replace('\\', "/")) else {
+        return Err(format!("{path} is outside the project ({cwd}), so Scout won't read it."));
+    };
+    if is_secret(&inside) {
+        return Err(format!("{inside} may hold secrets, so Scout won't read it."));
+    }
+    if meta.len() > 20 * 1024 * 1024 {
+        return Err(format!("{inside} is over 20 MB."));
+    }
+    let buf = std::fs::read(&abs).map_err(|e| e.to_string())?;
+    if is_binary(&buf) {
+        return Err(format!("{inside} is a binary file ({} bytes), so there is no text to show.", meta.len()));
+    }
+    let text = String::from_utf8_lossy(&buf).to_string();
+    if line.is_none() && limit.is_none() {
+        return Ok((abs, text));
+    }
+    let lines = text.split_inclusive('\n').skip(line.unwrap_or(1).saturating_sub(1)).take(limit.unwrap_or(usize::MAX));
+    Ok((abs, lines.collect()))
 }
 
 fn write_file(a: &Value, ctx: &mut Ctx) -> R {
@@ -838,7 +880,7 @@ fn start(command: &str, cwd: &str) -> std::io::Result<Child> {
     c.spawn()
 }
 
-fn kill_tree(child: &mut Child) {
+pub fn kill_tree(child: &mut Child) {
     #[cfg(windows)]
     {
         let mut c = Command::new("taskkill");

@@ -11,6 +11,9 @@ pub struct ToolCall {
     pub id: String,
     #[serde(rename = "type", default = "function_type")]
     pub kind: String,
+    /// Anything the provider attached to the call, which it wants back with it: Gemini's thought signature, for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<Value>,
     pub function: FunctionCall,
 }
 
@@ -142,6 +145,28 @@ fn key(cfg: &Config) -> Result<&str, ApiError> {
     cfg.api_key.as_deref().ok_or_else(|| ApiError::new("Not signed in. Sign in or paste an API key first.", 401))
 }
 
+/// Whether requests with these settings go to Kilo. The provider can't say: auto mode's check goes to ScoutCode while a
+/// model runs on Kilo.
+fn is_kilo(cfg: &Config) -> bool {
+    cfg.base_url == crate::config::kilo_url()
+}
+
+/// The key for a request that may go to Kilo. Its free models need no key, and it refuses a made-up one, so without a
+/// key no header goes at all. The same goes for an additional provider with a free tier.
+fn auth<B>(req: ureq::RequestBuilder<B>, cfg: &Config) -> Result<ureq::RequestBuilder<B>, ApiError> {
+    if cfg.api_key.is_none() && crate::config::ADDITIONAL.iter().any(|a| !a.needs_key && a.url == cfg.base_url) {
+        return Ok(req);
+    }
+    if !is_kilo(cfg) {
+        return Ok(req.header("Authorization", &format!("Bearer {}", key(cfg)?)));
+    }
+    let req = req.header("X-KiloCode-Version", env!("CARGO_PKG_VERSION"));
+    Ok(match &cfg.api_key {
+        Some(k) => req.header("Authorization", &format!("Bearer {k}")),
+        None => req,
+    })
+}
+
 fn header(res: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> {
     res.headers().get(name).and_then(|v| v.to_str().ok()).map(String::from)
 }
@@ -186,7 +211,22 @@ pub struct ModelInfo {
     pub openrouter_id: Option<String>,
     /// The id NVIDIA NIM knows it by, when NIM serves it too. Set for NIM's own entries as well.
     pub nvidia_id: Option<String>,
-    /// ScoutCode serves it, from our own model list. False for models that are only on OpenRouter or NIM.
+    /// The id Kilo knows it by, when Kilo serves it.
+    pub kilo_id: Option<String>,
+    /// Costs nothing on Kilo.
+    pub kilo_free: bool,
+    /// How expensive it is on Kilo.
+    pub kilo_tier: Option<u8>,
+    /// The id Copilot knows it by. Copilot's entries are their own, under "copilot/…": it decides what it serves per account.
+    pub copilot_id: Option<String>,
+    /// The id Devin knows it by. Devin's entries are their own too, under "devin/…", for the same reason.
+    pub devin_id: Option<String>,
+    /// The id Kiro knows it by. Kiro's entries are their own too, under "kiro/…", for the same reason.
+    pub kiro_id: Option<String>,
+    /// The additional provider that serves it, and the id it knows it by. These entries are their own too, under "ovh/…"
+    /// and the like: the same name there can be a different build at a different price.
+    pub additional: Option<(&'static str, String)>,
+    /// ScoutCode serves it, from our own model list. False for models that are only on OpenRouter, NIM or Kilo.
     pub hosted: bool,
     /// Costs nothing on the route that reports it (no per-token price, or OpenRouter's ":free" variants).
     pub free: bool,
@@ -234,6 +274,13 @@ impl ModelInfo {
             edit_tool: crate::tools::EditTool::parse(m.get("edit_tool").and_then(Value::as_str).unwrap_or("")),
             openrouter_id: None,
             nvidia_id: None,
+            kilo_id: None,
+            kilo_free: false,
+            kilo_tier: None,
+            copilot_id: None,
+            devin_id: None,
+            kiro_id: None,
+            additional: None,
             hosted: false,
             free,
             tier,
@@ -251,8 +298,20 @@ impl ModelInfo {
 
     /// The id to send for this model to `provider`.
     pub fn request_id(&self, provider: &str) -> &str {
-        match (provider, &self.openrouter_id, &self.nvidia_id) {
-            ("openrouter", Some(id), _) | ("nvidia", _, Some(id)) => id,
+        if let ("copilot", Some(id)) = (provider, &self.copilot_id) {
+            return id;
+        }
+        if let ("devin", Some(id)) = (provider, &self.devin_id) {
+            return id;
+        }
+        if let ("kiro", Some(id)) = (provider, &self.kiro_id) {
+            return id;
+        }
+        if let Some((_, id)) = self.additional.as_ref().filter(|(p, _)| *p == provider) {
+            return id;
+        }
+        match (provider, &self.openrouter_id, &self.nvidia_id, &self.kilo_id) {
+            ("openrouter", Some(id), _, _) | ("nvidia", _, Some(id), _) | ("kilo", _, _, Some(id)) => id,
             _ => &self.id,
         }
     }
@@ -267,7 +326,7 @@ fn match_key(m: &ModelInfo) -> String {
 
 /// One list from every provider: a model several serve shows once, on the first one's entry with the others' ids
 /// attached; models only one of them serves follow ours.
-pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>, nvidia: Vec<ModelInfo>) -> Vec<ModelInfo> {
+pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>, nvidia: Vec<ModelInfo>, kilo: Vec<ModelInfo>) -> Vec<ModelInfo> {
     let mut out = scout;
     for o in openrouter {
         let key = match_key(&o);
@@ -292,6 +351,17 @@ pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>, nvidia: V
             Some(i) => out[i].nvidia_id = n.nvidia_id,
             None if out.iter().all(|m| m.id != n.id) => out.push(n),
             None => {}
+        }
+    }
+    // By id only: Kilo's "nvidia/…:free" and the like are its own routes, whatever else goes by that name.
+    for k in kilo {
+        match out.iter_mut().find(|m| m.id == k.id) {
+            Some(m) => {
+                m.kilo_id = k.kilo_id;
+                m.kilo_free = k.kilo_free;
+                m.kilo_tier = k.kilo_tier;
+            }
+            None => out.push(k),
         }
     }
     out
@@ -321,6 +391,181 @@ pub fn list_nvidia(cfg: &Config) -> Result<Vec<ModelInfo>, ApiError> {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(ModelInfo::from_json).filter(|m| nvidia_chat_model(&m.id)).map(|m| ModelInfo { nvidia_id: Some(m.id.clone()), ..m }).collect())
         .unwrap_or_default())
+}
+
+/// Kilo's catalog, which is public. Models without tools can't run Scout, and without a key only the free ones work.
+pub fn list_kilo(cfg: &Config) -> Result<Vec<ModelInfo>, ApiError> {
+    let k = cfg.for_provider("kilo");
+    let res = auth(http().get(&format!("{}/models", k.base_url)), &k)?.call().map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().read_json().map_err(transport)?;
+    let is_free = |m: &Value| m.get("isFree").and_then(Value::as_bool) == Some(true);
+    Ok(body
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter(|m| k.api_key.is_some() || is_free(m))
+                .filter_map(|m| {
+                    let free = is_free(m);
+                    let info = ModelInfo::from_json(m).filter(|i| i.tools == Some(true))?;
+                    Some(ModelInfo { kilo_id: Some(info.id.clone()), kilo_free: free, kilo_tier: info.tier, free, ..info })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Whether an additional provider's list entry can run Scout. The lists also have embeddings, speech, image and safety
+/// models, and a few chat models that refuse tools, with no field to tell them apart.
+fn additional_chat_model(id: &str) -> bool {
+    const NOT_CHAT: [&str; 19] = ["embed", "bge-", "guard", "whisper", "tts", "diffusion", "-vl-", "image", "audio", "live", "veo", "imagen", "aqa", "gemma", "robotics", "computer-use", "learnlm", "nano-banana", "deep-research"];
+    let id = id.to_lowercase();
+    !NOT_CHAT.iter().any(|w| id.contains(w))
+}
+
+/// The entries of an additional provider's model list that can run Scout. With no key on a free tier, they all cost nothing.
+fn additional_models(a: &crate::config::AdditionalProvider, keyed: bool, body: &Value) -> Vec<ModelInfo> {
+    let free = !a.needs_key && !keyed;
+    body.get("data")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(ModelInfo::from_json)
+                .filter(|m| additional_chat_model(&m.id))
+                .map(|m| {
+                    // Google's ids start "models/", which chat doesn't need.
+                    let id = m.id.strip_prefix("models/").unwrap_or(&m.id).to_string();
+                    ModelInfo {
+                        id: format!("{}/{id}", a.id),
+                        additional: Some((a.id, id)),
+                        free: free || m.free,
+                        tier: if free { None } else { m.tier },
+                        cost: if free { Some("Free".into()) } else { m.cost },
+                        ..m
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The models of a linked additional provider.
+pub fn list_additional(cfg: &Config, a: &crate::config::AdditionalProvider) -> Result<Vec<ModelInfo>, ApiError> {
+    let c = cfg.for_provider(a.id);
+    let res = auth(http().get(&format!("{}/models", c.base_url)), &c)?.call().map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().read_json().map_err(transport)?;
+    Ok(additional_models(a, c.api_key.is_some(), &body))
+}
+
+/// Whether Kilo answers and, with a key, takes it, which costs one request. Without a key that request is left out, to
+/// save the hourly limit. Says how it went either way.
+pub fn check_kilo(cfg: &Config) -> Result<String, String> {
+    let k = cfg.for_provider("kilo");
+    let timeout = Some(Duration::from_secs(10));
+    let unreachable = |e: String| format!("Could not reach Kilo: {e}");
+    let free = list_kilo(&Config { kilo_key: None, ..cfg.clone() }).map_err(|e| unreachable(e.message))?.len();
+    if k.api_key.is_some() {
+        let res = auth(http().post(&format!("{}/chat/completions", k.base_url)), &k)
+            .map_err(|e| e.message)?
+            .config()
+            .timeout_global(timeout)
+            .build()
+            .send_json(json!({ "model": crate::config::KILO_DEFAULT_MODEL, "messages": [{ "role": "user", "content": "hi" }], "max_tokens": 1 }));
+        if res.is_ok_and(|r| r.status().as_u16() == 401) {
+            return Err("Kilo rejected that key.".into());
+        }
+    }
+    Ok(format!("Kilo is reachable, with {free} free models."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kilo_models_merge_by_id_only() {
+        let model = |id: &str, name: &str| ModelInfo { id: id.into(), name: Some(name.into()), ..Default::default() };
+        let nim = ModelInfo { nvidia_id: Some("nvidia/nemotron".into()), ..model("nvidia/nemotron", "Nemotron") };
+        let or = ModelInfo { openrouter_id: Some("openrouter/free".into()), ..model("openrouter/free", "Free") };
+        let kilo = |id: &str, name: &str| ModelInfo { kilo_id: Some(id.into()), kilo_free: true, ..model(id, name) };
+        let out = merge_models(vec![], vec![or], vec![nim], vec![kilo("nvidia/nemotron:free", "Nemotron"), kilo("openrouter/free", "Free")]);
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().find(|m| m.id == "nvidia/nemotron").unwrap().kilo_id.is_none(), "the same name isn't the same route");
+        assert!(out.iter().find(|m| m.id == "openrouter/free").unwrap().kilo_free, "the same id is one entry");
+    }
+
+    #[test]
+    fn additional_lists_keep_only_models_that_can_run_scout() {
+        let ovh = crate::config::additional_provider("ovh").unwrap();
+        let price = json!({ "prompt": "0.00000047", "completion": "0.00000319" });
+        let listing = |ids: &[&str]| json!({ "data": ids.iter().map(|id| json!({ "id": id, "pricing": price })).collect::<Vec<_>>() });
+        let body = listing(&["Qwen3.8-27B", "bge-m3", "Qwen3Guard-Gen-8B", "whisper-large-v3", "nvr-tts-en-us", "stable-diffusion-xl-base-v10", "Qwen2.5-VL-72B-Instruct", "Qwen3-Embedding-8B"]);
+        let free = additional_models(ovh, false, &body);
+        assert_eq!(free.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["ovh/Qwen3.8-27B"]);
+        assert_eq!(free[0].request_id("ovh"), "Qwen3.8-27B");
+        assert_eq!(free[0].label(), "Qwen3.8-27B");
+        assert!(free[0].free && free[0].tier.is_none(), "no key is the free tier");
+        let paid = additional_models(ovh, true, &body);
+        assert!(!paid[0].free && paid[0].tier.is_some(), "a key is billed");
+
+        let google = crate::config::additional_provider("google").unwrap();
+        let body = listing(&["models/gemini-2.5-flash", "models/gemini-2.5-flash-preview-tts", "models/gemini-embedding-001", "models/gemini-2.5-flash-image", "models/gemma-3-27b-it", "models/gemini-2.5-flash-live"]);
+        let listed = additional_models(google, true, &body);
+        assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["google/gemini-2.5-flash"]);
+        assert_eq!(listed[0].request_id("google"), "gemini-2.5-flash");
+        assert_eq!(listed[0].request_id("scoutcode"), "google/gemini-2.5-flash");
+    }
+
+    /// The ScoutCode key must never go to another provider, and OVH's free tier refuses nothing for lacking one.
+    #[test]
+    fn additional_providers_only_get_their_own_keys() {
+        let mut cfg = crate::config::load_config();
+        cfg.api_key = Some("scout-key".into());
+        cfg.additional = vec![crate::config::LinkedProvider { id: "ovh".into(), key: None }, crate::config::LinkedProvider { id: "google".into(), key: Some("g-key".into()) }];
+        let ovh = cfg.for_provider("ovh");
+        assert_eq!(ovh.api_key, None);
+        assert!(ovh.base_url.contains("ovh.net"));
+        let google = cfg.for_provider("google");
+        assert_eq!(google.api_key.as_deref(), Some("g-key"));
+        assert!(auth(http().get("http://localhost"), &ovh).is_ok(), "OVH works with no key");
+        cfg.additional.clear();
+        assert_eq!(cfg.for_provider("google").api_key, None);
+        assert!(auth(http().get("http://localhost"), &cfg.for_provider("google")).is_err(), "Google doesn't");
+    }
+
+    #[test]
+    #[ignore = "talks to OVH, and uses up a request of its free tier"]
+    fn ovh_free_tier_lists_models_and_calls_tools_with_no_key() {
+        let ovh = crate::config::additional_provider("ovh").unwrap();
+        let mut cfg = crate::config::load_config();
+        cfg.additional = vec![crate::config::LinkedProvider { id: "ovh".into(), key: None }];
+        let models = list_additional(&cfg, ovh).unwrap();
+        println!("{:?}", models.iter().map(|m| m.request_id("ovh")).collect::<Vec<_>>());
+        assert!(models.iter().any(|m| m.request_id("ovh") == ovh.default_model), "the default model is gone");
+        assert!(models.iter().all(|m| m.free));
+        let tools = [json!({ "type": "function", "function": { "name": "ping", "description": "Ping", "parameters": { "type": "object", "properties": {} } } })];
+        let messages = [Message::User { content: Content::Text("Call the ping tool now.".into()) }];
+        let req = ChatRequest { model: ovh.default_model, messages: &messages, tools: Some(&tools), tool_choice_none: false, temperature: None, effort: None };
+        let r = stream_chat(&cfg.for_provider("ovh"), req, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        assert_eq!(r.tool_calls.first().map(|c| c.function.name.as_str()), Some("ping"), "{r:?}");
+    }
+
+    /// Gemini refuses a tool result whose call came back without the signature it attached.
+    #[test]
+    fn tool_calls_keep_what_the_provider_attached() {
+        let signed = json!({ "id": "1", "type": "function", "function": { "name": "x", "arguments": "{}" }, "extra_content": { "google": { "thought_signature": "sig" } } });
+        let call: ToolCall = serde_json::from_value(signed.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&call).unwrap(), signed);
+        let plain = json!({ "id": "1", "type": "function", "function": { "name": "x", "arguments": "{}" } });
+        let call: ToolCall = serde_json::from_value(plain.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&call).unwrap(), plain, "nothing extra for everyone else");
+    }
 }
 
 /// OpenRouter's catalog, read with the user's own key.
@@ -360,33 +605,33 @@ pub fn money(usd: f64) -> String {
 }
 
 /// How much of a monthly limit is left.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Plan {
     pub limit: f64,
     pub left: f64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BankedMoney {
     pub amount: f64,
     pub expires_at: String,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BankedReset {
     pub expires_at: String,
 }
 
 /// An amount of money per month saved for a user.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Monthly {
     pub monthly: Option<f64>,
 }
 
 /// A user an admin can change, from the server's list.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedUser {
     pub username: String,
@@ -404,7 +649,7 @@ pub struct ManagedUser {
 }
 
 /// What Settings > Usage shows: the account's limits this month, and for admins everyone they can change.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageInfo {
     pub username: String,
@@ -546,14 +791,16 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     if let Some(e) = req.effort {
         body["reasoning_effort"] = json!(e);
     }
-    let res = http()
-        .post(&format!("{}/chat/completions", cfg.base_url))
-        .header("Authorization", &format!("Bearer {}", key(cfg)?))
+    let res = auth(http().post(&format!("{}/chat/completions", cfg.base_url)), cfg)?
         .header("Content-Type", "application/json")
         .send(serde_json::to_vec(&body).unwrap_or_default())
         .map_err(transport)?;
     if !res.status().is_success() {
-        return Err(error_from(res));
+        let mut e = error_from(res);
+        if is_kilo(cfg) {
+            e.message = e.message.replace("check your sign-in or API key", "paid Kilo models need a key: add one in Settings > Account");
+        }
+        return Err(e);
     }
     let num = |h: &str| header(&res, h).and_then(|v| v.parse::<f64>().ok());
     let meta = Meta { cost: num("x-scoutcode-cost"), balance: num("x-scoutcode-balance") };
@@ -582,6 +829,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         id: String,
         name: String,
         args: String,
+        extra: Option<Value>,
     }
     let mut calls: Vec<Option<Partial>> = Vec::new();
     let mut reader = BufReader::with_capacity(16 * 1024, res.into_body().into_reader());
@@ -605,7 +853,8 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         let Some(data) = line.trim().strip_prefix("data:").map(str::trim) else { continue };
         let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
         if let Some(err) = chunk.get("error") {
-            let code = err.get("code").and_then(Value::as_u64).unwrap_or(500) as u16;
+            // The code can be a name, like Kilo's PAID_MODEL_AUTH_REQUIRED, rather than a status.
+            let code = err.get("code").and_then(|c| c.as_u64().or_else(|| c.as_str()?.parse().ok())).unwrap_or(500) as u16;
             return Err(ApiError::new(err.get("message").and_then(Value::as_str).unwrap_or("Stream error"), code));
         }
         if let Some(u) = chunk.get("usage").filter(|u| u.is_object()) {
@@ -632,9 +881,12 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
                 if calls.len() <= i {
                     calls.resize_with(i + 1, || None);
                 }
-                let c = calls[i].get_or_insert_with(|| Partial { id: format!("call_{i}"), name: String::new(), args: String::new() });
+                let c = calls[i].get_or_insert_with(|| Partial { id: format!("call_{i}"), name: String::new(), args: String::new(), extra: None });
                 if let Some(id) = tc.get("id").and_then(Value::as_str) {
                     c.id = id.to_string();
+                }
+                if let Some(e) = tc.get("extra_content") {
+                    c.extra = Some(e.clone());
                 }
                 if let Some(n) = tc.pointer("/function/name").and_then(Value::as_str) {
                     c.name.push_str(n);
@@ -657,6 +909,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         .map(|c| ToolCall {
             id: c.id,
             kind: "function".into(),
+            extra_content: c.extra,
             function: FunctionCall { name: c.name, arguments: if c.args.is_empty() { "{}".into() } else { c.args } },
         })
         .collect();

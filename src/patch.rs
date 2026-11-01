@@ -1,4 +1,4 @@
-//! OpenAI's apply_patch format, which GPT-4.1, GPT-5 and Codex are trained on (a port of the CLI's tools/patch.ts):
+//! OpenAI's apply_patch format, which GPT-4.1, GPT-5 and Codex are trained on:
 //!
 //! ```text
 //! *** Begin Patch

@@ -1,4 +1,4 @@
-//! Tokens used per day, kept in ~/.scoutcode/usage.json. The CLI writes the same file, so the chart counts both.
+//! Tokens used per day, kept in ~/.scoutcode/usage.json. The old CLI wrote the same file, so the chart counts its days too.
 //! Days are UTC, like the monthly credit. The first time the file is made, the days before are filled in from saved
 //! chats, each counted on the day it was last used, so they're only estimates.
 

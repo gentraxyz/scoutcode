@@ -24,6 +24,11 @@ if ($Uninstall) {
 
 Push-Location $PSScriptRoot
 try {
+    # The web UI goes into the exe, so it's built first.
+    npm --prefix ui ci
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+    npm --prefix ui run build
+    if ($LASTEXITCODE -ne 0) { throw 'the UI build failed' }
     cargo build --release
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 } finally { Pop-Location }

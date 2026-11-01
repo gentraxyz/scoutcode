@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Scout",
+  "identifier": "dev.scoutcode.desktop",
+  "build": {
+    "frontendDist": "ui/dist",
+    "devUrl": "http://localhost:5183",
+    "beforeDevCommand": "npm --prefix ui run dev"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data:",
+        "font-src": "'self' data:",
+        "connect-src": "ipc: http://ipc.localhost"
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "publisher": "ScoutCode",
+    "shortDescription": "Scout",
+    "icon": ["assets/icon.ico", "assets/icon.png"]
+  }
+}

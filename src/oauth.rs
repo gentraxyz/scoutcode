@@ -1,5 +1,5 @@
-//! Sign in through the browser instead of pasting an API key (OAuth with PKCE, on a loopback port), the same flow as
-//! `scout login`. The token spends the account's CLI credit and can only use the models admins approved for the CLI.
+//! Sign in through the browser instead of pasting an API key (OAuth with PKCE, on a loopback port).
+//! The token spends the account's desktop credit and can only use the models admins approved for the desktop app.
 
 use crate::config::Config;
 use base64::Engine;

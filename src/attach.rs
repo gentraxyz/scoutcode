@@ -1,5 +1,6 @@
-//! Files attached to a message. They go in after the text as `<file path="…">` blocks, the same as the CLI's, so a
-//! chat from either app reads back the same way.
+//! Files attached to a message. They go in after the text as `<file path="…">` blocks, the same as the old CLI's, so
+//! its chats read back the same way. Skills named with @ go in the same way, as `<skill name="…">` blocks; those aren't
+//! attachments, since the @name stays in the text and brings the skill back if the message is edited and sent again.
 
 use crate::tools;
 use std::path::PathBuf;
@@ -11,10 +12,10 @@ const MAX_ENTRIES: usize = 200;
 
 /// The message to send, and the files whose contents it carries (so the agent may edit them without a view first).
 pub fn build(cwd: &str, text: &str, files: &[String]) -> (String, Vec<PathBuf>) {
-    if files.is_empty() {
+    let mut blocks = crate::skills::blocks(text);
+    if files.is_empty() && blocks.is_empty() {
         return (text.to_string(), vec![]);
     }
-    let mut blocks = vec![];
     let mut read = vec![];
     for f in files {
         let Ok(abs) = tools::resolve(cwd, f) else { continue };
@@ -56,7 +57,7 @@ pub fn build(cwd: &str, text: &str, files: &[String]) -> (String, Vec<PathBuf>) 
 }
 
 fn block_start(s: &str) -> Option<usize> {
-    [s.find("\n\n<file path=\""), s.find("\n\n<folder path=\"")].into_iter().flatten().min()
+    [s.find("\n\n<file path=\""), s.find("\n\n<folder path=\""), s.find("\n\n<skill name=\"")].into_iter().flatten().min()
 }
 
 /// The typed text and the attached paths of a message made by `build`.
@@ -70,12 +71,16 @@ pub fn split(content: &str) -> (String, Vec<String>) {
             "file"
         } else if rest.starts_with("<folder path=\"") {
             "folder"
+        } else if rest.starts_with("<skill name=\"") {
+            "skill"
         } else {
             break;
         };
-        let open = tag.len() + 8;
-        let Some(q) = rest[open..].find('"') else { break };
-        files.push(rest[open..open + q].to_string());
+        if tag != "skill" {
+            let open = tag.len() + 8;
+            let Some(q) = rest[open..].find('"') else { break };
+            files.push(rest[open..open + q].to_string());
+        }
         // A block ends at its closing tag when the next block or the end of the message follows; contents may
         // hold the same tag.
         let close = format!("\n</{tag}>");
@@ -164,6 +169,9 @@ mod tests {
         assert!(msg.contains("<folder path=\"src\">\na.rs\n</folder>"));
         assert_eq!(split(&msg), ("look at these".to_string(), files));
         assert_eq!(split("plain"), ("plain".to_string(), vec![]));
+        // A skill's block isn't an attachment, and may hold what looks like its closing tag.
+        let with_skill = "use @x\n\n<skill name=\"x\" path=\"p\">\nbody\n</skill>\nmore\n</skill>\n\n<file path=\"a\">\nb\n</file>";
+        assert_eq!(split(with_skill), ("use @x".to_string(), vec!["a".to_string()]));
         let _ = std::fs::remove_dir_all(dir);
     }
 

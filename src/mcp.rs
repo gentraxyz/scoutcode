@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Everything but what needs Scout's own model or conversation.
-const NOT_SERVED: [&str; 4] = ["todo_write", "task", "present_plan", "ask_questions"];
-const PROTOCOLS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+const NOT_SERVED: [&str; 5] = ["todo_write", "task", "present_plan", "ask_questions", "update_memory"];
+pub const PROTOCOLS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 fn mcp_tools() -> Vec<Value> {
     tools::specs(None, EditTool::StrReplace)
@@ -43,11 +43,11 @@ fn bridge(cfg: &Config, cwd: &str, mode: &str) -> (Agent, Hooks, Receiver<Ev>) {
     let mut agent = Agent::new(cfg.clone(), crate::session::new_session(cwd, &cfg.model), shared);
     agent.read_only_note = "Scout is read-only here. To allow edits and commands, the user has to choose another permission mode.";
     let (tx, rx) = channel();
-    (agent, Hooks { tx, ctx: eframe::egui::Context::default() }, rx)
+    (agent, Hooks { tx, ctx: crate::waker::Waker::default() }, rx)
 }
 
 fn call_tool(agent: &mut Agent, h: &Hooks, id: &str, name: &str, args: &Value) -> ToolResult {
-    let call = ToolCall { id: id.to_string(), kind: "function".into(), function: FunctionCall { name: name.to_string(), arguments: args.to_string() } };
+    let call = ToolCall { id: id.to_string(), kind: "function".into(), extra_content: None, function: FunctionCall { name: name.to_string(), arguments: args.to_string() } };
     let mut r = agent.run_tool(&call, h);
     r.output = cap_output(r.output);
     r
@@ -266,6 +266,45 @@ mod tests {
         let run = call_tool(&mut agent, &h, "3", "bash", &json!({"command": "echo no"}));
         assert!(run.is_error, "{}", run.output);
         assert!(!dir.join("b.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_memory_goes_through_permissions_like_an_edit() {
+        let dir = std::env::temp_dir().join(format!("scout-memory-agent-{}", crate::session::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        let file = dir.join(".scout").join("memory.md");
+        let add = |text: &str| json!({"memory": "project", "action": "add", "section": "Commands", "text": text});
+
+        let (mut agent, h, _rx) = bridge(&config::load_config(), &cwd, "plan");
+        let refused = call_tool(&mut agent, &h, "1", "update_memory", &add("- one"));
+        assert!(refused.is_error && !file.exists(), "{}", refused.output);
+
+        // Asked about with the diff, in the mode that asks about every edit.
+        let (mut agent, h, rx) = bridge(&config::load_config(), &cwd, "default");
+        let answering = std::thread::spawn(move || {
+            for ev in rx {
+                if let Ev::AskPermission(req, answer) = ev {
+                    let _ = answer.send(crate::agent::PermissionAnswer::Allow);
+                    return Some((req.tool, matches!(req.preview, Some(tools::Display::Diff { .. }))));
+                }
+            }
+            None
+        });
+        let saved = call_tool(&mut agent, &h, "2", "update_memory", &add("- two"));
+        drop((agent, h));
+        assert_eq!(answering.join().unwrap(), Some(("update_memory".to_string(), true)));
+        assert!(!saved.is_error, "{}", saved.output);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "## Commands\n- two\n");
+
+        // No question here, and the ordinary file tools can't get a secret in either.
+        let (mut agent, h, _rx) = bridge(&config::load_config(), &cwd, "acceptEdits");
+        assert!(!call_tool(&mut agent, &h, "3", "update_memory", &add("- three")).is_error);
+        let path = file.to_string_lossy().to_string();
+        let secret = call_tool(&mut agent, &h, "4", "write_file", &json!({"path": path, "content": "ghp_abcdefghijklmnopqrstuvwxyz1234"}));
+        assert!(secret.is_error && secret.output.contains("secret"), "{}", secret.output);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "## Commands\n- two\n- three\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

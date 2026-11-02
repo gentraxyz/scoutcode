@@ -314,6 +314,26 @@ function InputBox() {
     }
   };
 
+  // A screenshot or copied image is attached as a file. Text (even with an image) pastes as usual.
+  const onPaste = async (e: React.ClipboardEvent) => {
+    const item = Array.from(e.clipboardData.items).find((i) => i.type.startsWith('image/'));
+    if (!item || e.clipboardData.getData('text/plain')) return;
+    const file = item.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    const ext = { 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' }[file.type] ?? 'png';
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (const b of bytes) binary += String.fromCharCode(b);
+    try {
+      const path = await invoke<string>('paste_image', { data: btoa(binary), ext });
+      const had = ui.get().attachments;
+      ui.set({ attachments: [...had, path] });
+    } catch {
+      // The box keeps what was typed; the image just doesn't attach.
+    }
+  };
+
   const ready = !!input.trim() || attachments.length > 0;
   return (
     <div className={`input-box ${running ? 'working' : ''}`}>
@@ -335,6 +355,7 @@ function InputBox() {
         placeholder={running ? 'Scout is working… type to queue a message' : 'Ask Scout to build, fix or explain something'}
         onChange={(e) => { historyPos.current = null; ui.set({ input: e.target.value }); requestAnimationFrame(updateMention); }}
         onKeyDown={onKey}
+        onPaste={onPaste}
         onClick={updateMention}
         onKeyUp={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') updateMention(); }}
         onBlur={() => setTimeout(() => setMention(null), 150)}

@@ -22,6 +22,7 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         unqueue,
         restart_to_update,
         pick_attachments,
+        paste_image,
         display_path,
         add_project,
         search_chats,
@@ -256,6 +257,18 @@ fn restart_to_update<R: Runtime>(app: AppHandle<R>, core: Shared) {
 #[tauri::command(async)]
 fn pick_attachments(cwd: String) -> Vec<String> {
     rfd::FileDialog::new().set_directory(&cwd).pick_files().unwrap_or_default().iter().map(|f| attach::display_path(&cwd, f)).collect()
+}
+
+/// Saves an image pasted into the box (base64, as the browser has it) to a temp file, to attach. Returns its path.
+#[tauri::command(async)]
+fn paste_image(data: String, ext: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string())?;
+    let dir = std::env::temp_dir().join("scout-pasted");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("pasted-{}.{ext}", crate::session::now_ms()));
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]

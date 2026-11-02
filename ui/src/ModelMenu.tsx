@@ -7,7 +7,7 @@ import { Icon, Link, Popover, Star } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
 type Tab = 'starred' | 'scoutcode' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'additional' | 'chatbots';
-const TABS: [Tab, string][] = [['starred', 'Starred'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['hermes', 'Hermes'], ['additional', 'Additional Providers'], ['chatbots', 'MCP chatbots']];
+const TABS: [Tab, string][] = [['starred', 'Starred'], ['chatbots', 'MCP chatbots'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['hermes', 'Hermes'], ['additional', 'Additional Providers']];
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
 type ModelRow = { key: string; provider: string; name: string; star: string; model: Model };
@@ -43,7 +43,8 @@ function runsOn(id: string): string {
 function RailIcon({ tab }: { tab: Tab }) {
   if (tab === 'starred') return <Star on={false} />;
   if (tab === 'additional') return <Icon name="plus" />;
-  const file = { scoutcode: '', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes', chatbots: 'mcp' }[tab];
+  if (tab === 'chatbots') return <Icon name="chat" />;
+  const file = { scoutcode: '', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes' }[tab];
   if (!file) return <img className="logo" src={scoutLogo} width={16} height={16} alt="" />;
   return <img className="logo" src={logo(file)} width={16} height={16} alt="" />;
 }

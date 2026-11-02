@@ -298,6 +298,122 @@ fn mask_key(key: &str) -> String {
     format!("{}…{}", chars[..8].iter().collect::<String>(), chars[chars.len() - 4..].iter().collect::<String>())
 }
 
+// ---------- model lists ----------
+
+/// The providers whose models are listed, by the id `Config::provider` gives them, in the order the list shows them.
+fn model_sources(cfg: &Config) -> Vec<&'static str> {
+    let mut out = vec![];
+    if cfg.api_key.is_some() || cfg.guest {
+        out.push("scoutcode");
+    }
+    if !cfg.openrouter_keys.is_empty() {
+        out.push("openrouter");
+    }
+    if cfg.nvidia_key.is_some() {
+        out.push("nvidia");
+    }
+    // Always asked for: Kilo's free models need no key.
+    out.push("kilo");
+    out.extend(config::ADDITIONAL.iter().filter(|a| cfg.linked(a.id).is_some()).map(|a| a.id));
+    let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
+    out.extend(on.into_iter().filter(|(_, on)| *on).map(|(s, _)| s));
+    out
+}
+
+/// An entry for a model a CLI provider runs. These are their own, under "copilot/…" and the like.
+fn cli_model(source: &str, id: String, name: String) -> ModelInfo {
+    let mut m = ModelInfo { id: format!("{source}/{id}"), name: Some(name), ..Default::default() };
+    match source {
+        "copilot" => m.copilot_id = Some(id),
+        "devin" => m.devin_id = Some(id),
+        "kiro" => m.kiro_id = Some(id),
+        "opencode" => {
+            m.free = crate::opencode::is_free(&id);
+            m.opencode_id = Some(id);
+        }
+        _ => m.grok_id = Some(id),
+    }
+    m
+}
+
+/// What a CLI provider's list has even when it can't be read: its default, which needs no list. It's all Copilot's free
+/// plan gets, lets Devin pick for the plan, and is what a new OpenCode or Grok session starts on.
+fn default_models(source: &str) -> Vec<ModelInfo> {
+    let name = match source {
+        "copilot" => "Copilot Auto",
+        "devin" => "Devin Default",
+        "kiro" => "Kiro Auto",
+        "opencode" => "OpenCode Default",
+        "grok" => "Grok Default",
+        _ => return vec![],
+    };
+    vec![cli_model(source, "auto".into(), name.into())]
+}
+
+/// Asks one provider for its models. The CLI providers tell the window why theirs couldn't be read.
+fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>, String> {
+    let with_default = |listed: Vec<(String, String)>| default_models(source).into_iter().chain(listed.into_iter().filter(|(id, _)| id != "auto").map(|(id, name)| cli_model(source, id, name))).collect();
+    match source {
+        "scoutcode" => {
+            let (models, user) = crate::api::list_models(cfg).map_err(|e| e.message)?;
+            if let Some(u) = user {
+                h.send(Ev::User(u));
+            }
+            Ok(models)
+        }
+        // The first key, in order, that lists the models is used.
+        "openrouter" => {
+            let mut failed = String::new();
+            for k in &cfg.openrouter_keys {
+                let mut only = cfg.clone();
+                only.openrouter_keys = vec![k.clone()];
+                match crate::api::list_openrouter(&only) {
+                    Ok(models) => return Ok(models),
+                    Err(e) => failed = e.message,
+                }
+            }
+            Err(format!("OpenRouter: {failed}"))
+        }
+        "nvidia" => crate::api::list_nvidia(cfg).map_err(|e| format!("NVIDIA NIM: {}", e.message)),
+        "kilo" => crate::api::list_kilo(cfg).map_err(|e| format!("Kilo Code: {}", e.message)),
+        "copilot" => Ok(with_default(crate::copilot::list_models(cfg.copilot_token.as_deref().unwrap_or_default()))),
+        "devin" => Ok(with_default(crate::devin::list_models())),
+        "kiro" | "opencode" | "grok" => {
+            let (listed, explain): (_, fn(&String) -> String) = match source {
+                "kiro" => (crate::kiro::list_models(), |e| crate::kiro::explain(e)),
+                "opencode" => (crate::opencode::list_models(), |e| crate::opencode::explain(e)),
+                _ => (crate::grok::list_models(), |e| crate::grok::explain(e)),
+            };
+            let error = listed.as_ref().err().map(explain);
+            h.send(match source {
+                "kiro" => Ev::KiroModelsError(error.clone()),
+                "opencode" => Ev::OpencodeModelsError(error.clone()),
+                _ => Ev::GrokModelsError(error.clone()),
+            });
+            listed.map(with_default).map_err(|_| error.unwrap_or_default())
+        }
+        "hermes" => {
+            let listed = crate::api::list_hermes().map_err(|e| format!("Could not load Hermes' models: {}", e.message));
+            h.send(Ev::HermesModelsError(listed.as_ref().err().cloned()));
+            listed
+        }
+        _ => {
+            let a = config::additional_provider(source).ok_or_else(|| format!("{source}: not a provider"))?;
+            crate::api::list_additional(cfg, a).map_err(|e| format!("{}: {}", a.name, e.message))
+        }
+    }
+}
+
+/// One list from each provider's that's on: the one just read, else the one saved last time, else its default.
+fn assemble(sources: &[&str], lists: &HashMap<String, Vec<ModelInfo>>) -> Vec<ModelInfo> {
+    let get = |s: &str| if sources.contains(&s) { lists.get(s).cloned().unwrap_or_else(|| default_models(s)) } else { vec![] };
+    let mut models = crate::api::merge_models(get("scoutcode"), get("openrouter"), get("nvidia"), get("kilo"));
+    for s in sources.iter().filter(|s| !["scoutcode", "openrouter", "nvidia", "kilo"].contains(s)) {
+        models.extend(get(s));
+    }
+    models
+}
+
 // ---------- what's sent to the window ----------
 
 /// Numbered diff lines with context, or all of a new file; null is a gap between hunks.
@@ -487,6 +603,11 @@ impl Core {
             seq: 0,
         };
         core.enter_project(&cwd);
+        // The lists saved last time show at once; they're asked for again straight after.
+        let cached = crate::api::load_model_cache();
+        if !cached.is_empty() {
+            core.set_models(assemble(&model_sources(&core.cfg), &cached));
+        }
         core.fetch_models();
         core.check_updated();
         // `scout-desktop [folder] --resume <id>` reopens a saved conversation.
@@ -525,126 +646,63 @@ impl Core {
         self.chat.changed.clear();
     }
 
-    /// Loads the ScoutCode, OpenRouter, NIM, Kilo and additional providers' lists, whichever are on, and merges them.
+    /// Asks every provider that's on for its models and merges them. The chosen model's provider goes first and the list
+    /// is sent as soon as it's in; the rest are asked together after it. A list that can't be read is the one saved last
+    /// time, and every list that's read is saved for the next start.
     fn fetch_models(&mut self) {
         self.models_loading += 1;
         let cfg = self.cfg.clone();
         let h = self.hooks.clone();
         std::thread::spawn(move || {
-            let (mut scout, mut openrouter, mut errors) = (vec![], vec![], vec![]);
-            if cfg.api_key.is_some() || cfg.guest {
-                match crate::api::list_models(&cfg) {
-                    Ok((models, user)) => {
-                        if let Some(u) = user {
-                            h.send(Ev::User(u));
-                        }
-                        scout = models;
+            let sources = model_sources(&cfg);
+            let mut lists = crate::api::load_model_cache();
+            let first = sources.iter().copied().find(|s| *s == cfg.provider);
+            let mut results = vec![];
+            if let Some(s) = first {
+                let r = fetch_source(&cfg, s, &h);
+                if let Ok(list) = &r {
+                    lists.insert(s.to_string(), list.clone());
+                }
+                h.send(Ev::Models(Ok(assemble(&sources, &lists)), false));
+                results.push((s, r));
+            }
+            let rest: Vec<&'static str> = sources.iter().copied().filter(|s| Some(*s) != first).collect();
+            results.extend(std::thread::scope(|scope| {
+                let running: Vec<_> = rest
+                    .iter()
+                    .map(|&s| {
+                        let (cfg, h) = (&cfg, h.clone());
+                        (s, scope.spawn(move || fetch_source(cfg, s, &h)))
+                    })
+                    .collect();
+                running.into_iter().map(|(s, t)| (s, t.join().unwrap_or_else(|_| Err(format!("{s}: the list could not be read"))))).collect::<Vec<_>>()
+            }));
+            let (mut errors, mut additional_errors) = (vec![], vec![]);
+            for (s, r) in results {
+                match r {
+                    Ok(list) => {
+                        lists.insert(s.to_string(), list);
                     }
-                    Err(e) => errors.push(e.message),
+                    Err(e) if config::additional_provider(s).is_some() => additional_errors.push(e),
+                    Err(e) => errors.push(e),
                 }
             }
-            // The first key, in order, that lists the models is used.
-            let mut failed = None;
-            for k in &cfg.openrouter_keys {
-                let mut only = cfg.clone();
-                only.openrouter_keys = vec![k.clone()];
-                match crate::api::list_openrouter(&only) {
-                    Ok(models) => {
-                        openrouter = models;
-                        failed = None;
-                        break;
-                    }
-                    Err(e) => failed = Some(e.message),
-                }
-            }
-            if let Some(e) = failed {
-                errors.push(format!("OpenRouter: {e}"));
-            }
-            let mut nvidia = vec![];
-            if cfg.nvidia_key.is_some() {
-                match crate::api::list_nvidia(&cfg) {
-                    Ok(models) => nvidia = models,
-                    Err(e) => errors.push(format!("NVIDIA NIM: {}", e.message)),
-                }
-            }
-            // Always asked for: Kilo's free models need no key.
-            let mut kilo = vec![];
-            match crate::api::list_kilo(&cfg) {
-                Ok(models) => kilo = models,
-                Err(e) => errors.push(format!("Kilo Code: {}", e.message)),
-            }
-            let (mut additional, mut additional_errors) = (vec![], vec![]);
-            for a in config::ADDITIONAL.iter().filter(|a| cfg.linked(a.id).is_some()) {
-                match crate::api::list_additional(&cfg, a) {
-                    Ok(models) => additional.extend(models),
-                    Err(e) => additional_errors.push(format!("{}: {}", a.name, e.message)),
-                }
-            }
+            crate::api::save_model_cache(&lists);
             errors.extend(additional_errors.iter().cloned());
             h.send(Ev::AdditionalErrors(additional_errors));
-            let asked = (cfg.api_key.is_some() || cfg.guest) as usize + (!cfg.openrouter_keys.is_empty()) as usize + cfg.nvidia_key.is_some() as usize + cfg.additional.len() + 1;
-            if errors.len() == asked && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() {
-                h.send(Ev::Models(Err(errors.join("; "))));
-            } else {
-                let mut models = crate::api::merge_models(scout, openrouter, nvidia, kilo);
-                models.extend(additional);
-                // Auto is always there: it's all a free plan gets, and its list comes back empty.
-                if let Some(token) = &cfg.copilot_token {
-                    let listed = crate::copilot::list_models(token);
-                    let copilot = |id: String, name: String| ModelInfo { id: format!("copilot/{id}"), name: Some(name), copilot_id: Some(id), ..Default::default() };
-                    models.push(copilot("auto".into(), "Copilot Auto".into()));
-                    models.extend(listed.into_iter().filter(|(id, _)| id != "auto").map(|(id, name)| copilot(id, name)));
-                }
-                // The account's default is always there too: it needs no list, and lets Devin pick for the plan.
-                if cfg.devin_enabled {
-                    let devin = |id: String, name: String| ModelInfo { id: format!("devin/{id}"), name: Some(name), devin_id: Some(id), ..Default::default() };
-                    models.push(devin("auto".into(), "Devin Default".into()));
-                    models.extend(crate::devin::list_models().into_iter().map(|(id, name)| devin(id, name)));
-                }
-                // Auto is Kiro's default, so it's there even if the list can't be read.
-                if cfg.kiro_enabled {
-                    let kiro = |id: String, name: String| ModelInfo { id: format!("kiro/{id}"), name: Some(name), kiro_id: Some(id), ..Default::default() };
-                    models.push(kiro("auto".into(), "Kiro Auto".into()));
-                    let (listed, error) = match crate::kiro::list_models() {
-                        Ok(listed) => (listed, None),
-                        Err(e) => (vec![], Some(crate::kiro::explain(&e))),
-                    };
-                    h.send(Ev::KiroModelsError(error));
-                    models.extend(listed.into_iter().filter(|(id, _)| id != "auto").map(|(id, name)| kiro(id, name)));
-                }
-                // Its default is always there too: it's what a new session starts on, and needs no list.
-                if cfg.opencode_enabled {
-                    let opencode = |id: String, name: String| ModelInfo { id: format!("opencode/{id}"), name: Some(name), free: crate::opencode::is_free(&id), opencode_id: Some(id), ..Default::default() };
-                    models.push(opencode("auto".into(), "OpenCode Default".into()));
-                    let (listed, error) = match crate::opencode::list_models() {
-                        Ok(listed) => (listed, None),
-                        Err(e) => (vec![], Some(crate::opencode::explain(&e))),
-                    };
-                    h.send(Ev::OpencodeModelsError(error));
-                    models.extend(listed.into_iter().map(|(id, name)| opencode(id, name)));
-                }
-                // The same here.
-                if cfg.grok_on() {
-                    let grok = |id: String, name: String| ModelInfo { id: format!("grok/{id}"), name: Some(name), grok_id: Some(id), ..Default::default() };
-                    models.push(grok("auto".into(), "Grok Default".into()));
-                    let (listed, error) = match crate::grok::list_models() {
-                        Ok(listed) => (listed, None),
-                        Err(e) => (vec![], Some(crate::grok::explain(&e))),
-                    };
-                    h.send(Ev::GrokModelsError(error));
-                    models.extend(listed.into_iter().map(|(id, name)| grok(id, name)));
-                }
-                if cfg.hermes_on() {
-                    let (listed, error) = match crate::api::list_hermes() {
-                        Ok(listed) => (listed, None),
-                        Err(e) => (vec![], Some(format!("Could not load Hermes' models: {}", e.message))),
-                    };
-                    h.send(Ev::HermesModelsError(error));
-                    models.extend(listed);
-                }
-                h.send(Ev::Models(Ok(models)));
-            }
+            let models = assemble(&sources, &lists);
+            h.send(Ev::Models(if models.is_empty() && !errors.is_empty() { Err(errors.join("; ")) } else { Ok(models) }, true));
         });
+    }
+
+    /// Shows a model list, and tells the agent what it needs to know about each model.
+    fn set_models(&mut self, m: Vec<ModelInfo>) {
+        // The agent picks each model's edit tools from these, under the id it sends on any provider.
+        *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
+        *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
+        *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
+        self.models = m;
+        self.models_changed = true;
     }
 
     // ---------- events from the workers ----------
@@ -791,19 +849,18 @@ impl Core {
                     self.alert("Scout is done", &self.chat_title());
                 }
             }
-            Ev::Models(Ok(m)) => {
-                // The agent picks each model's edit tools from these, under the id it sends on any provider.
-                *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
-                *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
-                *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
-                self.models = m;
-                self.models_changed = true;
-                self.models_loading -= 1;
+            // The chosen model's list, ahead of the rest. A newer fetch under way has its own.
+            Ev::Models(_, false) if self.models_loading > 1 => {}
+            Ev::Models(Ok(m), done) => {
+                self.set_models(m);
+                if done {
+                    self.models_loading -= 1;
+                }
                 self.start_on_additional();
                 self.start_on_hermes();
                 self.start_on_guest();
             }
-            Ev::Models(Err(e)) => {
+            Ev::Models(Err(e), _) => {
                 self.chat.status = format!("Could not load models: {e}");
                 self.models_loading -= 1;
             }

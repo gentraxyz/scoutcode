@@ -1,10 +1,18 @@
 import { useEffect, useState } from 'react';
-import { act } from './api';
+import { act, openExternal } from './api';
+import { logo } from './Accounts';
 import { ui, useCore, useView } from './store';
 import { CopyButton, SectionLabel, Spinner } from './widgets';
 
 /** A chatbot that reached ScoutCode this recently is counted as connected. */
 const ACTIVE_MS = 5 * 60_000;
+
+/** Chatbots to open in the browser, to add the connector in. */
+const PROVIDERS: { name: string; logo: string; url: string }[] = [
+  { name: 'Claude', logo: 'claude', url: 'https://claude.ai' },
+  { name: 'Gemini', logo: 'gemini', url: 'https://gemini.google.com' },
+  { name: 'Grok', logo: 'grok', url: 'https://grok.com' },
+];
 
 function ago(ms: number, now: number): string {
   const s = Math.max(0, Math.round((now - ms) / 1000));
@@ -77,6 +85,14 @@ export function ChatbotsPanel({ close }: { close: () => void }) {
         )}
         {!link.on && mode === 'yolo' && <div className="tiny red">Yolo lets a chatbot run any command here without asking.</div>}
         {link.since && <div className="stat-row"><span className="small dim">On since</span><span className="small">{ago(link.since, now)}</span></div>}
+      </div>
+
+      <div className="row chatbot-providers">
+        {PROVIDERS.map((p) => (
+          <button key={p.name} type="button" className="rail-tab" title={`Open ${p.name}`} aria-label={`Open ${p.name}`} onClick={() => openExternal(p.url)}>
+            <img className="logo" src={logo(p.logo)} width={16} height={16} alt="" />
+          </button>
+        ))}
       </div>
 
       {link.on && (

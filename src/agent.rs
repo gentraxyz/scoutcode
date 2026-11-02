@@ -97,7 +97,8 @@ pub enum Ev {
     /// Why Grok Build's models couldn't be listed, from the last time the lists were loaded.
     GrokModelsError(Option<String>),
     Finished(Box<Agent>, Result<(), String>),
-    Models(Result<Vec<ModelInfo>, String>),
+    /// A merged model list, and whether it's the last of this fetch: the chosen model's provider is sent first.
+    Models(Result<Vec<ModelInfo>, String>, bool),
     /// How Settings' test of the Kilo connection went.
     KiloCheck(Result<String, String>),
     /// What changed in the releases since the version that ran before this one.

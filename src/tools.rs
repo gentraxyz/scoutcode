@@ -402,7 +402,12 @@ fn find_by_name(root: &Path, name: &str) -> Vec<String> {
 }
 
 fn canon(p: &Path) -> PathBuf {
-    let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // A path that doesn't exist yet is resolved through its nearest folder that does, so a short (8.3) or linked
+    // project path still contains it.
+    let c = std::fs::canonicalize(p).unwrap_or_else(|_| match (p.parent(), p.file_name()) {
+        (Some(dir), Some(name)) if dir != p => canon(dir).join(name),
+        _ => p.to_path_buf(),
+    });
     // Strip Windows' \\?\ prefix so it compares with plain paths.
     let s = c.to_string_lossy();
     PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
@@ -453,7 +458,7 @@ fn view(a: &Value, ctx: &mut Ctx) -> R {
     }
     // Symlinks are resolved first, so a link can't lead out of the project.
     let root = canon(Path::new(ctx.cwd));
-    let real = if meta.is_some() { canon(&abs) } else { abs.clone() };
+    let real = canon(&abs);
     let inside = match real.strip_prefix(&root) {
         Ok(r) => r.to_string_lossy().replace('\\', "/"),
         // The user attached it, which is permission to read it.

@@ -428,3 +428,108 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .fallback-setup { display: flex; flex-direction: column; gap: 8px; color: var(--muted); }
 .fallback-popover { padding: 14px; }
 .fallback-setup b { color: var(--strong); }
+
+/* motion and finish: entrances, hover easing and depth, layered over the rules above */
+:root {
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --fast: 0.14s; --med: 0.22s; --slow: 0.38s;
+  --lift: inset 0 1px 0 rgb(255 255 255 / 4%);
+  --shadow-pop: 0 1px 0 rgb(255 255 255 / 4%) inset, 0 2px 6px rgb(0 0 0 / 30%), 0 14px 36px rgb(0 0 0 / 50%);
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes drop-in { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes pop-in { from { opacity: 0; transform: scale(0.96) translateY(-3px); } }
+@keyframes pop-up { from { opacity: 0; transform: scale(0.96) translateY(3px); } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
+@keyframes check-in { from { opacity: 0; transform: scale(0.4); } }
+@keyframes grow-up { from { transform: scaleY(0); } }
+@keyframes breathe { 50% { box-shadow: 0 0 38px 2px color-mix(in srgb, var(--accent) 22%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border-hi)); } }
+@keyframes dot-ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+
+/* everything that changes on hover eases instead of snapping */
+.button, .text-button, .icon-button, .chip, .file-chip, .menu-item, .new-chat, .project-row, .session-row, .profile-row, .reasoning-head,
+.tool-row, .rail-tab, .model-row, .star, .dock-tab, .settings-link, .tree-row, .change-row, .mention-row, .user-pick, .provider-tile,
+.window-buttons button, .round, .splash-name, .code-copy, .tool-chevron, .row-more, .edit-pencil, .resizer, .input, .side-search, .tile, .usage-bar span {
+  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease), border-color var(--fast) var(--ease),
+    box-shadow var(--med) var(--ease), opacity var(--fast) var(--ease), transform var(--fast) var(--ease), filter var(--fast) var(--ease);
+}
+.button:active:not(:disabled), .round:active:not(:disabled), .new-chat:active:not(:disabled), .icon-button:active:not(:disabled), .chip:active:not(:disabled) { transform: scale(0.96); }
+.menu-item:active:not(:disabled), .model-row:active, .settings-link:active, .dock-tab:active { transform: scale(0.985); }
+
+/* depth: a faint top highlight and softer, layered shadows */
+.button { box-shadow: var(--lift); }
+.button.primary { background: linear-gradient(180deg, var(--accent-hi), var(--accent)); box-shadow: inset 0 1px 0 rgb(255 255 255 / 25%), 0 1px 2px rgb(0 0 0 / 30%); }
+.button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #ffc566, var(--accent-hi)); box-shadow: inset 0 1px 0 rgb(255 255 255 / 30%), 0 4px 16px color-mix(in srgb, var(--accent) 28%, transparent); }
+.button.ghost, .button.ghost:hover { box-shadow: none; }
+.button.danger:hover:not(:disabled) { box-shadow: 0 4px 16px color-mix(in srgb, var(--red) 30%, transparent); }
+.new-chat, .side-search, .card, .panel, .login-card, .picker-group, .tile, .user-bubble, .file-chip { box-shadow: var(--lift); }
+.side-search:focus-within { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
+.input:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.popover, .mention-menu, .model-card { box-shadow: var(--shadow-pop); }
+.avatar { background: linear-gradient(140deg, var(--accent-hi), #e08a0c); box-shadow: inset 0 1px 0 rgb(255 255 255 / 30%); }
+.session-row.selected, .settings-link.selected, .dock-tab.on, .tree-row.selected { box-shadow: inset 0 0 0 1px var(--border); }
+
+/* floating panels and dialogs */
+.popover { animation: pop-in var(--med) var(--ease-out); }
+.popover.above { animation-name: pop-up; }
+.mention-menu { animation: pop-up var(--med) var(--ease-out); transform-origin: bottom left; }
+.model-card { animation: fade-in var(--fast) var(--ease); }
+.modal-back { animation: fade-in var(--med) var(--ease); backdrop-filter: blur(3px); }
+.modal { animation: modal-in var(--slow) var(--ease-out); box-shadow: 0 1px 0 rgb(255 255 255 / 5%) inset, 0 24px 64px rgb(0 0 0 / 60%); }
+.find-bar { animation: drop-in var(--med) var(--ease-out); }
+.drop-overlay { animation: fade-in var(--fast) var(--ease); backdrop-filter: blur(2px); }
+.drop-overlay div { animation: pop-in var(--med) var(--ease-out); }
+.settings-page { animation: rise-in var(--med) var(--ease-out); }
+
+/* the conversation */
+.user-row, .assistant, .tool, .notice, .error-box, .memory-note, .edit-box { animation: rise-in var(--slow) var(--ease-out) backwards; }
+.reasoning, .tool-output, .tool-progress, .change-diff { animation: drop-in var(--med) var(--ease-out); }
+.tool-status.good svg, .tool-status.bad svg, .todo-mark svg, .tile-check { animation: check-in 0.3s var(--spring); }
+.code-copy { transform: translateY(-2px); }
+.code-block:hover .code-copy, .code-copy:focus-visible { transform: none; }
+.empty { animation: fade-in 0.5s var(--ease); }
+.splash-caret { box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent); }
+
+/* the composer */
+.card, .queue { animation: rise-in var(--slow) var(--ease-out); }
+.input-box { transition: border-color var(--med) var(--ease), box-shadow var(--slow) var(--ease); box-shadow: var(--lift), 0 8px 24px rgb(0 0 0 / 35%); }
+.input-box:focus-within { box-shadow: var(--lift), 0 8px 24px rgb(0 0 0 / 35%), 0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent); }
+.input-box.working { animation: breathe 2.8s ease-in-out infinite; }
+.round.send.ready { animation: check-in 0.28s var(--spring); box-shadow: inset 0 1px 0 rgb(255 255 255 / 25%), 0 2px 10px color-mix(in srgb, var(--accent) 30%, transparent); }
+.round.send.ready:hover { transform: scale(1.06); box-shadow: inset 0 1px 0 rgb(255 255 255 / 30%), 0 4px 18px color-mix(in srgb, var(--accent) 45%, transparent); }
+.round.stop { animation: check-in 0.28s var(--spring); }
+.meter span { transition: width 0.5s var(--ease-out); }
+.ring-fill { transition: stroke-dasharray 0.5s var(--ease-out); }
+.input-box > .chips > * { animation: pop-in var(--med) var(--ease-out); }
+
+/* sidebar, dock and settings */
+.session-dot { color: var(--green); animation: check-in 0.3s var(--spring), dot-ping 2s var(--ease) 0.3s 2; }
+.session-dot.waiting { color: var(--accent); animation: check-in 0.3s var(--spring), dot-ping 1.6s var(--ease) 0.3s infinite; }
+.project-chats { animation: drop-in var(--med) var(--ease-out); }
+.window-buttons .close { transition-duration: 0.08s; }
+.toggle { transition: background-color var(--med) var(--ease), box-shadow var(--med) var(--ease); box-shadow: inset 0 1px 2px rgb(0 0 0 / 30%); }
+.toggle span { transition: left 0.28s var(--spring), width 0.15s var(--ease); box-shadow: 0 1px 3px rgb(0 0 0 / 40%); }
+.toggle:active span { width: 19px; }
+.toggle.on:active span { left: 15px; }
+.toggle.on { box-shadow: inset 0 1px 2px rgb(0 0 0 / 20%), 0 0 12px color-mix(in srgb, var(--accent) 25%, transparent); }
+.usage-bar span { transform-origin: bottom; animation: grow-up 0.6s var(--ease-out) backwards; }
+.tile:hover { border-color: var(--border-hi); }
+
+/* login and onboarding */
+.login-column > * { animation: rise-in 0.5s var(--ease-out) backwards; }
+.login-column > :nth-child(2) { animation-delay: 0.05s; }
+.login-column > :nth-child(3) { animation-delay: 0.1s; }
+.login-column > :nth-child(4) { animation-delay: 0.15s; }
+.login-column > :nth-child(n+5) { animation-delay: 0.2s; }
+.provider-tile:hover { transform: translateY(-2px); }
+.provider-tile.focused { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.provider-tile img { transition: transform var(--med) var(--spring); }
+.provider-tile:hover img { transform: scale(1.06); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
+  .spinner { animation-duration: 2.4s !important; animation-iteration-count: infinite !important; }
+}

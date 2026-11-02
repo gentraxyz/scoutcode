@@ -95,6 +95,7 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
 }) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
+  const [above, setAbove] = useState(false);
   const anchor = useRef<HTMLSpanElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const close = () => setOpen(false);
@@ -109,7 +110,9 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
     const above = side === 'top' || a.bottom + p.height + 8 > window.innerHeight;
     const left = align === 'end' ? a.right - p.width : a.left;
     // Above the anchor it's held by its bottom edge, so it grows upward when what's in it gets longer.
+    setAbove(above);
     setStyle({
+      transformOrigin: `${above ? 'bottom' : 'top'} ${align === 'end' ? 'right' : 'left'}`,
       position: 'fixed',
       left: Math.max(8, Math.min(left, window.innerWidth - p.width - 8)),
       ...(above ? { bottom: window.innerHeight - a.top + 6, maxHeight: a.top - 14 } : { top: a.bottom + 6 }),
@@ -138,7 +141,7 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
   return (
     <>
       <span ref={anchor} className="popover-anchor">{trigger(open, toggle)}</span>
-      {open && <div ref={panel} className={`popover ${className}`} style={{ ...style, width }}>{children(close)}</div>}
+      {open && <div ref={panel} className={`popover ${above ? 'above' : ''} ${className}`} style={{ ...style, width }}>{children(close)}</div>}
     </>
   );
 }

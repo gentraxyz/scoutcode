@@ -753,7 +753,7 @@ export function Settings() {
           ))}
           {shown.length === 0 && <div className="small dim">Nothing matches.</div>}
         </nav>
-        <div className="settings-page">
+        <div className="settings-page" key={tab}>
           {tab === 'instructions' && <Instructions />}
           {tab === 'memory' && <Memory />}
           {tab === 'notifications' && <Notifications />}

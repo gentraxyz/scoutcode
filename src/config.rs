@@ -142,6 +142,35 @@ pub struct Config {
     pub auto_update: bool,
     /// Desktop app only: the version that last ran here, to tell when the app has been updated.
     pub last_version: Option<String>,
+    /// Desktop app only: the models to try when the chosen one fails.
+    pub fallbacks: Fallbacks,
+}
+
+/// A model in the picker: its list key and where it runs.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ModelRef {
+    pub key: String,
+    pub provider: String,
+}
+
+/// The models to try, in order, when the chosen one fails.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Fallbacks {
+    /// The user has answered the card the first failure shows, so a model without fallbacks just shows its error.
+    pub chosen: bool,
+    /// For every model without a list of its own.
+    pub all: Vec<ModelRef>,
+    /// For single models: each one and its own list.
+    pub models: Vec<(ModelRef, Vec<ModelRef>)>,
+}
+
+impl Fallbacks {
+    /// What to try after `failed`: its own list, or the one for every model, without itself.
+    pub fn after(&self, failed: &ModelRef) -> Vec<ModelRef> {
+        let list = self.models.iter().find(|(m, _)| m == failed).map(|(_, l)| l).unwrap_or(&self.all);
+        list.iter().filter(|m| *m != failed).cloned().collect()
+    }
 }
 
 /// One of the user's OpenRouter keys, under the name they gave it.
@@ -253,6 +282,7 @@ pub fn load_config() -> Config {
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
         last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),
+        fallbacks: s.get("modelFallbacks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
@@ -405,4 +435,24 @@ pub fn save_one(key: &str, value: Value) {
 
 pub fn is_sign_in(token: Option<&str>) -> bool {
     token.is_some_and(|t| t.starts_with("scout-oauth-"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(key: &str) -> ModelRef {
+        ModelRef { key: key.into(), provider: "scoutcode".into() }
+    }
+
+    #[test]
+    fn a_models_own_fallbacks_win_over_the_ones_for_every_model() {
+        let f = Fallbacks { chosen: true, all: vec![m("a"), m("b")], models: vec![(m("x"), vec![m("c")])] };
+        assert_eq!(f.after(&m("x")), vec![m("c")]);
+        assert_eq!(f.after(&m("y")), vec![m("a"), m("b")]);
+        // A model isn't its own fallback.
+        assert_eq!(f.after(&m("a")), vec![m("b")]);
+        let saved: Fallbacks = serde_json::from_value(json!(f)).unwrap();
+        assert_eq!(saved.after(&m("x")), vec![m("c")]);
+    }
 }

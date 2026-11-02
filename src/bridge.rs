@@ -2,6 +2,7 @@
 //! rest ask for something and answer directly. Commands that wait (dialogs, the network) run off the main thread.
 
 use crate::agent::{PermissionAnswer, PlanAnswer, QuestionAnswer};
+use crate::config::{Fallbacks, ModelRef};
 use crate::core::Core;
 use crate::{attach, dock, mcp_client, session, skills};
 use serde::Deserialize;
@@ -67,6 +68,8 @@ enum Action {
     Resend { at: usize, text: String },
     SendQueued { at: usize },
     RetryTurn { key: Option<String>, provider: Option<String> },
+    SetupFallbacks { failed: ModelRef, all: Vec<ModelRef>, own: Vec<ModelRef>, off: bool },
+    SetFallbacks { fallbacks: Fallbacks },
     ChangeProject { dir: String },
     RenameProject { path: String, name: String },
     RemoveProject { path: String },
@@ -133,6 +136,8 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::Resend { at, text } => c.resend(at, text),
         Action::SendQueued { at } => c.send_queued(at),
         Action::RetryTurn { key, provider } => c.retry(key.zip(provider)),
+        Action::SetupFallbacks { failed, all, own, off } => c.setup_fallbacks(failed, all, own, off),
+        Action::SetFallbacks { fallbacks } => c.set_fallbacks(fallbacks),
         Action::ChangeProject { dir } => c.change_project(dir),
         Action::RenameProject { path, name } => c.rename_project(&path, &name),
         Action::RemoveProject { path } => c.remove_project(&path),

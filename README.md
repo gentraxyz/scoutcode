@@ -28,7 +28,8 @@ computer are Rust, and the window is React in the system's WebView2.
 - **Five permission modes.** Ask first, Accept edits, Plan (read-only), Auto (runs edits and commands but holds dangerous
   ones and edits outside the project for review) and Yolo (never asks). Shift+Tab cycles them.
 - **Many models and providers.** ScoutCode's own models, plus your accounts with GitHub Copilot, OpenRouter, NVIDIA NIM,
-  Kilo, Nous Portal (Hermes), Devin, Kiro, OpenCode and Grok Build. See [docs/providers.md](docs/providers.md).
+  Kilo, Nous Portal (Hermes), Devin, Kiro, OpenCode and Grok Build. See [docs/providers.md](docs/providers.md). When a
+  model fails, Scout can carry the turn on with fallback models you pick, for every model or just one.
 - **Built-in workspace.** A right-hand panel with a real terminal (xterm.js on a pseudo console), the files changed since
   the last commit with their diffs, and a file tree with an editor.
 - **Memory and instructions.** Project memory in `.scout/memory.md` (which you can commit) and personal memory in

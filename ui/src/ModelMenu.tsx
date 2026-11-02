@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
-import { act, tokens, type Model } from './api';
+import { act, tokens, type Model, type ModelRef } from './api';
 import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ChatbotsPanel } from './Chatbots';
 import { core, useCore, useView } from './store';
-import { Icon, Link, Popover, Star } from './widgets';
+import { Icon, IconButton, Link, Popover, Star } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
 type Tab = 'starred' | 'scoutcode' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'additional' | 'chatbots';
@@ -243,3 +243,35 @@ export function ModelChip() {
   );
 }
 
+
+/** A model's name and, off ScoutCode, where it runs. */
+export function useModelName(m: ModelRef): string {
+  const models = useCore((s) => s.models);
+  const label = models.find((x) => x.id === m.key)?.label ?? m.key;
+  return m.provider === 'scoutcode' ? label : `${label} · ${runsOn(m.provider)}`;
+}
+
+function FallbackRow({ m, n, onRemove }: { m: ModelRef; n: number; onRemove: () => void }) {
+  const name = useModelName(m);
+  return (
+    <div className="fallback-row">
+      <span className="dim small">{n}.</span>
+      {logo(m.provider) && <img className="logo row-logo" src={logo(m.provider)} width={13} height={13} alt="" />}
+      <span className="grow ellipsis">{name}</span>
+      <IconButton icon="close" tip="Remove" size={22} onClick={onRemove} />
+    </div>
+  );
+}
+
+/** Fallback models in the order they're tried, with a picker to add up to `max`. */
+export function FallbackList({ value, onChange, max = 3 }: { value: ModelRef[]; onChange: (v: ModelRef[]) => void; max?: number }) {
+  const add = (key: string, provider: string) => {
+    if (!value.some((m) => m.key === key && m.provider === provider)) onChange([...value, { key, provider }]);
+  };
+  return (
+    <div className="fallback-list">
+      {value.map((m, i) => <FallbackRow key={`${m.provider}:${m.key}`} m={m} n={i + 1} onRemove={() => onChange(value.filter((_, j) => j !== i))} />)}
+      {value.length < max && <div><ModelPicker label={value.length ? 'Add another' : 'Add a fallback model'} onPick={add} /></div>}
+    </div>
+  );
+}

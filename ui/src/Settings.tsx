@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type McpServer, type UsageInfo } from './api';
+import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type Fallbacks, type McpServer, type ModelRef, type UsageInfo } from './api';
+import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { AdditionalKey, AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
@@ -8,6 +9,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'instructions', title: 'Instructions', icon: 'chat', keywords: 'instructions project global rules preferences language russian english responses' },
   { id: 'memory', title: 'Memory', icon: 'file', keywords: 'memory remember project user profile facts context' },
   { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
+  { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
   { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily monthly limits balance banked reset chart history' },
   { id: 'account', title: 'Account', icon: 'user', keywords: 'account sign in sign out login key username billing' },
   { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
@@ -121,6 +123,42 @@ function Notifications() {
       <SettingRow title="Flash the taskbar button" sub="Scout's button blinks until you switch back to it."><Toggle label="Flash the taskbar button" on={flash} onChange={(on) => act('setNotify', { flash: on, toast })} /></SettingRow>
       <SettingRow title="Windows notification" sub="A notification in the corner of the screen says what Scout needs."><Toggle label="Windows notification" on={toast} onChange={(on) => act('setNotify', { flash, toast: on })} /></SettingRow>
       <SettingRow title="Try it" sub="Shows a notification now, whatever is chosen above."><button type="button" className="button" onClick={() => act('testNotification')}>Send a test</button></SettingRow>
+    </>
+  );
+}
+
+function SingleModelFallbacks({ m, list, onChange, onRemove }: { m: ModelRef; list: ModelRef[]; onChange: (l: ModelRef[]) => void; onRemove: () => void }) {
+  const name = useModelName(m);
+  return (
+    <div className="stack">
+      <div className="row"><b className="strong grow ellipsis">{name}</b><IconButton icon="close" tip={`Remove ${name}'s own list`} size={24} onClick={onRemove} /></div>
+      <FallbackList value={list} onChange={onChange} />
+      {list.length === 0 && <div className="small dim">No fallbacks: this model just shows its errors.</div>}
+    </div>
+  );
+}
+
+function FallbacksPage() {
+  const { fallbacks: f } = useView('cfg');
+  const save = (next: Partial<Fallbacks>) => act('setFallbacks', { fallbacks: { ...f, ...next } });
+  const same = (a: ModelRef, b: ModelRef) => a.key === b.key && a.provider === b.provider;
+  return (
+    <>
+      <Heading title="Fallbacks" sub="When a model fails, Scout carries the turn on with the next model in its list, then goes back to the model you chose for your next message." />
+      <SettingRow title="Ask when a model fails" sub="The next time a model with no fallbacks fails, Scout offers to set some up. Off, it just shows the error.">
+        <Toggle label="Ask when a model fails" on={!f.chosen} onChange={(on) => save({ chosen: !on })} />
+      </SettingRow>
+      <SectionLabel>Every model</SectionLabel>
+      <p className="small dim">Tried for any model without a list of its own below.</p>
+      <FallbackList value={f.all} onChange={(all) => save({ all })} />
+      <SectionLabel>Single models</SectionLabel>
+      <p className="small dim">A model here uses its own list instead.</p>
+      {f.models.map(([m, list], i) => (
+        <SingleModelFallbacks key={`${m.provider}:${m.key}`} m={m} list={list}
+          onChange={(l) => save({ models: f.models.map((x, j) => (j === i ? [m, l] : x)) })}
+          onRemove={() => save({ models: f.models.filter((_, j) => j !== i) })} />
+      ))}
+      <div><ModelPicker label="Add a model" onPick={(key, provider) => { const m = { key, provider }; if (!f.models.some(([x]) => same(x, m))) save({ models: [...f.models, [m, []]] }); }} /></div>
     </>
   );
 }
@@ -719,6 +757,7 @@ export function Settings() {
           {tab === 'instructions' && <Instructions />}
           {tab === 'memory' && <Memory />}
           {tab === 'notifications' && <Notifications />}
+          {tab === 'fallbacks' && <FallbacksPage />}
           {tab === 'usage' && <Usage />}
           {tab === 'account' && <Account />}
           {tab === 'skills' && <Skills />}

@@ -325,6 +325,10 @@ pub struct Agent {
     pub read_only_note: &'static str,
     /// The last turn stopped because the ScoutCode account can't pay for its model.
     pub out_of_credit: bool,
+    /// The last turn failed before asking the model, so another model wouldn't help.
+    pub before_model: bool,
+    /// A failure goes straight to a fallback, or to the card that offers them, instead of being retried here.
+    pub fail_fast: bool,
     /// A message whose turn failed before it joined the conversation, for a retry to send.
     unsent: Option<Content>,
     last_request_at: Option<Instant>,
@@ -396,6 +400,8 @@ impl Agent {
             last_prompt_tokens: 0,
             read_only_note: "Plan mode is read-only. Call present_plan with your plan first.",
             out_of_credit: false,
+            before_model: false,
+            fail_fast: false,
             unsent: None,
             last_request_at: None,
             sys: None,
@@ -555,7 +561,7 @@ impl Agent {
                     if provider == "hermes" && e.status == 402 {
                         return Err(ApiError { message: crate::hermes::NO_CREDIT.into(), ..e });
                     }
-                    if !e.retryable() || attempt >= 4 {
+                    if !e.retryable() || attempt >= 4 || self.fail_fast {
                         return Err(e);
                     }
                     // ScoutCode's free requests for the day are used up, so waiting a minute won't help.
@@ -1600,7 +1606,8 @@ impl Agent {
     /// Runs the agent loop for one user message until the model stops calling tools.
     pub fn turn(&mut self, input: Content, h: &Hooks) -> Result<(), ApiError> {
         self.unsent = Some(input.clone());
-        self.reload_instructions()?;
+        self.before_model = false;
+        self.reload_instructions().inspect_err(|_| self.before_model = true)?;
         self.auto_prune(h);
         if self.should_compact() {
             self.compact("", h)?;
@@ -1614,6 +1621,7 @@ impl Agent {
 
     /// Picks a stopped turn up where it left off, on whichever model is chosen now.
     pub fn retry(&mut self, h: &Hooks) -> Result<(), ApiError> {
+        self.before_model = false;
         match self.unsent.take() {
             Some(input) => self.turn(input, h),
             None => self.carry_on(h),

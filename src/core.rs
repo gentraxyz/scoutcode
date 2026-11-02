@@ -4,7 +4,7 @@
 use crate::agent::{Agent, Ev, Hooks, PermissionAnswer, PermissionRequest, PlanAnswer, Question, QuestionAnswer, Shared, Steer};
 use crate::api::{Content, Message, ModelInfo};
 use crate::attach;
-use crate::config::{self, Config, EFFORTS, MODES};
+use crate::config::{self, Config, EFFORTS, MODES, ModelRef};
 use crate::diff::{self, DiffLine, Kind};
 use crate::session::{self, Session, SessionInfo, Totals};
 use crate::tools::{self, Display, Todo, ToolResult};
@@ -26,6 +26,8 @@ pub enum ItemKind {
     Error(String),
     /// The account can't pay for the model, so the turn stopped and the window asks what to do. Says why.
     OutOfCredit(String),
+    /// A model failed and no fallbacks are set up yet, so the window offers to set some. Says why, and which model.
+    FallbackSetup(String, ModelRef),
 }
 
 pub struct Item {
@@ -146,6 +148,16 @@ struct Chat {
     queue: Vec<Outgoing>,
     /// It finished while another chat was on screen.
     unread: bool,
+    /// The turn is running on a fallback because the chosen model failed.
+    fallback: Option<FallbackRun>,
+}
+
+/// A turn handed from model to model as each fails.
+struct FallbackRun {
+    /// The model the user chose, to go back to once the turn ends.
+    from: ModelRef,
+    /// The fallbacks not tried yet.
+    left: Vec<ModelRef>,
 }
 
 impl Chat {
@@ -181,6 +193,7 @@ impl Chat {
             cwd,
             queue: vec![],
             unread: false,
+            fallback: None,
         }
     }
 
@@ -465,6 +478,7 @@ fn item_json(item: &Item) -> Value {
         ItemKind::Notice(text) => json!({ "id": item.id, "kind": "notice", "text": text }),
         ItemKind::Error(text) => json!({ "id": item.id, "kind": "error", "text": text }),
         ItemKind::OutOfCredit(text) => json!({ "id": item.id, "kind": "outOfCredit", "text": text }),
+        ItemKind::FallbackSetup(text, m) => json!({ "id": item.id, "kind": "fallbackSetup", "text": text, "key": m.key, "provider": m.provider }),
     }
 }
 
@@ -807,12 +821,25 @@ impl Core {
                 let out_of_credit = std::mem::take(&mut agent.out_of_credit) && !stopped;
                 // A sign-in Nous ended during the turn is gone from the file, and Settings should offer it again.
                 self.cfg.hermes_signed_in = crate::hermes::signed_in();
+                // Another model can't help with a turn that failed before asking one.
+                let model_failed = !std::mem::take(&mut agent.before_model);
+                let mut fall_back = None;
                 if let Err(e) = result {
+                    let failed = ModelRef { key: self.current_key(), provider: self.chat.provider.clone() };
+                    let next = if stopped || !model_failed { None } else { self.next_fallback(&failed) };
                     if stopped {
                         agent.keep_partial(&self.chat.partial);
                         self.push(ItemKind::Notice("Interrupted.".into()));
+                    } else if let Some(next) = next {
+                        let short: String = e.chars().take(200).collect();
+                        self.push(ItemKind::Notice(format!("{} failed: {short} Trying {}.", self.model_label(&failed), self.model_label(&next))));
+                        fall_back = Some(next);
+                    } else if self.chat.fallback.is_some() {
+                        self.push(ItemKind::Error(format!("{e}\n\nThe fallback models failed too.")));
                     } else if out_of_credit {
                         self.push(ItemKind::OutOfCredit(e));
+                    } else if model_failed && !self.cfg.fallbacks.chosen {
+                        self.push(ItemKind::FallbackSetup(e, failed));
                     } else {
                         self.push(ItemKind::Error(e));
                     }
@@ -839,6 +866,14 @@ impl Core {
                     self.focus_epoch += 1;
                 }
                 self.files_epoch += 1;
+                if let Some(next) = fall_back {
+                    self.retry_on(next);
+                    return;
+                }
+                // The turn is over, so the model the user chose is back for the next one.
+                if let Some(run) = self.chat.fallback.take() {
+                    self.switch_model(&run.from.key, &run.from.provider, false);
+                }
                 // The queue carries on unless the user stopped Scout or it ran out of credit: they then decide what's next.
                 if !stopped && !out_of_credit && !self.chat.queue.is_empty() {
                     let next = self.chat.queue.remove(0);
@@ -1573,6 +1608,13 @@ impl Core {
 
     /// Makes `key` (a model's id in the list) the one sent to `provider`, for the next message and the next launch.
     pub fn choose_model(&mut self, key: &str, provider: &str) {
+        // The user's pick is the model to come back to, not the one a failure moved the turn off.
+        self.chat.fallback = None;
+        self.switch_model(key, provider, true);
+    }
+
+    /// Moves the chat to a model; `save` makes it the one new chats and the next launch start on.
+    fn switch_model(&mut self, key: &str, provider: &str, save: bool) {
         if provider == "kilo" && !self.cfg.kilo_enabled {
             self.cfg.kilo_enabled = true;
             config::save_one("kiloEnabled", json!(true));
@@ -1585,8 +1627,71 @@ impl Core {
         self.chat.provider = provider.to_string();
         *self.chat.shared.model.lock().unwrap() = model.clone();
         *self.chat.shared.provider.lock().unwrap() = provider.to_string();
-        config::save_one("model", json!(model));
-        config::save_one("provider", json!(provider));
+        if save {
+            config::save_one("model", json!(model));
+            config::save_one("provider", json!(provider));
+        }
+    }
+
+    fn model_label(&self, m: &ModelRef) -> String {
+        self.models.iter().find(|x| x.id == m.key).map(|x| x.label()).unwrap_or_else(|| crate::api::short_id(&m.key))
+    }
+
+    /// The next model to hand a failed turn to, starting a run of `failed`'s fallbacks if this is its first failure.
+    fn next_fallback(&mut self, failed: &ModelRef) -> Option<ModelRef> {
+        if self.chat.fallback.is_none() {
+            let left = self.cfg.fallbacks.after(failed);
+            if left.is_empty() {
+                return None;
+            }
+            self.chat.fallback = Some(FallbackRun { from: failed.clone(), left });
+        }
+        let run = self.chat.fallback.as_mut()?;
+        (!run.left.is_empty()).then(|| run.left.remove(0))
+    }
+
+    /// Whether a failure should end the turn at once rather than be retried: there's a fallback to move on to, or the
+    /// user hasn't been asked about fallbacks yet. The last fallback, and a model left to show its errors, still retry.
+    fn fails_fast(&self) -> bool {
+        match &self.chat.fallback {
+            Some(run) => !run.left.is_empty(),
+            None => !self.cfg.fallbacks.chosen || !self.cfg.fallbacks.after(&ModelRef { key: self.current_key(), provider: self.chat.provider.clone() }).is_empty(),
+        }
+    }
+
+    /// Carries on the failed turn on `next`, for this turn only.
+    fn retry_on(&mut self, next: ModelRef) {
+        self.switch_model(&next.key, &next.provider, false);
+        self.start(|agent, h| agent.retry(h).map_err(|e| agent.failed(e)));
+    }
+
+    /// The answer to the card the first failure shows: the list for every model and `failed`'s own, which wins over
+    /// it (empty to use that one), or `off` to just show errors. With a fallback to try, the failed turn carries on.
+    pub fn setup_fallbacks(&mut self, failed: ModelRef, all: Vec<ModelRef>, own: Vec<ModelRef>, off: bool) {
+        let f = &mut self.cfg.fallbacks;
+        f.chosen = true;
+        if !off {
+            f.all = all;
+            f.models.retain(|(m, _)| *m != failed);
+            if !own.is_empty() {
+                f.models.push((failed.clone(), own));
+            }
+        }
+        config::save_one("modelFallbacks", json!(f));
+        if off || self.chat.running || !matches!(self.chat.items.last().map(|i| &i.kind), Some(ItemKind::FallbackSetup(..))) {
+            return;
+        }
+        self.chat.fallback = None;
+        if let Some(next) = self.next_fallback(&failed) {
+            self.push(ItemKind::Notice(format!("Trying {}.", self.model_label(&next))));
+            self.retry_on(next);
+        }
+    }
+
+    /// Settings' edits to the fallbacks.
+    pub fn set_fallbacks(&mut self, f: config::Fallbacks) {
+        config::save_one("modelFallbacks", json!(f));
+        self.cfg.fallbacks = f;
     }
 
     /// The list key of the model being used: its entry's id, or the id itself when the list doesn't have it (auto).
@@ -1797,6 +1902,7 @@ impl Core {
     fn start(&mut self, work: impl FnOnce(&mut Agent, &Hooks) -> Result<(), String> + Send + 'static) {
         let Some(mut agent) = self.chat.agent.take() else { return };
         agent.cfg.take_keys(&self.cfg);
+        agent.fail_fast = self.fails_fast();
         self.chat.running = true;
         self.chat.stopping = false;
         self.chat.shared.cancel.store(false, Ordering::Relaxed);
@@ -2210,6 +2316,7 @@ impl Core {
                 "notifyToast": cfg.notify_toast,
                 "autoUpdate": cfg.auto_update,
                 "autoCompactTokens": cfg.auto_compact_tokens,
+                "fallbacks": cfg.fallbacks,
             })),
             ("mode", json!(self.chat.shared.mode())),
             ("model", json!({ "id": self.chat.model, "provider": self.chat.provider, "key": self.current_key(), "short": crate::api::short_id(&self.chat.model) })),

@@ -1,10 +1,10 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { act, openExternal, type Item } from './api';
-import { ModelPicker } from './ModelMenu';
+import { act, openExternal, type Item, type ModelRef } from './api';
+import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { core, focusComposer, ui, useCore, useUi, useView } from './store';
-import { CodeBlock, Icon, IconButton, MenuItem, Popover, ShowDisplay, Spinner } from './widgets';
+import { CodeBlock, Icon, IconButton, MenuItem, Popover, SectionLabel, ShowDisplay, Spinner } from './widgets';
 import logo from '../../assets/icon.png';
 
 type ToolItem = Extract<Item, { kind: 'tool' }>;
@@ -168,6 +168,58 @@ function OutOfCredit({ item }: { item: { id: number; text: string } }) {
   );
 }
 
+/** The popup the setup card opens: a list for every model and one for the model that failed, which wins over it. */
+function FallbackEditor({ failed, name, close }: { failed: ModelRef; name: string; close: () => void }) {
+  const { fallbacks } = useView('cfg');
+  const same = (m: ModelRef) => m.key === failed.key && m.provider === failed.provider;
+  const [all, setAll] = useState<ModelRef[]>(fallbacks.all);
+  const [own, setOwn] = useState<ModelRef[]>(fallbacks.models.find(([m]) => same(m))?.[1] ?? []);
+  // The failed model can't stand in for itself.
+  const usable = (l: ModelRef[]) => l.some((m) => !same(m));
+  return (
+    <div className="fallback-setup">
+      <b>Fallback models</b>
+      <span className="small dim">When a model fails, Scout carries the turn on with the next model in its list, then goes back to your model.</span>
+      <SectionLabel>Every model</SectionLabel>
+      <span className="small dim">Used by any model without a list of its own.</span>
+      <FallbackList value={all} onChange={setAll} />
+      <SectionLabel>Only {name}</SectionLabel>
+      <span className="small dim">Used instead of the list above when {name} fails. Leave it empty to use that one.</span>
+      <FallbackList value={own} onChange={setOwn} />
+      <div className="credit-actions">
+        <button type="button" className="button primary" disabled={!usable(own.length ? own : all)} onClick={() => { close(); act('setupFallbacks', { failed, all, own, off: false }); }}>Save and try again</button>
+        <button type="button" className="button" onClick={close}>Cancel</button>
+      </div>
+      <span className="tiny dim">Change these any time in Settings &gt; Fallbacks.</span>
+    </div>
+  );
+}
+
+/** A model failed for the first time: offers to set up fallbacks, or to keep showing errors. */
+function FallbackSetup({ item }: { item: Extract<Item, { kind: 'fallbackSetup' }> }) {
+  const { running } = useView('run');
+  const { fallbacks } = useView('cfg');
+  const last = useCore((s) => s.items[s.items.length - 1]?.id === item.id);
+  const failed: ModelRef = { key: item.key, provider: item.provider };
+  const name = useModelName(failed);
+  return (
+    <div className="error-box credit-box">
+      <Icon name="close" />
+      <div className="stack grow">
+        <span className="pre-wrap">{item.text}</span>
+        {last && !running && !fallbacks.chosen && (
+          <div className="credit-actions">
+            <Popover side="top" className="fallback-popover" width={380} trigger={(_, toggle) => <button type="button" className="button primary" onClick={toggle}>Set up fallback models</button>}>
+              {(close) => <FallbackEditor failed={failed} name={name} close={close} />}
+            </Popover>
+            <button type="button" className="button" onClick={() => act('setupFallbacks', { failed, all: [], own: [], off: true })}>No fallbacks, just show errors</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const Row = memo(function Row({ item, at, editable, hit }: { item: Item; at: number; editable: boolean; hit: boolean }) {
   let body: ReactNode;
   switch (item.kind) {
@@ -188,6 +240,9 @@ const Row = memo(function Row({ item, at, editable, hit }: { item: Item; at: num
       break;
     case 'outOfCredit':
       body = <OutOfCredit item={item} />;
+      break;
+    case 'fallbackSetup':
+      body = <FallbackSetup item={item} />;
       break;
   }
   return <div className={`item item-${item.kind} ${hit ? 'hit' : ''}`} data-at={at}>{body}</div>;

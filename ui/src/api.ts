@@ -15,7 +15,13 @@ export type Item =
   | { id: number; kind: 'user'; text: string; files: string[] }
   | { id: number; kind: 'assistant'; text: string; reasoning: string }
   | { id: number; kind: 'tool'; name: string; label: string; progress: string; result: ToolResult | null }
-  | { id: number; kind: 'notice' | 'error' | 'outOfCredit'; text: string };
+  | { id: number; kind: 'notice' | 'error' | 'outOfCredit'; text: string }
+  | { id: number; kind: 'fallbackSetup'; text: string; key: string; provider: string };
+
+/** A model in the picker: its list key and where it runs. */
+export type ModelRef = { key: string; provider: string };
+/** The models to try, in order, when the chosen one fails. */
+export type Fallbacks = { chosen: boolean; all: ModelRef[]; models: [ModelRef, ModelRef[]][] };
 
 export type Model = {
   id: string; label: string; description: string | null; context: number | null; tools: boolean | null; vision: boolean | null; cost: string | null;
@@ -55,7 +61,7 @@ export type View = {
   cfg: {
     loginNeeded: boolean; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; autoUpdate: boolean; autoCompactTokens: number;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks;
   };
   mode: string;
   model: { id: string; provider: string; key: string; short: string };

@@ -15,10 +15,10 @@ been removed, are in the same format and still open.
 ## Install
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File gui\install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-This builds the web UI and the release binary, copies it to `%LOCALAPPDATA%\Programs\Scout\Scout.exe`, and adds a Start menu entry,
+This builds the web UI and the release binary (with thin LTO, so it takes a few minutes), copies it to `%LOCALAPPDATA%\Programs\Scout\Scout.exe`, and adds a Start menu entry,
 so Windows search finds "Scout". It also lists Scout under Settings > Apps, where you can uninstall it. Run the script
 again to update. Add `-Desktop` for a desktop shortcut, or `-Uninstall` to remove everything except your chats and
 login in `~/.scoutcode`. Launched from the Start menu, Scout opens the last folder you opened (your home folder the
@@ -38,7 +38,7 @@ the update summary and changelog and a switch for automatic downloads, and "Chec
 The summary is also in the button's tooltip.
 
 Each release has a one-line summary and a changelog (`--summary`, and `--changelog` or `--changelog-file`, on
-`npm run release:desktop`). Besides latest.json, the script keeps `releases.json` in the bucket with every release's
+`npm run release`). Besides latest.json, the script keeps `releases.json` in the bucket with every release's
 notes, served at `https://scoutcode.dev/download/releases.json` (`?since=1.2.3` leaves out that version and older).
 After an update, the first start looks up the releases since the version that ran before (`desktopLastVersion` in
 the config) and shows them once in a "What's new" dialog. A fresh install shows nothing.
@@ -86,8 +86,6 @@ per turn, and speaks the Agent Client Protocol to it. Kiro works in the user's o
   unless the mode is Yolo. Each also turns `contentCollection` off.
 - Kiro brings its own system prompt and settings. Scout sends the conversation as text, with the user's saved instructions.
 - The CLI keeps the token and Scout never sees it. The sign-in is shared with any other Kiro CLI on the PC.
-- Kiro's FAQ doesn't allow its subscriptions to be used through "third-party automation harnesses", and doesn't say whether
-  an app like Scout counts as one. It does allow "ACP compatible IDEs". Settle that with AWS before this goes in a release.
 
 To move to a new version, take it and the hashes from Kiro's
 [release manifest](https://prod.download.cli.kiro.dev/stable/latest/manifest.json), and change `VERSION` and `PACKAGES` in
@@ -169,8 +167,6 @@ all apply. The model menu lists Nous' public catalog, models with tools only, fr
 - **Scout doesn't use Nous' no-account free tier** (`nous/welcome` on `welcome-api.nousresearch.com`). It's a trial for Hermes'
   own desktop app, once per OS user, behind a browser check. Calling `/api/anonymous/create` from Scout would pose as that app,
   and Nous' terms forbid creating accounts by automation (§10.1).
-- Nous' terms restrict automated programs it doesn't provide (§10.2), and don't say whether an app like Scout counts as one, or
-  whether another app may use that client ID. Settle that with Nous before this goes in a release.
 - Nous may train on what's sent unless Privacy Mode is on for the account (§12.3), so the tab says so.
 
 `cargo test hermes` covers refreshing against a stand-in server, and `cargo test -- --ignored live_hermes --nocapture` reads the
@@ -179,14 +175,15 @@ real catalog. Neither can cover signing in or a real chat, which need an account
 ### Publishing a release
 
 ```powershell
-# After bumping `version` in gui/Cargo.toml (Tauri reads it from there):
-npm run release:desktop -- --notes "What changed"
+# After bumping `version` in Cargo.toml (Tauri reads it from there):
+npm ci
+npm run release -- --summary "One line" --changelog "- What changed"
 ```
 
 This builds the web UI once, then for x64 and ARM64 (the two `*-pc-windows-gnullvm` targets, with llvm-mingw on the PATH), signs both and
 uploads them to the public `desktop-releases` bucket in Supabase, then publishes `latest.json`. Each installed copy
 fetches its own architecture. The site's download button gives x64, and `/download/windows?arch=arm64` gives ARM64. It
-needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, and the private key in `~/.scoutcode/desktop-release-key.pem` (or
+needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (set in the environment, or in a `.env` here, which git ignores), and the private key in `~/.scoutcode/desktop-release-key.pem` (or
 `SCOUT_RELEASE_KEY`). Keep a backup of that key outside the repo: installed apps accept nothing else, so if it's lost
 they can't be updated and everyone has to reinstall. Apps only move to a higher version, so to undo a bad release,
 publish the old code under a new number.
@@ -194,7 +191,6 @@ publish the old code under a new number.
 ## Build and run
 
 ```bash
-cd gui
 npm --prefix ui ci
 npx --prefix ui tauri dev -- -- path/to/project
 ```

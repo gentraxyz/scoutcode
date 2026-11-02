@@ -1,0 +1,12 @@
+{
+  "name": "scout-desktop-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "release": "tsx scripts/release.ts"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "tsx": "^4.23.15"
+  }
+}

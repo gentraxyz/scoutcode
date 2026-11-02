@@ -1,6 +1,6 @@
 # Builds Scout Desktop and installs it for the current user, with a Start menu entry so Windows search finds it.
-#   powershell -ExecutionPolicy Bypass -File gui\install.ps1            install or update
-#   powershell -ExecutionPolicy Bypass -File gui\install.ps1 -Uninstall
+#   powershell -ExecutionPolicy Bypass -File install.ps1            install or update
+#   powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 param([switch]$Uninstall, [switch]$Desktop)
 $ErrorActionPreference = 'Stop'
 

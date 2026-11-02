@@ -1,5 +1,7 @@
 target/
 legacy-egui/
 gen/
-ui/node_modules/
+node_modules/
 ui/dist/
+# SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY for `npm run release`
+.env

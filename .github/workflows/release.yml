@@ -1,0 +1,90 @@
+# Publishes a release when main gets a version in Cargo.toml that's newer than the one that's out. Installed apps pick
+# it up within 6 hours, and the site's download button serves it at once. A push to main without a version bump only
+# runs the check. See docs/releasing.md.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never two at once, and never cancel one halfway through uploading.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - id: check
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+        run: npm run release -- check
+
+  release:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: windows-latest
+    # The signing key and the Supabase key live in this environment's secrets. Add required reviewers to it to approve
+    # each release by hand.
+    environment: release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - run: npm ci
+
+      - name: Write the signing key
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.SCOUT_RELEASE_KEY_PEM }}
+        run: |
+          if (-not $env:KEY) { throw 'The release environment has no SCOUT_RELEASE_KEY_PEM secret.' }
+          $file = Join-Path $env:RUNNER_TEMP 'desktop-release-key.pem'
+          [IO.File]::WriteAllText($file, $env:KEY)
+          "SCOUT_RELEASE_KEY=$file" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Builds both architectures, signs them, uploads them and publishes latest.json last.
+      - name: Build and publish
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npm run release -- --notes-from CHANGELOG.md
+
+      # The same exes on GitHub, for people who'd rather download them here. Updates still come from the bucket.
+      - name: Create the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $text = (Get-Content CHANGELOG.md -Raw) -replace "`r`n", "`n"
+          $notes = [regex]::Match($text, "(?ms)^## $([regex]::Escape($env:VERSION))[ \t]*\n(.*?)(?=^## |\z)").Groups[1].Value.Trim()
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          Set-Content $notesFile $notes -Encoding utf8
+          $x64 = Join-Path $env:RUNNER_TEMP "Scout-$env:VERSION-x64.exe"
+          $arm = Join-Path $env:RUNNER_TEMP "Scout-$env:VERSION-arm64.exe"
+          Copy-Item target\x86_64-pc-windows-gnullvm\release\scout-desktop.exe $x64
+          Copy-Item target\aarch64-pc-windows-gnullvm\release\scout-desktop.exe $arm
+          gh release create "v$env:VERSION" $x64 $arm --title "Scout $env:VERSION" --notes-file $notesFile --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+
+      - name: Remove the signing key
+        if: always()
+        shell: pwsh
+        run: Remove-Item (Join-Path $env:RUNNER_TEMP 'desktop-release-key.pem') -Force -ErrorAction SilentlyContinue

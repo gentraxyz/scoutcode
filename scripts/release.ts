@@ -7,7 +7,9 @@
  * The summary is one line on what the release is about, shown beside "Restart to update". The changelog lists what
  * changed, shown in Settings > Updates and in "What's new" after the update. Both go in latest.json, and in
  * releases.json, which keeps every release's notes for /download/releases.json. --notes still works as the summary.
- *   npm run release -- keygen                     # makes the signing key, once; prints the public half
+ *   npm run release -- --notes-from CHANGELOG.md          # takes the summary and changelog from its "## <version>" section
+ *   npm run release -- check                              # says whether Cargo.toml's version is newer than what's out
+ *   npm run release -- keygen                    # makes the signing key, once; prints the public half
  *
  * To try a release against a local server, write it to a folder instead of uploading:
  *   npm run release -- --skip-build --out <dir> --url-base http://127.0.0.1:8765 --version 9.9.9
@@ -265,12 +267,51 @@ function writeToFolder(out: string, version: string, notes: Notes, urlBase: stri
   console.log(`Wrote ${version} to ${out}. Nothing was uploaded.`);
 }
 
+/** The notes for `version` from a changelog with a "## 1.2.3" heading per release. The line after it is the summary. */
+function notesFrom(file: string, version: string): Notes {
+  const text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+  const heading = new RegExp(`^## \\[?v?${version.replace(/\./g, '\\.')}\\]?[ \\t]*$`, 'm').exec(text);
+  if (!heading) fail(`${file} has no "## ${version}" section. Add one, with a one-line summary under it.`);
+  const body = text.slice(heading.index + heading[0].length).split(/^## /m)[0].trim();
+  const [summary = '', ...rest] = body.split('\n');
+  if (!summary.trim()) fail(`the "## ${version}" section of ${file} is empty.`);
+  return { summary: summary.trim(), changelog: rest.join('\n').trim() };
+}
+
+/**
+ * Whether Cargo.toml's version is newer than the live release, for CI to decide whether to build. Prints it, and adds
+ * `version=` and `publish=` to $GITHUB_OUTPUT when that's set.
+ */
+async function check() {
+  loadEnv();
+  const version = cargoVersion();
+  parts(version);
+  const base = process.env.SUPABASE_URL ?? fail('SUPABASE_URL must be set (the environment, or .env here).');
+  const res = await fetch(`${base}/storage/v1/object/public/${RELEASE_BUCKET}/${MANIFEST_PATH}?t=${Date.now()}`);
+  // Storage answers 400 or 404 before the first release. Anything else means we can't tell, so don't guess.
+  if (!res.ok && res.status !== 400 && res.status !== 404) fail(`could not read ${MANIFEST_PATH}: HTTP ${res.status}`);
+  const live = res.ok ? ((await res.json()) as DesktopRelease).version : null;
+  const publish = !live || isNewer(version, live);
+  console.log(publish ? `${version} is newer than ${live ?? 'nothing'}: publish it.` : `${version} is already out (live: ${live}). Nothing to publish.`);
+  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\npublish=${publish}\n`);
+}
+
 async function main() {
   if (process.argv[2] === 'keygen') return keygen();
+  if (process.argv[2] === 'check') return check();
   const out = option('out');
   const version = out ? (option('version') ?? cargoVersion()) : cargoVersion();
   parts(version);
   const key = signingKey();
+
+  // Read before building, so missing notes don't waste a build.
+  const file = option('changelog-file');
+  const from = option('notes-from');
+  const notes: Notes = from ? notesFrom(from, version) : {
+    summary: (option('summary') ?? option('notes') ?? '').trim(),
+    changelog: (file ? fs.readFileSync(file, 'utf8') : (option('changelog') ?? '')).trim(),
+  };
+  if (notes.summary.includes('\n')) fail('--summary is one line. Put the rest in --changelog.');
 
   if (!process.argv.includes('--skip-build')) {
     // The web UI goes into each exe, so it's built first.
@@ -285,12 +326,6 @@ async function main() {
   }
   const builds = loadBuilds();
 
-  const file = option('changelog-file');
-  const notes: Notes = {
-    summary: (option('summary') ?? option('notes') ?? '').trim(),
-    changelog: (file ? fs.readFileSync(file, 'utf8') : (option('changelog') ?? '')).trim(),
-  };
-  if (notes.summary.includes('\n')) fail('--summary is one line. Put the rest in --changelog.');
   if (out) return writeToFolder(out, version, notes, option('url-base') ?? fail('--out needs --url-base'), builds, key);
   await publish(version, notes, builds, key);
 }

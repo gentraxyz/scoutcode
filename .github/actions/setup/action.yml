@@ -1,0 +1,33 @@
+name: Set up the toolchain
+description: Rust with both gnullvm targets, llvm-mingw for their linker, and Node. Releases are built with these.
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-pc-windows-gnullvm, aarch64-pc-windows-gnullvm
+
+    - uses: Swatinem/rust-cache@v2
+
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: |
+          package-lock.json
+          ui/package-lock.json
+
+    # The gnullvm targets link with llvm-mingw's clang. Pinned and checked, like the CLIs the app downloads.
+    - name: Install llvm-mingw
+      shell: pwsh
+      env:
+        VERSION: '20260505'
+        SHA256: 3e6919b3da2b6bfc05d8caf0ab10d5c0be4ddbb873b3c33790a71fe43c09c51f
+      run: |
+        $name = "llvm-mingw-$env:VERSION-ucrt-x86_64"
+        $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+        Invoke-WebRequest "https://github.com/mstorsjo/llvm-mingw/releases/download/$env:VERSION/$name.zip" -OutFile $zip
+        if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $env:SHA256) { throw "$name.zip doesn't match its pinned hash" }
+        Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+        Join-Path $env:RUNNER_TEMP "$name\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8

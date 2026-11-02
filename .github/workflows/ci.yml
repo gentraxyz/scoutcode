@@ -1,0 +1,32 @@
+# Builds and tests every push to dev and every pull request. Publishes nothing.
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+
+      # The UI is built into the binary, so it has to exist before cargo builds anything. This also type-checks it.
+      - name: Build the UI
+        run: |
+          npm --prefix ui ci
+          npm --prefix ui run build
+
+      - name: Test
+        run: cargo test --target x86_64-pc-windows-gnullvm

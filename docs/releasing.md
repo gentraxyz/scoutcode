@@ -21,9 +21,46 @@ every release's notes, served at `https://scoutcode.dev/download/releases.json` 
 and older). After an update, the first start looks up the releases since the version that ran before
 (`desktopLastVersion` in the config) and shows them once in a "What's new" dialog. A fresh install shows nothing.
 
-## Publishing a release
+## Branches
 
-You need:
+- **`dev`** is where work happens. Every push to it, and every pull request, is built and tested by
+  [CI](../.github/workflows/ci.yml). Nothing is published from it.
+- **`main`** is what's released. When `main` gets a `version` in `Cargo.toml` that's newer than the live release,
+  [the release workflow](../.github/workflows/release.yml) builds, signs and publishes it. A push to `main` without a version
+  bump publishes nothing.
+
+## Releasing from GitHub
+
+1. On `dev`, bump `version` in `Cargo.toml` and add a `## <version>` section to [CHANGELOG.md](../CHANGELOG.md): a one-line
+   summary, then the changelog.
+2. Merge `dev` into `main`.
+3. The release workflow builds both architectures, signs them, uploads them to the bucket and publishes `latest.json`,
+   then creates a GitHub release `v<version>` with both exes attached. The site's download button serves the new build
+   at once, and installed apps update within 6 hours.
+
+If the changelog section is missing, the workflow stops before building, and nothing is published.
+
+### One-time setup
+
+In the repo's **Settings > Environments**, create an environment named `release` and add these secrets to it:
+
+| Secret | Value |
+| --- | --- |
+| `SCOUT_RELEASE_KEY_PEM` | The whole contents of `~/.scoutcode/desktop-release-key.pem` |
+| `SUPABASE_SERVICE_ROLE_KEY` | The Supabase service role key |
+
+Under **Settings > Secrets and variables > Actions > Variables**, add `SUPABASE_URL`. It's not secret: the bucket's
+download URLs contain it.
+
+Recommended, since anyone who can run the release workflow can push code to every installed copy:
+
+- Under **Deployment branches and tags** for the `release` environment, allow only `main`.
+- Add yourself as a **required reviewer** on the `release` environment, so each release waits for your approval.
+- Protect `main` (Settings > Branches) so changes only arrive by pull request from `dev`.
+
+## Publishing from your own PC
+
+The same script works locally, for a release CI can't do or a test against a local server. You need:
 
 - rustup's `x86_64-pc-windows-gnullvm` and `aarch64-pc-windows-gnullvm` targets, and
   [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) on the `PATH`
@@ -34,10 +71,10 @@ Bump `version` in `Cargo.toml` (Tauri reads it from there), then:
 
 ```powershell
 npm ci
-npm run release -- --summary "One line" --changelog "- What changed"
+npm run release -- --notes-from CHANGELOG.md
 ```
 
-`--changelog-file CHANGES.md` reads the changelog from a file instead. This builds the web UI once, then the release
+`--summary "One line" --changelog "- What changed"` (or `--changelog-file`) gives the notes directly instead. This builds the web UI once, then the release
 binary for x64 and ARM64, checks that each exe is for the right architecture and needs no toolchain DLLs, signs both,
 uploads them to the public `desktop-releases` bucket in Supabase, and publishes `releases.json` and then `latest.json`.
 Each installed copy fetches its own architecture. The site's download button gives x64, and
@@ -52,14 +89,18 @@ npm run release -- --skip-build --summary "…" --changelog-file CHANGES.md
 # Try a release against a local server: writes the files to a folder and uploads nothing
 npm run release -- --skip-build --out <dir> --url-base http://127.0.0.1:8765 --version 9.9.9
 
+# Say whether Cargo.toml's version is newer than what's out (the release workflow's first step)
+npm run release -- check
+
 # Make the signing key, once; prints the public half for PUBLIC_KEY in src/update.rs
 npm run release -- keygen
 ```
 
 ## Rules
 
-- **Keep a backup of the signing key outside the repo.** Installed apps accept nothing else, so if it's lost they can't
-  be updated and everyone has to reinstall. Never commit it.
+- **Keep a backup of the signing key outside the repo and outside GitHub.** Installed apps accept nothing else, so if
+  it's lost they can't be updated and everyone has to reinstall. GitHub secrets can't be read back, so they aren't a
+  backup. Never commit it.
 - **Apps only move to a higher version.** To undo a bad release, publish the old code under a new number.
 - Every installed copy picks up a release within 6 hours, so only publish what's meant for everyone.
 - The website (`src/lib/desktop.ts` in the site's repo) reads the same bucket with the same file names and shapes as

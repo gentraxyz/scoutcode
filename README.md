@@ -191,11 +191,13 @@ What's only about drawing, like open menus and drafts, stays in the UI.
 
 ## Contributing
 
-Issues and pull requests are welcome. Before opening a pull request, run `cargo test` and build with `install.ps1` to
-check that the app still starts. For changes to a provider, read its section in [docs/providers.md](docs/providers.md)
+Issues and pull requests are welcome. Work happens on the `dev` branch, so open pull requests against `dev`; `main` is
+what's released. CI builds and tests every pull request. Before opening one, run `cargo test` and build with
+`install.ps1` to check that the app still starts. For changes to a provider, read its section in [docs/providers.md](docs/providers.md)
 first, since several of them have safety checks that need re-testing with each new CLI version.
 
-Releases are published by the maintainers; see [docs/releasing.md](docs/releasing.md).
+Merging a version bump into `main` publishes a release automatically, with notes from [CHANGELOG.md](CHANGELOG.md);
+see [docs/releasing.md](docs/releasing.md).
 
 ## License
 

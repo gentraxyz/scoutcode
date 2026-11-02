@@ -12,13 +12,13 @@ type ToolItem = Extract<Item, { kind: 'tool' }>;
 export function toolTitle(name: string): string {
   const titles: Record<string, string> = {
     view: 'Read', write_file: 'Write', edit_file: 'Edit', multi_edit: 'Edit', apply_patch: 'Patch', list_dir: 'List', glob: 'Find', grep: 'Search', bash: 'Run',
-    shell_output: 'Output', kill_shell: 'Stop', web_fetch: 'Fetch', todo_write: 'Todos', task: 'Task', present_plan: 'Plan', ask_questions: 'Ask', update_memory: 'Memory',
+    shell_output: 'Output', kill_shell: 'Stop', web_fetch: 'Fetch', web_search: 'Web search', todo_write: 'Todos', task: 'Task', present_plan: 'Plan', ask_questions: 'Ask', update_memory: 'Memory',
   };
   return titles[name] ?? name.replace(/^mcp__/, '');
 }
 
 /** Whether a tool's output starts open: the ones that change files, whose diffs are the point. */
-const OPEN_BY_DEFAULT = new Set(['write_file', 'edit_file', 'multi_edit', 'apply_patch', 'todo_write', 'update_memory']);
+const OPEN_BY_DEFAULT = new Set(['write_file', 'edit_file', 'multi_edit', 'apply_patch', 'todo_write']);
 
 export function Markdown({ text }: { text: string }) {
   return (
@@ -123,6 +123,19 @@ function ToolRow({ item }: { item: ToolItem }) {
   );
 }
 
+/** A memory Scout saved: one quiet line with what it now knows, rather than a file change. */
+function MemoryNote({ item }: { item: ToolItem }) {
+  const r = item.result!;
+  const full = r.display?.type === 'text' ? r.display.text : '';
+  return (
+    <div className="memory-note" title={full || undefined}>
+      <Icon name="memory" size={13} />
+      <span className="memory-verb">{r.summary ?? 'Remembered'}</span>
+      {full && <span className="ellipsis">{full.split('\n')[0]}</span>}
+    </div>
+  );
+}
+
 /** The turn stopped because the account can't pay for its model. The choices last until something comes after it. */
 function OutOfCredit({ item }: { item: { id: number; text: string } }) {
   const { running } = useView('run');
@@ -165,7 +178,7 @@ const Row = memo(function Row({ item, at, editable, hit }: { item: Item; at: num
       body = <Assistant item={item} />;
       break;
     case 'tool':
-      body = <ToolRow item={item} />;
+      body = item.name === 'update_memory' && item.result && !item.result.isError ? <MemoryNote item={item} /> : <ToolRow item={item} />;
       break;
     case 'notice':
       body = <div className="notice"><span>{item.text}</span></div>;

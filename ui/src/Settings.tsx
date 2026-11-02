@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type McpServer, type UsageInfo } from './api';
-import { AdditionalKey, AdditionalOptions, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GrokEntry, GrokKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, OPENCODE_NOTE, OpencodeEntry, SignInEntry } from './Accounts';
+import { AdditionalKey, AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
 
@@ -350,10 +350,23 @@ function Account() {
   return (
     <>
       <Heading title="Account" sub="The ScoutCode account this app uses." />
-      <SettingRow title="Signed in as" sub={name} />
-      <SettingRow title={cfg.browserSignIn ? 'Browser sign-in' : 'API key'} sub={cfg.browserSignIn ? 'Uses your monthly desktop credit, then any banked money and balance.' : "Pays from your account's money."} />
-      <SettingRow title="Account page" sub="Keys, balance and billing on scoutcode.dev."><button type="button" className="button" onClick={account}>Open</button></SettingRow>
-      <SettingRow title="Sign out" sub="Forgets the login on this PC."><button type="button" className="button" onClick={() => { act('signOut'); ui.set({ settings: null }); }}>Sign out</button></SettingRow>
+      {cfg.guest ? (
+        <>
+          <SettingRow title="Without an account" sub={GUEST_NOTE}><button type="button" className="button" onClick={() => { act('setGuest', { on: false }); ui.set({ settings: null }); }}>Stop</button></SettingRow>
+          <div className="field-420 stack">
+            <BrowserEntry />
+            <div className="small dim">Or use an API key:</div>
+            <ScoutKeyEntry />
+          </div>
+        </>
+      ) : (
+        <>
+          <SettingRow title="Signed in as" sub={name} />
+          <SettingRow title={cfg.browserSignIn ? 'Browser sign-in' : 'API key'} sub={cfg.browserSignIn ? 'Uses your monthly desktop credit, then any banked money and balance.' : "Pays from your account's money."} />
+          <SettingRow title="Account page" sub="Keys, balance and billing on scoutcode.dev."><button type="button" className="button" onClick={account}>Open</button></SettingRow>
+          <SettingRow title="Sign out" sub="Forgets the login on this PC."><button type="button" className="button" onClick={() => { act('signOut'); ui.set({ settings: null }); }}>Sign out</button></SettingRow>
+        </>
+      )}
       <OpenRouterKeys />
       <div className="stack">
         <SectionLabel>NVIDIA NIM</SectionLabel>
@@ -411,6 +424,21 @@ function Account() {
             <Link href={plans.grok} className="small">Open the xAI console</Link>
           </>
         ) : <div className="field-420"><GrokEntry /></div>}
+      </div>
+      <div className="stack">
+        <SectionLabel>Hermes</SectionLabel>
+        <p className="small dim">{HERMES_NOTE}</p>
+        {cfg.hermesSignedIn || cfg.hermesKey ? (
+          <>
+            {cfg.hermesSignedIn
+              ? <SettingRow title="Nous Portal account" sub="Signed in"><button type="button" className="button" onClick={() => act('signOutOf', { which: 'hermes', uninstall: false })}>Sign out</button></SettingRow>
+              : <div className="field-420"><SignInEntry which="hermes" /></div>}
+            {cfg.hermesKey
+              ? <SettingRow title="Nous Portal key" sub={cfg.hermesSignedIn ? `${cfg.hermesKey}: used when signed out` : cfg.hermesKey}><button type="button" className="button" onClick={() => act('saveHermesKey', { key: null })}>Remove</button></SettingRow>
+              : !login.hermes && <div className="field-420"><HermesKeyEntry /></div>}
+          </>
+        ) : <div className="field-420"><HermesEntry /></div>}
+        <Link href={plans.hermes} className="small">Open Nous Portal</Link>
       </div>
       <div className="stack">
         <SectionLabel>Kilo Code (free)</SectionLabel>
@@ -596,7 +624,7 @@ function Chatbots() {
       {link.log.length > 0 && (
         <div className="stack">
           <div className="small dim">Latest calls</div>
-          {[...link.log].reverse().map((c, i) => <div key={i} className="mono small code-text ellipsis">{c.split('\n')[0].slice(0, 100)}</div>)}
+          {[...link.log].reverse().map((c, i) => <div key={i} className="mono small code-text ellipsis">{`${c.tool} ${c.label}`.split('\n')[0].slice(0, 100)}</div>)}
         </div>
       )}
       <SectionLabel>Chatbot apps on this computer, like Claude Desktop and Cursor</SectionLabel>
@@ -628,14 +656,14 @@ function Updates() {
   );
   const blocker = restartBlocker(anyRunning, dirty);
   let line = '';
-  let notes: string | null = null;
+  let notes: { summary: string; changelog: string } | null = null;
   switch (status.state) {
     case 'idle': line = "Hasn't checked yet."; break;
     case 'checking': line = 'Checking for updates…'; break;
     case 'upToDate': line = "You're on the latest version."; break;
-    case 'available': line = `Version ${status.version} is available.`; notes = status.notes; break;
+    case 'available': line = `Version ${status.version} is available.`; notes = status; break;
     case 'downloading': line = `Downloading version ${status.version}: ${Math.floor((status.got * 100) / Math.max(1, status.total))}%`; break;
-    case 'ready': line = `Version ${status.version} is ready. It installs when you restart or close Scout.`; notes = status.notes; break;
+    case 'ready': line = `Version ${status.version} is ready. It installs when you restart or close Scout.`; notes = status; break;
     case 'failed': line = status.error; break;
   }
   return (
@@ -648,10 +676,16 @@ function Updates() {
         {(status.state === 'idle' || status.state === 'upToDate' || status.state === 'failed') && <button type="button" className="button" onClick={() => act('checkUpdates')}>Check now</button>}
       </SettingRow>
       <SettingRow title="Download automatically" sub="New versions download in the background and wait for your next restart."><Toggle label="Download automatically" on={autoUpdate} onChange={(on) => act('setAutoUpdate', { on })} /></SettingRow>
-      {notes?.trim() && (
+      {notes?.summary.trim() && (
         <div className="stack">
-          <SectionLabel>What's new</SectionLabel>
-          <div className="muted pre-wrap">{notes}</div>
+          <SectionLabel>Update summary</SectionLabel>
+          <div className="strong">{notes.summary}</div>
+        </div>
+      )}
+      {notes?.changelog.trim() && (
+        <div className="stack">
+          <SectionLabel>Changelog</SectionLabel>
+          <div className="muted pre-wrap">{notes.changelog}</div>
         </div>
       )}
     </>

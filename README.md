@@ -3,6 +3,10 @@
 The desktop app for Scout, built with [Tauri](https://tauri.app): the agent, its tools and everything else that touches
 the computer are Rust (`src/`), and the window is React and TypeScript (`ui/`) in the system's WebView2. It still ships as
 one executable with nothing beside it, since the UI and WebView2's loader are built in (see `src/webview2.rs`).
+Without signing in, "Continue without an account" uses ScoutCode's free models that admins approved for the desktop app, at
+the server's `desktop` limits, counted per address. The app marks those requests with `x-scoutcode-desktop-guest: 1` and its
+user agent. That keeps web pages out, but a script can copy it, so the limits and free models are what protect the server.
+
 Windows 11 has the WebView2 runtime, as do most copies of Windows 10; without it Scout offers the download and stops.
 
 It keeps its login, settings, allow list and sessions in `~/.scoutcode`. Chats saved by the old Scout CLI, which has
@@ -30,7 +34,14 @@ The installed app checks `https://scoutcode.dev/download/latest.json` five secon
 Anything newer downloads in the background to `update-<version>.exe` next to the exe, and a **Restart to update** button
 appears in the title bar. Restarting reopens the same folder and chat (it waits while Scout is working or the editor
 has unsaved changes). If the user just closes the window, the update goes in then. Settings > Updates shows the status,
-the release notes and a switch for automatic downloads, and "Check for updates" is in the account menu.
+the update summary and changelog and a switch for automatic downloads, and "Check for updates" is in the account menu.
+The summary is also in the button's tooltip.
+
+Each release has a one-line summary and a changelog (`--summary`, and `--changelog` or `--changelog-file`, on
+`npm run release:desktop`). Besides latest.json, the script keeps `releases.json` in the bucket with every release's
+notes, served at `https://scoutcode.dev/download/releases.json` (`?since=1.2.3` leaves out that version and older).
+After an update, the first start looks up the releases since the version that ran before (`desktopLastVersion` in
+the config) and shows them once in a "What's new" dialog. A fresh install shows nothing.
 
 Only an installed release build (`Scout.exe`) updates itself, never `cargo run`. `SCOUT_NO_UPDATE=1` turns it off and
 `SCOUT_UPDATE_URL` points it at another manifest. Nothing is installed unless its signature checks out against the key
@@ -140,6 +151,30 @@ To move to a new version, use the `latest` tag of `@xai-official/grok` on npm (`
 `@xai-official/grok-<platform>` package for `PACKAGES`, and change `VERSION` in `src/grok.rs`. A package's own `latest` tag is
 out of date, so ask for the version by name. Then run this, which checks all of the above against the real CLI in a throwaway
 home: `SCOUT_HOME=<temp> SCOUT_GROK_TEST_KEY=<key> cargo test -- --ignored live_grok --nocapture`. It can't cover signing in.
+
+### Hermes
+
+Settings > Account or the model menu connects the user's own Nous Portal account, by device sign-in or an API key saved in Scout.
+With both, the sign-in is used. Nothing is installed: `src/hermes.rs` handles the sign-in, and requests go straight to
+`https://inference-api.nousresearch.com/v1` like any other OpenAI-style provider, so Scout's tools, permissions, diffs and undo
+all apply. The model menu lists Nous' public catalog, models with tools only, free ones first.
+
+- **Refresh tokens are single-use.** Using one twice makes Nous revoke the sign-in, so every refresh happens under one lock, from
+  what's in `~/.scoutcode/hermes-login.json`, and the new pair is saved before its token is used. Only an explicit refusal ends a
+  sign-in. An outage or Nous' firewall (`x-vercel-mitigated`) keeps it. Two running copies of Scout wouldn't share that lock.
+- The sign-in uses Hermes' own client ID, `hermes-cli`, since Nous offers no way to register another. The user agent still says
+  it's Scout.
+- [hermes-agent#47950](https://github.com/NousResearch/hermes-agent/issues/47950) reports that accounts with no plan or credit never
+  get an approval button, so the code expires. Scout says so when that happens and offers the key.
+- **Scout doesn't use Nous' no-account free tier** (`nous/welcome` on `welcome-api.nousresearch.com`). It's a trial for Hermes'
+  own desktop app, once per OS user, behind a browser check. Calling `/api/anonymous/create` from Scout would pose as that app,
+  and Nous' terms forbid creating accounts by automation (§10.1).
+- Nous' terms restrict automated programs it doesn't provide (§10.2), and don't say whether an app like Scout counts as one, or
+  whether another app may use that client ID. Settle that with Nous before this goes in a release.
+- Nous may train on what's sent unless Privacy Mode is on for the account (§12.3), so the tab says so.
+
+`cargo test hermes` covers refreshing against a stand-in server, and `cargo test -- --ignored live_hermes --nocapture` reads the
+real catalog. Neither can cover signing in or a real chat, which need an account.
 
 ### Publishing a release
 
@@ -263,3 +298,7 @@ Markdown without raw HTML, and the CSP stops the page fetching anything.
 | `ui/src/Dock.tsx` | The right panel: terminal (xterm.js), changes, files and the editor (CodeMirror) |
 
 `cargo test -- --ignored live_turn --nocapture` runs one real turn against your account in a temporary folder.
+
+## License
+
+[MIT](LICENSE)

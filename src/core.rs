@@ -56,10 +56,10 @@ pub struct Outgoing {
     pub files: Vec<String>,
 }
 
-/// Signing in to Copilot, Devin, Kiro, OpenCode or Grok, while it's going on.
+/// Signing in to Copilot, Devin, Kiro, OpenCode, Grok or Hermes, while it's going on.
 #[derive(Default)]
 struct SignIn {
-    /// The code to enter, and where. Copilot, OpenCode and Grok only.
+    /// The code to enter, and where. Copilot, OpenCode, Grok and Hermes only.
     code: Option<(String, String)>,
     /// Bytes downloaded so far, of how many.
     progress: (u64, u64),
@@ -88,6 +88,8 @@ struct Login {
     opencode_error: Option<String>,
     grok: Option<SignIn>,
     grok_error: Option<String>,
+    hermes: Option<SignIn>,
+    hermes_error: Option<String>,
     busy: bool,
     url: Option<String>,
     error: Option<String>,
@@ -211,6 +213,11 @@ pub struct Core {
     additional_errors: Vec<String>,
     /// The additional provider to choose a model on once its list is in: it was linked with nothing else to run on.
     start_additional: Option<&'static str>,
+    /// The user just chose to go without an account: move to a free model once the list has them.
+    start_guest: bool,
+    /// Hermes was just connected: choose its first free model once it's in the list.
+    start_hermes: bool,
+    hermes_models_error: Option<String>,
     kiro_models_error: Option<String>,
     opencode_models_error: Option<String>,
     grok_models_error: Option<String>,
@@ -231,12 +238,23 @@ pub struct Core {
     /// The link that lets web chatbots use Scout, while it's on. It stays off until turned on each run.
     link: Option<crate::mcp::Link>,
     link_status: String,
-    /// The chatbot's latest tool calls.
-    link_log: Vec<String>,
+    /// Whether ScoutCode answered the link's last poll.
+    link_online: bool,
+    /// When the link was turned on, in milliseconds since 1970.
+    link_since: u64,
+    /// The chatbot's call being run now.
+    link_running: Option<String>,
+    /// The chatbot's latest tool calls, oldest first.
+    link_log: Vec<crate::mcp::LinkCall>,
+    /// Every file the chatbots changed since the link was turned on, with the lines added and removed in all.
+    link_edits: Vec<crate::mcp::LinkEdit>,
+    link_chatbots: Vec<crate::mcp::Chatbot>,
     link_permission: Option<PendingPermission>,
     usage: Usage,
     voice: Voice,
     updater: crate::update::Updater,
+    /// The releases since the version that ran here before, shown once after an update.
+    whats_new: Vec<crate::update::ReleaseNote>,
     /// What the window was last told, by key, so only what changed is sent.
     sent: HashMap<&'static str, String>,
     /// Counts the sends, so that a window starting up can tell which came after its snapshot.
@@ -342,7 +360,7 @@ fn model_json(m: &ModelInfo) -> Value {
     json!({
         "id": m.id, "label": m.label(), "description": m.description, "context": m.context, "tools": m.tools, "vision": m.vision, "cost": m.cost,
         "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id, "opencodeId": m.opencode_id,
-        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "grokId": m.grok_id,
+        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
         "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier,
     })
 }
@@ -352,9 +370,9 @@ fn status_json(s: &Status) -> Value {
         Status::Idle => json!({ "state": "idle" }),
         Status::Checking => json!({ "state": "checking" }),
         Status::UpToDate => json!({ "state": "upToDate" }),
-        Status::Available { version, notes } => json!({ "state": "available", "version": version, "notes": notes }),
+        Status::Available { version, summary, changelog } => json!({ "state": "available", "version": version, "summary": summary, "changelog": changelog }),
         Status::Downloading { version, got, total } => json!({ "state": "downloading", "version": version, "got": got, "total": total }),
-        Status::Ready { version, notes } => json!({ "state": "ready", "version": version, "notes": notes }),
+        Status::Ready { version, summary, changelog } => json!({ "state": "ready", "version": version, "summary": summary, "changelog": changelog }),
         Status::Failed(e) => json!({ "state": "failed", "error": e }),
     }
 }
@@ -432,6 +450,9 @@ impl Core {
             next_chat: 0,
             additional_errors: vec![],
             start_additional: None,
+            start_guest: false,
+            start_hermes: false,
+            hermes_models_error: None,
             opencode_models_error: None,
             grok_models_error: None,
             kiro_models_error: None,
@@ -451,16 +472,23 @@ impl Core {
             focus_epoch: 0,
             chat_epoch: 0,
             link_status: String::new(),
+            link_online: false,
+            link_since: 0,
+            link_running: None,
             link_log: vec![],
+            link_edits: vec![],
+            link_chatbots: vec![],
             link_permission: None,
             usage: Usage::default(),
             voice: Voice::Idle,
             updater,
+            whats_new: vec![],
             sent: HashMap::new(),
             seq: 0,
         };
         core.enter_project(&cwd);
         core.fetch_models();
+        core.check_updated();
         // `scout-desktop [folder] --resume <id>` reopens a saved conversation.
         let args: Vec<String> = std::env::args().collect();
         if let Some(s) = args.iter().position(|a| a == "--resume").and_then(|i| args.get(i + 1)).and_then(|id| session::load_session(id)) {
@@ -504,7 +532,7 @@ impl Core {
         let h = self.hooks.clone();
         std::thread::spawn(move || {
             let (mut scout, mut openrouter, mut errors) = (vec![], vec![], vec![]);
-            if cfg.api_key.is_some() {
+            if cfg.api_key.is_some() || cfg.guest {
                 match crate::api::list_models(&cfg) {
                     Ok((models, user)) => {
                         if let Some(u) = user {
@@ -554,8 +582,8 @@ impl Core {
             }
             errors.extend(additional_errors.iter().cloned());
             h.send(Ev::AdditionalErrors(additional_errors));
-            let asked = cfg.api_key.is_some() as usize + (!cfg.openrouter_keys.is_empty()) as usize + cfg.nvidia_key.is_some() as usize + cfg.additional.len() + 1;
-            if errors.len() == asked && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() {
+            let asked = (cfg.api_key.is_some() || cfg.guest) as usize + (!cfg.openrouter_keys.is_empty()) as usize + cfg.nvidia_key.is_some() as usize + cfg.additional.len() + 1;
+            if errors.len() == asked && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() {
                 h.send(Ev::Models(Err(errors.join("; "))));
             } else {
                 let mut models = crate::api::merge_models(scout, openrouter, nvidia, kilo);
@@ -605,6 +633,14 @@ impl Core {
                     };
                     h.send(Ev::GrokModelsError(error));
                     models.extend(listed.into_iter().map(|(id, name)| grok(id, name)));
+                }
+                if cfg.hermes_on() {
+                    let (listed, error) = match crate::api::list_hermes() {
+                        Ok(listed) => (listed, None),
+                        Err(e) => (vec![], Some(format!("Could not load Hermes' models: {}", e.message))),
+                    };
+                    h.send(Ev::HermesModelsError(error));
+                    models.extend(listed);
                 }
                 h.send(Ev::Models(Ok(models)));
             }
@@ -711,6 +747,8 @@ impl Core {
                 let stopped = self.chat.stopping || matches!(&result, Err(e) if e == "Interrupted");
                 let error = result.as_ref().err().filter(|_| !stopped).cloned();
                 let out_of_credit = std::mem::take(&mut agent.out_of_credit) && !stopped;
+                // A sign-in Nous ended during the turn is gone from the file, and Settings should offer it again.
+                self.cfg.hermes_signed_in = crate::hermes::signed_in();
                 if let Err(e) = result {
                     if stopped {
                         agent.keep_partial(&self.chat.partial);
@@ -755,19 +793,22 @@ impl Core {
             }
             Ev::Models(Ok(m)) => {
                 // The agent picks each model's edit tools from these, under the id it sends on any provider.
-                *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
-                *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
-                *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
+                *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
+                *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
+                *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
                 self.models = m;
                 self.models_changed = true;
                 self.models_loading -= 1;
                 self.start_on_additional();
+                self.start_on_hermes();
+                self.start_on_guest();
             }
             Ev::Models(Err(e)) => {
                 self.chat.status = format!("Could not load models: {e}");
                 self.models_loading -= 1;
             }
             Ev::KiloCheck(r) => self.login.kilo_check = Some(r),
+            Ev::WhatsNew(notes) => self.whats_new = notes,
             Ev::AdditionalErrors(e) => self.additional_errors = e,
             Ev::Copilot(u) => self.copilot_update(u),
             Ev::Devin(u) => self.devin_update(u),
@@ -777,6 +818,8 @@ impl Core {
             Ev::OpencodeModelsError(e) => self.opencode_models_error = e,
             Ev::Grok(u) => self.grok_update(u),
             Ev::GrokModelsError(e) => self.grok_models_error = e,
+            Ev::Hermes(u) => self.hermes_update(u),
+            Ev::HermesModelsError(e) => self.hermes_models_error = e,
             Ev::LoginUrl(u) => self.login.url = Some(u),
             Ev::User(u) => self.set_user(Some(u)),
             Ev::Usage(r, said) => {
@@ -789,6 +832,13 @@ impl Core {
                     Err(e) => self.usage.message = Some((false, e)),
                 }
             }
+            // A refresh in the background only ever updates the numbers.
+            Ev::UsagePolled(r) => {
+                self.usage.busy = false;
+                if let Ok(info) = r {
+                    self.usage.info = Some(info);
+                }
+            }
             Ev::Login(Ok((token, user))) => {
                 config::save_one("apiKey", json!(token));
                 self.set_key(Some(token));
@@ -799,13 +849,31 @@ impl Core {
                 self.login.busy = false;
                 self.login.error = Some(e);
             }
-            Ev::Link(crate::mcp::LinkEvent::Status(s)) => self.link_status = s,
+            Ev::Link(crate::mcp::LinkEvent::Status(s, online)) => {
+                self.link_status = s;
+                self.link_online = online;
+            }
+            Ev::Link(crate::mcp::LinkEvent::Running(c)) => self.link_running = Some(c),
             Ev::Link(crate::mcp::LinkEvent::Call(c)) => {
+                self.link_running = None;
+                if !c.edits.is_empty() {
+                    self.files_epoch += 1;
+                }
+                for e in &c.edits {
+                    match self.link_edits.iter_mut().find(|x| x.path == e.path) {
+                        Some(x) => {
+                            x.added += e.added;
+                            x.removed += e.removed;
+                        }
+                        None => self.link_edits.push(e.clone()),
+                    }
+                }
                 self.link_log.push(c);
-                if self.link_log.len() > 8 {
+                if self.link_log.len() > 20 {
                     self.link_log.remove(0);
                 }
             }
+            Ev::Link(crate::mcp::LinkEvent::Chatbots(b)) => self.link_chatbots = b,
             Ev::Link(crate::mcp::LinkEvent::Ask(req, reply)) => {
                 self.alert("A chatbot wants to use Scout", req.label.lines().next().unwrap_or(""));
                 self.link_permission = Some(PendingPermission { req, reply });
@@ -905,7 +973,31 @@ impl Core {
     pub fn sign_out(&mut self) {
         self.stop_link("Off.");
         config::save_one("apiKey", Value::Null);
+        // Back to the first-run choice, not on to using it without an account.
+        config::save_one("desktopGuest", Value::Null);
+        self.cfg.guest = false;
         self.set_key(None);
+    }
+
+    /// Starts or stops using ScoutCode's free models without an account. Starting moves to one of them once they're listed.
+    pub fn set_guest(&mut self, on: bool) {
+        config::save_one("desktopGuest", json!(on.then_some(true)));
+        self.cfg.guest = on;
+        self.start_guest = on;
+        if self.cfg.only_kilo() && self.chat.provider == "scoutcode" {
+            self.choose_model(config::KILO_DEFAULT_MODEL, "kilo");
+        }
+        self.keys_changed();
+    }
+
+    /// Chooses the first free model on offer after `set_guest`. The server's list has nothing else, and leaves out "auto".
+    fn start_on_guest(&mut self) {
+        if !self.start_guest {
+            return;
+        }
+        let Some(key) = self.models.iter().find(|m| m.hosted && m.available != Some(false)).map(|m| m.id.clone()) else { return };
+        self.start_guest = false;
+        self.choose_model(&key, "scoutcode");
     }
 
     /// Adds a key at the end of the order (so it's tried last). An empty name gets a number.
@@ -1342,13 +1434,79 @@ impl Core {
         self.grok_changed();
     }
 
-    /// Stops a sign-in that's under way: `which` is "copilot", "devin", "kiro", "opencode" or "grok".
+    /// Starts signing in to Nous Portal, which gives a code to approve in the browser.
+    pub fn hermes_sign_in(&mut self) {
+        let sign_in = SignIn::default();
+        let cancel = sign_in.cancel.clone();
+        self.login.hermes = Some(sign_in);
+        self.login.hermes_error = None;
+        let h = self.hooks.clone();
+        crate::hermes::sign_in(cancel, move |u| h.send(Ev::Hermes(u)));
+    }
+
+    /// Saves or forgets the Nous Portal key. A new one moves to Hermes' first free model.
+    pub fn save_hermes_key(&mut self, key: Option<String>) {
+        config::save_one("hermesKey", json!(key));
+        self.start_hermes = key.is_some() && self.chat.provider != "hermes";
+        self.cfg.hermes_key = key;
+        self.hermes_changed();
+    }
+
+    fn hermes_update(&mut self, update: crate::hermes::Update) {
+        use crate::hermes::Update;
+        match update {
+            Update::SignedIn => {
+                self.login.hermes = None;
+                self.cfg.hermes_signed_in = true;
+                self.start_hermes = self.chat.provider != "hermes";
+                self.hermes_changed();
+            }
+            Update::Failed(e) => {
+                // Cancelling fails with no message.
+                self.login.hermes = None;
+                self.login.hermes_error = (!e.is_empty()).then_some(e);
+            }
+            Update::Code { code, url } => {
+                if let Some(s) = &mut self.login.hermes {
+                    s.code = Some((code, url));
+                }
+            }
+        }
+    }
+
+    /// With no sign-in or key left, a model that ran on Hermes moves back to ScoutCode.
+    fn hermes_changed(&mut self) {
+        if !self.cfg.hermes_on() && self.chat.provider == "hermes" {
+            self.choose_model("auto", "scoutcode");
+        }
+        self.keys_changed();
+    }
+
+    /// Signs out of Nous Portal. A saved key stays.
+    pub fn hermes_sign_out(&mut self) {
+        crate::hermes::sign_out();
+        self.cfg.hermes_signed_in = false;
+        self.hermes_changed();
+    }
+
+    /// Chooses Hermes' first model, which is a free one while there are any, once it's in the list.
+    fn start_on_hermes(&mut self) {
+        if !self.start_hermes {
+            return;
+        }
+        let Some(key) = self.models.iter().find(|m| m.hermes_id.is_some()).map(|m| m.id.clone()) else { return };
+        self.start_hermes = false;
+        self.choose_model(&key, "hermes");
+    }
+
+    /// Stops a sign-in that's under way: `which` is "copilot", "devin", "kiro", "opencode", "grok" or "hermes".
     pub fn cancel_sign_in(&mut self, which: &str) {
         let slot = match which {
             "copilot" => &mut self.login.copilot,
             "devin" => &mut self.login.devin,
             "opencode" => &mut self.login.opencode,
             "grok" => &mut self.login.grok,
+            "hermes" => &mut self.login.hermes,
             _ => &mut self.login.kiro,
         };
         if let Some(s) = slot.take() {
@@ -1832,6 +1990,31 @@ impl Core {
         let _ = self.updater.install();
     }
 
+    /// After an update, looks up what changed since the version that ran here before. A first install shows nothing.
+    fn check_updated(&mut self) {
+        if !crate::update::self_updating() {
+            return;
+        }
+        let last = self.cfg.last_version.replace(crate::update::VERSION.to_string());
+        if last.as_deref() == Some(crate::update::VERSION) {
+            return;
+        }
+        config::save_one("desktopLastVersion", json!(crate::update::VERSION));
+        let Some(last) = last.filter(|l| crate::update::is_newer(crate::update::VERSION, l)) else { return };
+        let h = self.hooks.clone();
+        std::thread::spawn(move || {
+            if let Ok(notes) = crate::update::notes_since(&last) {
+                if !notes.is_empty() {
+                    h.send(Ev::WhatsNew(notes));
+                }
+            }
+        });
+    }
+
+    pub fn dismiss_whats_new(&mut self) {
+        self.whats_new.clear();
+    }
+
     pub fn set_auto_update(&mut self, on: bool) {
         self.cfg.auto_update = on;
         config::save_one("desktopAutoUpdate", json!(on));
@@ -1864,6 +2047,17 @@ impl Core {
         });
     }
 
+    /// Refreshes the account's balance and limits without a word, for the timer.
+    pub fn usage_poll(&mut self) {
+        if self.cfg.api_key.is_none() || self.usage.busy {
+            return;
+        }
+        self.usage.busy = true;
+        let cfg = self.cfg.clone();
+        let h = self.hooks.clone();
+        std::thread::spawn(move || h.send(Ev::UsagePolled(crate::api::usage_info(&cfg).map_err(|e| e.message))));
+    }
+
     pub fn refresh_skills(&mut self) {
         self.skills = crate::skills::list();
     }
@@ -1873,6 +2067,8 @@ impl Core {
             l.stop();
         }
         self.link_permission = None;
+        self.link_online = false;
+        self.link_running = None;
         self.link_status = status.to_string();
     }
 
@@ -1887,6 +2083,8 @@ impl Core {
         }
         let h = self.hooks.clone();
         self.link_log.clear();
+        self.link_edits.clear();
+        self.link_since = session::now_ms();
         self.link_status = "Connecting…".into();
         self.link = Some(crate::mcp::start_link(&self.cfg, &self.chat.cwd, mode, move |e| h.send(Ev::Link(e))));
     }
@@ -1902,7 +2100,7 @@ impl Core {
         let cfg = &self.cfg;
         let hub = crate::mcp_client::hub();
         let steering: Vec<String> = self.chat.shared.steer.lock().unwrap().iter().map(|s| s.text.clone()).collect();
-        let login_needed = cfg.api_key.is_none() && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() && cfg.additional.is_empty();
+        let login_needed = cfg.api_key.is_none() && !cfg.guest && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() && cfg.additional.is_empty();
         let voice = match &self.voice {
             Voice::Idle => json!({ "state": "idle" }),
             // Rounded so that it only goes out when it moves.
@@ -1932,12 +2130,14 @@ impl Core {
             ("cfg", json!({
                 "loginNeeded": login_needed,
                 "hasKey": cfg.api_key.is_some(),
+                "guest": cfg.is_guest(),
                 "browserSignIn": config::is_sign_in(cfg.api_key.as_deref()),
                 "username": cfg.username,
                 "baseUrl": cfg.base_url,
                 "openrouterKeys": cfg.openrouter_keys.iter().map(|k| json!({ "name": k.name, "masked": mask_key(&k.key) })).collect::<Vec<_>>(),
                 "nvidiaKey": cfg.nvidia_key.as_deref().map(mask_key),
                 "kiloKey": cfg.kilo_key.as_deref().map(mask_key),
+                "kilo": cfg.kilo_on(),
                 "copilot": cfg.copilot_token.is_some(),
                 "copilotUser": cfg.copilot_user,
                 "devin": cfg.devin_enabled,
@@ -1946,6 +2146,8 @@ impl Core {
                 "opencodeSignedIn": cfg.opencode_signed_in,
                 "grokSignedIn": cfg.grok_signed_in,
                 "grokKey": cfg.grok_key.as_deref().map(mask_key),
+                "hermesSignedIn": cfg.hermes_signed_in,
+                "hermesKey": cfg.hermes_key.as_deref().map(mask_key),
                 "additional": cfg.additional.iter().map(|l| json!({ "id": l.id, "masked": l.key.as_deref().map(mask_key) })).collect::<Vec<_>>(),
                 "notifyFlash": cfg.notify_flash,
                 "notifyToast": cfg.notify_toast,
@@ -1961,6 +2163,7 @@ impl Core {
             ("kiroModelsError", json!(self.kiro_models_error)),
             ("opencodeModelsError", json!(self.opencode_models_error)),
             ("grokModelsError", json!(self.grok_models_error)),
+            ("hermesModelsError", json!(self.hermes_models_error)),
             ("run", json!({ "running": self.chat.running, "stopping": self.chat.stopping, "status": self.chat.status, "anyRunning": self.any_running() })),
             ("todos", todos_json(&self.chat.todos)),
             ("totals", json!({ "totals": self.chat.totals, "context": self.chat.context })),
@@ -1987,17 +2190,29 @@ impl Core {
                 "kiro": self.login.kiro.as_ref().map(SignIn::json), "kiroError": self.login.kiro_error,
                 "opencode": self.login.opencode.as_ref().map(SignIn::json), "opencodeError": self.login.opencode_error,
                 "grok": self.login.grok.as_ref().map(SignIn::json), "grokError": self.login.grok_error,
+                "hermes": self.login.hermes.as_ref().map(SignIn::json), "hermesError": self.login.hermes_error,
             })),
             ("skills", json!(self.skills.iter().map(|s| json!({ "name": s.name, "about": s.short_description(), "source": s.source, "dir": s.dir })).collect::<Vec<_>>())),
             ("link", json!({
                 "on": self.link.is_some(),
                 "cwd": self.link.as_ref().map(|l| l.cwd.clone()).unwrap_or_else(|| self.chat.cwd.clone()),
-                "status": self.link_status, "log": self.link_log,
+                "status": self.link_status,
+                "online": self.link.is_some() && self.link_online,
+                "mode": self.link.as_ref().map(|l| l.mode()),
+                "since": self.link.as_ref().map(|_| self.link_since),
+                "running": self.link_running,
+                "log": self.link_log.iter().map(|c| json!({
+                    "tool": c.tool, "label": c.label, "ok": c.ok, "at": c.at,
+                    "edits": c.edits.iter().map(|e| json!({ "path": e.path, "added": e.added, "removed": e.removed, "created": e.created })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "edits": self.link_edits.iter().map(|e| json!({ "path": e.path, "added": e.added, "removed": e.removed, "created": e.created })).collect::<Vec<_>>(),
+                "chatbots": self.link_chatbots.iter().map(|b| json!({ "name": b.name, "seen": b.seen })).collect::<Vec<_>>(),
                 "permission": self.link_permission.as_ref().map(permission_json),
             })),
             ("usage", json!({ "info": self.usage.info, "busy": self.usage.busy, "message": self.usage.message })),
             ("voice", voice),
             ("updater", json!({ "enabled": self.updater.enabled(), "version": crate::update::VERSION, "status": status_json(&self.updater.status()) })),
+            ("whatsNew", json!(self.whats_new)),
             ("mcp", json!({ "error": hub.error(), "servers": mcp_views })),
         ]
     }
@@ -2051,7 +2266,7 @@ impl Core {
             "efforts": EFFORTS,
             "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name, "needsKey": a.needs_key, "note": a.note, "keyUrl": a.key_url, "keyLink": a.key_link, "keyHint": a.key_hint })).collect::<Vec<_>>(),
             "kiloWarning": config::KILO_WARNING,
-            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL },
+            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL, "hermes": crate::hermes::PLAN_URL },
             "languages": crate::instructions::LANGUAGES,
             "exe": std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "Scout.exe".into()),
         })
@@ -2061,8 +2276,15 @@ impl Core {
 /// Runs the workers' events into the core and tells the window, at most about 60 times a second.
 pub fn pump(core: Arc<Mutex<Core>>, rx: Receiver<Ev>, wake: Receiver<()>) {
     use std::sync::mpsc::RecvTimeoutError;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+    // The balance is checked as the app starts and every 30 seconds after.
+    const POLL_EVERY: Duration = Duration::from_secs(30);
+    let mut polled: Option<Instant> = None;
     loop {
+        if polled.is_none_or(|t| t.elapsed() >= POLL_EVERY) {
+            polled = Some(Instant::now());
+            core.lock().unwrap().usage_poll();
+        }
         // The mic's level has no event of its own.
         let wait = if core.lock().unwrap().is_recording() { Duration::from_millis(50) } else { Duration::from_secs(1) };
         match wake.recv_timeout(wait) {

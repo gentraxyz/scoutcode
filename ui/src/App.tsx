@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { act, invoke } from './api';
-import { AdditionalOptions, BrowserEntry, KeyField, NvidiaEntry, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { Composer, PermissionBody } from './Composer';
 import { Dock } from './Dock';
+import { Onboarding } from './Onboarding';
 import { Settings, restartBlocker } from './Settings';
 import { addProject, Sidebar } from './Sidebar';
-import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
+import { core, focusComposer, ui, useUi, useView, type DockTab } from './store';
 import { Transcript } from './Transcript';
 import { Icon, IconButton, Modal } from './widgets';
 import logo from '../../assets/icon.png';
@@ -42,8 +42,31 @@ function UpdatePill() {
   const dirty = useUi((u) => u.editorDirty);
   if (status.state !== 'ready') return null;
   const blocker = restartBlocker(anyRunning, dirty);
+  const summary = status.summary.trim() ? `\n${status.summary.trim()}` : '';
   return (
-    <button type="button" className="button primary pill" disabled={!!blocker} title={blocker ?? `Scout ${status.version} is ready. Your chat reopens after the restart.`} onClick={() => invoke('restart_to_update')}>Restart to update</button>
+    <button type="button" className="button primary pill" disabled={!!blocker} title={blocker ?? `Scout ${status.version} is ready. Your chat reopens after the restart.${summary}`} onClick={() => invoke('restart_to_update')}>Restart to update</button>
+  );
+}
+
+/** Shown once after Scout updates itself: what changed since the version that ran before. */
+function WhatsNew() {
+  const releases = useView('whatsNew');
+  if (!releases.length) return null;
+  const close = () => act('dismissWhatsNew');
+  return (
+    <Modal onClose={close} className="whats-new">
+      <b className="strong big">Scout updated to {releases[0].version}</b>
+      <div className="whats-new-list stack-wide">
+        {releases.map((r) => (
+          <div key={r.version} className="stack">
+            {releases.length > 1 && <div className="section-label">Version {r.version}</div>}
+            {r.summary.trim() && <div className="strong">{r.summary}</div>}
+            {r.changelog.trim() && <div className="muted pre-wrap small">{r.changelog}</div>}
+          </div>
+        ))}
+      </div>
+      <div className="row end"><button type="button" className="button primary" onClick={close}>Got it</button></div>
+    </Modal>
   );
 }
 
@@ -111,12 +134,7 @@ function LinkPermission() {
   );
 }
 
-function Divider({ children }: { children: string }) {
-  return <div className="divider"><span>{children}</span></div>;
-}
-
-function Login() {
-  const kiloWarning = useCore((s) => s.statics.kiloWarning);
+function Login({ onDone }: { onDone: () => void }) {
   return (
     <div className="login-screen">
       <header className="login-bar" data-tauri-drag-region><WindowButtons /></header>
@@ -125,27 +143,7 @@ function Login() {
           <img src={logo} width={52} height={52} alt="" />
           <h1>Welcome to Scout</h1>
           <p className="dim">A coding agent for your projects, powered by ScoutCode.</p>
-          <div className="login-card stack">
-            <BrowserEntry />
-            <div className="tiny dim">No key needed: uses your account's monthly desktop credit.</div>
-            <Divider>or use an API key</Divider>
-            <ScoutKeyEntry />
-            <Divider>or use your OpenRouter key</Divider>
-            <KeyField hint="sk-or-…" button="Save OpenRouter key" onSave={(key) => act('addOpenrouterKey', { name: 'OpenRouter', key })} />
-            <Divider>or use your NVIDIA NIM key</Divider>
-            <NvidiaEntry />
-            <Divider>or use OpenCode</Divider>
-            <OpencodeEntry />
-            <div className="tiny dim">No account needed for its free models. {OPENCODE_WARNING}</div>
-            <Divider>or use your own GitHub Copilot plan</Divider>
-            <div className="tiny dim">About 150 MB to install.</div>
-            <SignInEntry which="copilot" />
-            <Divider>or use Kilo Code's free models</Divider>
-            <button type="button" className="button wide" onClick={() => act('saveKilo', { enabled: true, key: null })}>Use Kilo Code</button>
-            <div className="tiny dim">No account or key. {kiloWarning}</div>
-            <Divider>or use one of these</Divider>
-            <AdditionalOptions />
-          </div>
+          <Onboarding onDone={onDone} />
         </div>
       </div>
     </div>
@@ -218,7 +216,12 @@ export function App() {
     };
   }, []);
 
-  if (loginNeeded) return <Login />;
+  // Once it's shown, the first-run screen stays up while the user links more providers, until they press Continue.
+  const [onboarding, setOnboarding] = useState(false);
+  useEffect(() => {
+    if (loginNeeded) setOnboarding(true);
+  }, [loginNeeded]);
+  if (loginNeeded || onboarding) return <Login onDone={() => setOnboarding(false)} />;
   return (
     <div className="app">
       {sidebar && <Sidebar />}
@@ -235,6 +238,7 @@ export function App() {
       <Settings />
       <DeleteDialog />
       <LinkPermission />
+      <WhatsNew />
       {dropping && <div className="drop-overlay"><div><Icon name="paperclip" /> Drop files to attach them</div></div>}
     </div>
   );

@@ -3,7 +3,7 @@ name = "scout-desktop"
 version = "0.1.5"
 edition = "2024"
 description = "Scout: a desktop coding agent for ScoutCode (scoutcode.dev)"
-license = "UNLICENSED"
+license = "MIT"
 publish = false
 
 [features]

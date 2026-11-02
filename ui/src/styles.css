@@ -74,6 +74,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .button.danger { background: var(--red); border-color: var(--red); color: #fff; font-weight: 600; }
 .button.wide { width: 100%; min-height: 36px; border-radius: 10px; }
 .button.tall { min-height: 40px; }
+.button.compact { align-self: flex-start; padding: 3px 10px; font-size: 12.5px; }
 .button.pill { padding: 3px 10px; font-size: 12.5px; border-radius: 7px; margin-right: 8px; }
 .small-button { padding: 2px 10px; font-size: 12.5px; }
 .text-button { color: var(--accent); font-size: 12.5px; padding: 2px 6px; border-radius: 6px; }
@@ -209,6 +210,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .tool-summary { font-size: 12.5px; flex: 0 1 auto; max-width: 260px; }
 .tool-chevron { color: var(--muted); opacity: 0; flex: none; }
 .tool-row:hover .tool-chevron { opacity: 1; }
+.memory-note { display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 6px 0 7px; font-size: 12.5px; color: var(--muted); font-style: italic; }
+.memory-note svg { flex: none; opacity: .8; }
+.memory-verb { flex: none; color: var(--strong); font-style: normal; }
 .tool-progress { padding: 0 0 4px 30px; font-size: 12px; }
 .tool-output { padding: 2px 0 8px 30px; }
 .tool-text { margin: 0; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; font: 12.5px/18px var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -318,10 +322,35 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .login-column { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 24px 16px; }
 .login-column h1 { margin-top: 14px; }
 .login-card { width: min(410px, 100%); margin-top: 22px; padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; text-align: left; }
+.onboarding-ask { margin-top: 22px; }
+.onboarding-hint { margin-top: 18px; }
+.provider-picker { position: relative; width: min(940px, 100%); margin-top: 22px; padding: 22px 14px 14px; border: 1px solid color-mix(in srgb, var(--green) 45%, var(--border)); border-radius: 18px; }
+.picker-label { font-size: 11.5px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+.picker-label.free { position: absolute; top: -9px; left: 50%; transform: translateX(-50%); margin: 0; padding: 0 10px; background: var(--bg); color: var(--green); font-weight: 600; }
+.picker-groups { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+.picker-group { padding: 10px 10px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.picker-tiles { display: flex; gap: 4px; }
+.provider-tile { position: relative; width: 74px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 4px 8px; border: 1px solid transparent; border-radius: 10px; font-size: 11.5px; color: var(--muted); text-align: center; }
+.provider-tile img { object-fit: contain; border-radius: 6px; }
+.provider-tile span { max-width: 100%; }
+.provider-tile:hover { background: var(--hover); color: var(--strong); }
+.provider-tile.linked { color: var(--strong); }
+.provider-tile.focused { background: color-mix(in srgb, var(--accent) 10%, var(--surface-hi)); border-color: var(--accent); color: var(--strong); }
+.tile-check { position: absolute; top: 4px; right: 8px; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; background: var(--green); color: #07140c; }
+.onboarding-done { width: min(460px, 100%); margin-top: 18px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.setup-card { width: min(460px, 100%); gap: 12px; }
+.setup-label { font-size: 12px; color: var(--muted); font-weight: 600; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
+.linked-line { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--green) 9%, transparent); color: var(--green); }
+.linked-line .icon { margin-top: 3px; }
+.terms { color: var(--dim); }
+.terms summary { cursor: pointer; }
+.terms summary a { color: var(--muted); text-decoration: underline; }
+.terms ul { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; color: var(--muted); user-select: text; }
 .divider { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 11.5px; color: var(--dim); }
 .divider::before, .divider::after { content: ''; flex: 1 1 0; height: 1px; background: var(--border); }
 
 /* settings */
+.whats-new-list { max-height: 55vh; overflow-y: auto; user-select: text; }
 .modal.settings { padding: 0; gap: 0; width: min(1040px, calc(100vw - 80px)); height: min(720px, calc(100vh - 80px)); min-width: 560px; overflow: hidden; }
 .settings-title { display: flex; align-items: center; height: 52px; padding: 0 12px 0 20px; flex: none; border-bottom: 1px solid var(--border); }
 .settings-body { flex: 1 1 0; display: flex; min-height: 0; }
@@ -379,3 +408,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .tree-row.selected { background: var(--surface-hi); color: var(--strong); }
 .tree-space { width: 13px; flex: none; }
 .file-banner { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: 12.5px; background: var(--surface); border-bottom: 1px solid var(--border); }
+
+/* chatbots, in the model menu */
+.chatbots-panel { padding: 2px 2px 8px; }
+.chatbots-panel .section-label { margin-top: 6px; }
+.chatbots-panel .stat-row .select { padding-top: 2px; padding-bottom: 2px; font-size: 12.5px; }
+.link-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; gap: 6px; }
+.link-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+.link-dot.on { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 20%, transparent); }
+.link-dot.wait { background: var(--accent); animation: link-pulse 1.2s ease-in-out infinite; }
+@keyframes link-pulse { 50% { opacity: 0.35; } }
+.stack.tight { gap: 2px; }
+.how-to { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; color: var(--muted); }
+.how-to .address { margin-top: 4px; padding: 4px 4px 4px 8px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); }

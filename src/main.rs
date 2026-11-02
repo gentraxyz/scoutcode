@@ -13,6 +13,7 @@ mod kiro;
 mod diff;
 mod dock;
 mod grok;
+mod hermes;
 mod instructions;
 mod mcp;
 mod mcp_client;

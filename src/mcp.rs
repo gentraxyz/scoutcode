@@ -120,12 +120,55 @@ fn handle(msg: &Value, cwd: &str, tools: &[Value], agent: &mut Agent, h: &Hooks)
 
 /// What the link tells the window.
 pub enum LinkEvent {
-    Status(String),
-    /// A tool call the chatbot made.
-    Call(String),
+    /// How the link is doing, and whether ScoutCode is answering it.
+    Status(String, bool),
+    /// A tool call the chatbot made, as it starts.
+    Running(String),
+    /// That call, finished.
+    Call(LinkCall),
+    /// The chatbots linked to the account, from each poll.
+    Chatbots(Vec<Chatbot>),
     Ask(PermissionRequest, std::sync::mpsc::Sender<PermissionAnswer>),
     /// It stopped by itself, and why.
     Ended(String),
+}
+
+pub struct LinkCall {
+    pub tool: String,
+    pub label: String,
+    pub ok: bool,
+    /// Milliseconds since 1970, when it finished.
+    pub at: u64,
+    pub edits: Vec<LinkEdit>,
+}
+
+/// A file a chatbot's call changed, with how many lines.
+#[derive(Clone)]
+pub struct LinkEdit {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub created: bool,
+}
+
+pub struct Chatbot {
+    pub name: String,
+    /// When it last reached ScoutCode's MCP endpoint, in milliseconds since 1970, if it has since the site started.
+    pub seen: Option<u64>,
+}
+
+fn edits(d: &Option<tools::Display>) -> Vec<LinkEdit> {
+    use crate::diff::Kind;
+    match d {
+        Some(tools::Display::Diff { path, lines, created }) => vec![LinkEdit {
+            path: path.clone(),
+            added: lines.iter().filter(|l| l.kind == Kind::Add).count(),
+            removed: lines.iter().filter(|l| l.kind == Kind::Del).count(),
+            created: *created,
+        }],
+        Some(tools::Display::Diffs(all)) => all.iter().flat_map(|d| edits(&Some(d.clone()))).collect(),
+        _ => vec![],
+    }
 }
 
 /// A running link, for Settings > Chatbots.
@@ -136,6 +179,10 @@ pub struct Link {
 }
 
 impl Link {
+    pub fn mode(&self) -> String {
+        self.shared.mode()
+    }
+
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         self.shared.cancel.store(true, Ordering::Relaxed);
@@ -154,7 +201,7 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
         for ev in rx {
             match ev {
                 Ev::AskPermission(req, reply) => events(LinkEvent::Ask(req, reply)),
-                Ev::ToolCall { name, label, .. } => events(LinkEvent::Call(format!("{name} {label}").trim().to_string())),
+                Ev::ToolCall { name, label, .. } => events(LinkEvent::Running(format!("{name} {label}").trim().to_string())),
                 _ => {}
             }
         }
@@ -198,7 +245,7 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
                 Err((_, e)) => {
                     // Results that didn't get through are sent again with the next poll.
                     failures += 1;
-                    tell(LinkEvent::Status(format!("Can't reach ScoutCode ({e}). Trying again…")));
+                    tell(LinkEvent::Status(format!("Can't reach ScoutCode ({e}). Trying again…"), false));
                     let wait = 2u64.saturating_pow(failures.min(5)).min(30);
                     for _ in 0..wait * 10 {
                         if stop.load(Ordering::Relaxed) {
@@ -212,7 +259,11 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
             results.clear();
             if failures > 0 || reply.get("calls").is_some() {
                 failures = 0;
-                tell(LinkEvent::Status("On. Chatbots on your account can use Scout here.".into()));
+                tell(LinkEvent::Status("On. Chatbots on your account can use Scout here.".into(), true));
+            }
+            if let Some(list) = reply["chatbots"].as_array() {
+                let bots = list.iter().map(|b| Chatbot { name: b["name"].as_str().unwrap_or("").to_string(), seen: b["seen"].as_u64() }).collect();
+                tell(LinkEvent::Chatbots(bots));
             }
             if reply["replaced"] == true {
                 break "Another Scout linked to this account, so this one has stopped.".to_string();
@@ -222,7 +273,15 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let r = call_tool(&mut agent, &h, &id, c["name"].as_str().unwrap_or(""), &c["arguments"]);
+                let tool = c["name"].as_str().unwrap_or("");
+                let r = call_tool(&mut agent, &h, &id, tool, &c["arguments"]);
+                tell(LinkEvent::Call(LinkCall {
+                    tool: tool.to_string(),
+                    label: tools::label(tool, &c["arguments"]),
+                    ok: !r.is_error,
+                    at: crate::session::now_ms(),
+                    edits: if r.is_error { vec![] } else { edits(&r.display) },
+                }));
                 results.push(json!({"id": id, "output": r.output, "isError": r.is_error}));
             }
         };

@@ -138,6 +138,10 @@ pub fn changes(cwd: &str) -> Result<Changes, String> {
             (_, 'D') | ('D', _) => 'D',
             _ => 'M',
         };
+        // Scout's own memory of the project isn't one of the user's changes.
+        if e[3..].eq_ignore_ascii_case(".scout/memory.md") {
+            continue;
+        }
         files.push(Change { path: e[3..].to_string(), from, status, counts: None });
     }
     // Line counts for tracked files in one go; renames show as "a => b", which simply won't match.

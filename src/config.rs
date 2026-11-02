@@ -7,6 +7,7 @@ pub const MODES: [&str; 5] = ["default", "acceptEdits", "auto", "plan", "yolo"];
 pub const EFFORTS: [&str; 4] = ["none", "low", "medium", "high"];
 pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 pub const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1";
+pub const HERMES_URL: &str = "https://inference-api.nousresearch.com/v1";
 pub const KILO_URL: &str = "https://ai-gateway.kilo.ai/api/v1";
 pub const KILO_DEFAULT_MODEL: &str = "kilo-auto/free";
 pub const KILO_WARNING: &str = "Kilo's free models may log your prompts and train on them, so don't send them anything private. They allow 200 requests an hour per network, and every tool call is a request.";
@@ -82,6 +83,9 @@ pub fn mode_label(mode: &str) -> &'static str {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub api_key: Option<String>,
+    /// The user has chosen to use ScoutCode's free models without an account. A key wins over this. Only set on the
+    /// settings for ScoutCode itself: see `for_provider`.
+    pub guest: bool,
     /// The user's own OpenRouter keys, in the order they're tried. For models on OpenRouter.
     pub openrouter_keys: Vec<OpenRouterKey>,
     /// The user's own NVIDIA key, for models on NVIDIA NIM.
@@ -106,9 +110,13 @@ pub struct Config {
     pub grok_signed_in: bool,
     /// The user's own xAI key, for Grok Build without a sign-in.
     pub grok_key: Option<String>,
+    /// The user has signed in to Nous Portal here. The tokens are in their own file: see `hermes.rs`.
+    pub hermes_signed_in: bool,
+    /// The user's own Nous Portal key, used when not signed in.
+    pub hermes_key: Option<String>,
     /// The additional providers the user has linked, in the order they linked them.
     pub additional: Vec<LinkedProvider>,
-    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok" or an additional provider's id. The model is that provider's id for it.
+    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok", "hermes" or an additional provider's id. The model is that provider's id for it.
     pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
     pub username: Option<String>,
@@ -132,6 +140,8 @@ pub struct Config {
     pub notify_toast: Option<bool>,
     /// Desktop app only: download new versions in the background, ready for the next restart.
     pub auto_update: bool,
+    /// Desktop app only: the version that last ran here, to tell when the app has been updated.
+    pub last_version: Option<String>,
 }
 
 /// One of the user's OpenRouter keys, under the name they gave it.
@@ -203,6 +213,7 @@ pub fn load_config() -> Config {
         .unwrap_or_default();
     let mut cfg = Config {
         api_key: s.get("apiKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        guest: s.get("desktopGuest").and_then(Value::as_bool).unwrap_or(false),
         openrouter_keys: saved_openrouter_keys(&s),
         nvidia_key: s.get("nvidiaKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         kilo_enabled: s.get("kiloEnabled").and_then(Value::as_bool).unwrap_or(false),
@@ -215,6 +226,8 @@ pub fn load_config() -> Config {
         opencode_signed_in: s.get("opencodeSignedIn").and_then(Value::as_bool).unwrap_or(false),
         grok_signed_in: s.get("grokSignedIn").and_then(Value::as_bool).unwrap_or(false),
         grok_key: s.get("grokKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        hermes_signed_in: crate::hermes::signed_in(),
+        hermes_key: s.get("hermesKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         additional: s
             .get("additionalProviders")
             .and_then(|v| serde_json::from_value::<Vec<LinkedProvider>>(v.clone()).ok())
@@ -239,6 +252,7 @@ pub fn load_config() -> Config {
         notify_flash: s.get("desktopFlash").and_then(Value::as_bool),
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
+        last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
@@ -281,9 +295,18 @@ impl Config {
         self.grok_signed_in || self.grok_key.is_some()
     }
 
+    pub fn hermes_on(&self) -> bool {
+        self.hermes_signed_in || self.hermes_key.is_some()
+    }
+
     /// Whether Kilo is the only provider there's a way to use.
     pub fn only_kilo(&self) -> bool {
-        self.kilo_on() && self.api_key.is_none() && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.opencode_enabled && !self.grok_on() && self.additional.is_empty()
+        self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty()
+    }
+
+    /// Whether requests to ScoutCode go without an account.
+    pub fn is_guest(&self) -> bool {
+        self.guest && self.api_key.is_none()
     }
 
     /// The additional provider `id`, if the user has linked it.
@@ -295,6 +318,7 @@ impl Config {
     /// or NVIDIA NIM, Kilo or an additional provider with its key.
     pub fn for_provider(&self, provider: &str) -> Config {
         let mut c = self.clone();
+        c.guest = self.guest && provider == "scoutcode";
         if provider == "openrouter" {
             c.base_url = OPENROUTER_URL.to_string();
             c.api_key = self.openrouter_keys.first().map(|k| k.key.clone());
@@ -304,6 +328,10 @@ impl Config {
         } else if provider == "kilo" {
             c.base_url = kilo_url();
             c.api_key = self.kilo_key.clone();
+        } else if provider == "hermes" {
+            // A sign-in's token goes in just before each request: see `hermes::bearer`.
+            c.base_url = HERMES_URL.to_string();
+            c.api_key = self.hermes_key.clone();
         } else if let Some(a) = additional_provider(provider) {
             c.base_url = a.url.to_string();
             c.api_key = self.linked(a.id).and_then(|l| l.key.clone());
@@ -314,6 +342,7 @@ impl Config {
     /// The same settings pointed at OpenRouter with one of the user's keys.
     pub fn for_openrouter_key(&self, key: &str) -> Config {
         let mut c = self.clone();
+        c.guest = false;
         c.base_url = OPENROUTER_URL.to_string();
         c.api_key = Some(key.to_string());
         c
@@ -322,6 +351,7 @@ impl Config {
     /// Copies the keys from `other`, leaving the rest (such as the allow list, which the agent saves) alone.
     pub fn take_keys(&mut self, other: &Config) {
         self.api_key = other.api_key.clone();
+        self.guest = other.guest;
         self.openrouter_keys = other.openrouter_keys.clone();
         self.nvidia_key = other.nvidia_key.clone();
         self.kilo_enabled = other.kilo_enabled;
@@ -334,6 +364,8 @@ impl Config {
         self.opencode_signed_in = other.opencode_signed_in;
         self.grok_signed_in = other.grok_signed_in;
         self.grok_key = other.grok_key.clone();
+        self.hermes_signed_in = other.hermes_signed_in;
+        self.hermes_key = other.hermes_key.clone();
         self.additional = other.additional.clone();
     }
 }

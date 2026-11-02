@@ -9,6 +9,8 @@ export const KIRO_NOTE = "Uses your own Kiro account and plan, from this PC, so 
 export const OPENCODE_WARNING = "Some of OpenCode's free models may keep your prompts or use them to improve the model, so don't send them anything private.";
 export const OPENCODE_NOTE = `Its free models need no account, and signing in to your OpenCode account adds the paid ones, billed by OpenCode. ${OPENCODE_WARNING} OpenCode runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It downloads about 80 MB, and keeps its sign-in and settings apart from any other OpenCode on this PC.`;
 export const GROK_NOTE = "Uses your own Grok sign-in, or an xAI API key billed per token, from this PC, so your chats go to xAI. Don't share an account. Grok Build runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It doesn't read a project's AGENTS.md or other Grok settings, and won't run in your home folder. It downloads about 50 MB, and keeps its sign-in and settings apart from any other Grok on this PC.";
+export const HERMES_WARNING = "Nous may use what you send to train its models unless Privacy Mode is on for your Portal account, so don't send anything private.";
+export const HERMES_NOTE = `Uses your own Nous Portal account or key, from this PC, so your chats go to Nous and its model providers. Models marked Free cost nothing, and the rest use your Portal credit. ${HERMES_WARNING} Scout's own tools, permissions and undo all apply, and nothing is installed.`;
 export const DEVIN_NOTE = "Uses your own Devin account and plan, from this PC, so your chats go to Cognition and its model providers. Don't share an account. Scout's permissions and undo cover Devin's edits and commands; its searches run inside Devin. Signing in downloads about 75 MB and shares the sign-in with any other Devin CLI on this PC.";
 
 /** A password field and a button under it. */
@@ -28,13 +30,26 @@ export function KeyField({ hint, button, onSave }: { hint: string; button: strin
   );
 }
 
-export function BrowserEntry() {
+/** `compact` is for an optional sign-in, when the provider already works without one. */
+export function BrowserEntry({ compact = false }: { compact?: boolean }) {
   const login = useView('login');
   return (
     <div className="stack">
-      <button type="button" className="button primary wide tall" disabled={login.busy} onClick={() => act('browserLogin')}>Sign in with your browser</button>
+      <button type="button" className={compact ? 'button compact' : 'button primary wide tall'} disabled={login.busy} onClick={() => act('browserLogin')}>Sign in with your browser</button>
       {login.busy && <div className="row"><Spinner /><span className="muted small">Waiting for the browser…</span></div>}
       {login.busy && login.url && <Link href={login.url} className="small">Open the sign-in page again</Link>}
+    </div>
+  );
+}
+
+export const GUEST_NOTE = 'Free models only, with far fewer requests a day than signing in.';
+
+/** Using ScoutCode's free models without an account. */
+export function GuestEntry() {
+  return (
+    <div className="stack">
+      <button type="button" className="button wide" onClick={() => act('setGuest', { on: true })}>Continue without an account</button>
+      <div className="tiny dim">{GUEST_NOTE}</div>
     </div>
   );
 }
@@ -93,16 +108,39 @@ export function GrokKeyEntry() {
   );
 }
 
+/** Signing in to Nous Portal, or an API key instead. */
+export function HermesEntry() {
+  const login = useView('login');
+  if (login.hermes) return <SignInEntry which="hermes" />;
+  return (
+    <div className="stack">
+      <SignInEntry which="hermes" />
+      <HermesKeyEntry />
+    </div>
+  );
+}
+
+export function HermesKeyEntry() {
+  return (
+    <div className="stack">
+      <div className="small dim">Or use an API key:</div>
+      <Link href="https://portal.nousresearch.com" className="small">Make a key on Nous Portal</Link>
+      <KeyField hint="sk-…" button="Save Nous Portal key" onSave={(key) => act('saveHermesKey', { key })} />
+    </div>
+  );
+}
+
 const SIGN_INS = {
   copilot: { name: 'Copilot', button: 'Sign in with GitHub' },
   devin: { name: 'Devin', button: 'Sign in to Devin' },
   kiro: { name: 'Kiro', button: 'Sign in to Kiro' },
   opencode: { name: 'OpenCode', button: 'Sign in to OpenCode' },
   grok: { name: 'Grok Build', button: 'Sign in to Grok' },
+  hermes: { name: 'Hermes', button: 'Sign in with Nous Portal' },
 };
 
 /** The sign-in button, or the code and the download's progress while it's going on. */
-export function SignInEntry({ which }: { which: 'copilot' | 'devin' | 'kiro' | 'opencode' | 'grok' }) {
+export function SignInEntry({ which, compact = false }: { which: 'copilot' | 'devin' | 'kiro' | 'opencode' | 'grok' | 'hermes'; compact?: boolean }) {
   const login = useView('login');
   const s = login[which];
   const error = login[`${which}Error`];
@@ -110,12 +148,13 @@ export function SignInEntry({ which }: { which: 'copilot' | 'devin' | 'kiro' | '
   if (!s) {
     return (
       <div className="stack">
-        <button type="button" className="button wide" onClick={() => act('signIn', { which })}>{button}</button>
+        <button type="button" className={compact ? 'button compact' : 'button wide'} onClick={() => act('signIn', { which })}>{button}</button>
         {error && <div className="red small">{error}</div>}
       </div>
     );
   }
-  const line = (which === 'opencode' || which === 'grok') && s.code ? 'Waiting for you to approve the code.'
+  const line = (which === 'opencode' || which === 'grok' || which === 'hermes') && s.code ? 'Waiting for you to approve the code.'
+    : which === 'hermes' ? 'Contacting Nous Portal…'
     : s.installed ? `${name} is installed.`
     : s.waiting ? 'Finish signing in with the browser window that opened.'
     : s.total > 0 ? `Installing ${name}… ${Math.floor((s.done * 100) / s.total)}%`
@@ -125,7 +164,7 @@ export function SignInEntry({ which }: { which: 'copilot' | 'devin' | 'kiro' | '
       {s.code ? (
         <>
           <div className="sign-in-code">{s.code}</div>
-          <div className="small dim">Enter this code on {which === 'opencode' ? 'OpenCode' : which === 'grok' ? 'xAI' : 'GitHub'} to sign in. Your browser should have opened the page.</div>
+          <div className="small dim">Enter this code on {which === 'opencode' ? 'OpenCode' : which === 'grok' ? 'xAI' : which === 'hermes' ? 'Nous Portal' : 'GitHub'} to sign in. Your browser should have opened the page.</div>
           {s.url && <Link href={s.url} className="small">Open the page again</Link>}
         </>
       ) : <Spinner />}

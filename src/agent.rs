@@ -90,18 +90,26 @@ pub enum Ev {
     OpencodeModelsError(Option<String>),
     /// How setting up Grok Build or signing in to it is going.
     Grok(crate::grok::Update),
+    /// How signing in to Nous Portal is going.
+    Hermes(crate::hermes::Update),
+    /// Why Nous Portal's models couldn't be listed, from the last time the lists were loaded.
+    HermesModelsError(Option<String>),
     /// Why Grok Build's models couldn't be listed, from the last time the lists were loaded.
     GrokModelsError(Option<String>),
     Finished(Box<Agent>, Result<(), String>),
     Models(Result<Vec<ModelInfo>, String>),
     /// How Settings' test of the Kilo connection went.
     KiloCheck(Result<String, String>),
+    /// What changed in the releases since the version that ran before this one.
+    WhatsNew(Vec<crate::update::ReleaseNote>),
     /// Why linked additional providers didn't list their models, from the last time the lists were loaded.
     AdditionalErrors(Vec<String>),
     /// The account the key belongs to, from the model list.
     User(String),
     /// The account's limits for Settings > Usage, and what to say when it follows a change.
     Usage(Result<crate::api::UsageInfo, String>, Option<String>),
+    /// The account's limits, from the 30-second refresh.
+    UsagePolled(Result<crate::api::UsageInfo, String>),
     LoginUrl(String),
     /// The token and, when the server sent it, the username.
     Login(Result<(String, Option<String>), String>),
@@ -136,7 +144,7 @@ pub struct Shared {
     pub mode: Mutex<String>,
     /// The id to send to `provider`.
     pub model: Mutex<String>,
-    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok" or an additional provider's id.
+    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok", "hermes" or an additional provider's id.
     pub provider: Mutex<String>,
     pub effort: Mutex<String>,
     pub cancel: AtomicBool,
@@ -524,7 +532,9 @@ impl Agent {
                     Delta::Reasoning(t) => h.send(Ev::Reasoning(t.to_string())),
                 }
             };
-            match api::stream_chat(&cfgs[key], req, &mut on, &self.shared.cancel) {
+            // A sign-in's token can run out between attempts, so each one asks.
+            let signed = if provider == "hermes" { crate::hermes::bearer(self.cfg.hermes_key.as_deref()).map(|t| cfgs[key].api_key = Some(t)) } else { Ok(()) };
+            match signed.and_then(|()| api::stream_chat(&cfgs[key], req, &mut on, &self.shared.cancel)) {
                 Ok(r) => {
                     self.add_usage(&r, !quiet, h);
                     if !quiet {
@@ -541,7 +551,14 @@ impl Agent {
                         key += 1;
                         continue;
                     }
+                    if provider == "hermes" && e.status == 402 {
+                        return Err(ApiError { message: crate::hermes::NO_CREDIT.into(), ..e });
+                    }
                     if !e.retryable() || attempt >= 4 {
+                        return Err(e);
+                    }
+                    // ScoutCode's free requests for the day are used up, so waiting a minute won't help.
+                    if provider == "scoutcode" && e.status == 429 && e.retry_after.is_some_and(|s| s > 60) {
                         return Err(e);
                     }
                     // Kilo's limit is per hour, so a retry seconds later fails too and burns what's left. Only its own short wait gets one.
@@ -765,6 +782,9 @@ impl Agent {
         if tools::is_mcp(name) {
             return crate::mcp_client::hub().call(name, args, &self.shared.cancel);
         }
+        if name == "web_search" {
+            return tools::web_search(&self.cfg, args).unwrap_or_else(|e| ToolResult::err(e.clone(), e.chars().take(100).collect::<String>()));
+        }
         let cwd = self.session.cwd.clone();
         let mut progress = |t: &str| h.send(Ev::ToolProgress { id: id.to_string(), text: t.to_string() });
         let mut ctx = Ctx { cwd: &cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut progress };
@@ -788,7 +808,7 @@ impl Agent {
         // A browser sign-in may only use the approved models, which the sub-agent model may not be, and OpenRouter and
         // NIM have none of ours; use the session's model for those.
         let on_scout = *self.shared.provider.lock().unwrap() == "scoutcode";
-        let model = (on_scout && !config::is_sign_in(self.cfg.api_key.as_deref()) && !self.cfg.subagent_model.is_empty()).then(|| self.cfg.subagent_model.clone());
+        let model = (on_scout && self.cfg.api_key.is_some() && !config::is_sign_in(self.cfg.api_key.as_deref()) && !self.cfg.subagent_model.is_empty()).then(|| self.cfg.subagent_model.clone());
         let cwd = self.session.cwd.clone();
         for _ in 0..60 {
             let r = self.request(&messages, true, true, model.clone(), false, h)?;
@@ -813,6 +833,9 @@ impl Agent {
             return format!("Error: Unknown tool {n}.");
         }
         h.send(Ev::Status(format!("task: {description} · {n} {}", tools::label(n, &args)).chars().take(140).collect()));
+        if n == "web_search" {
+            return tools::web_search(&self.cfg, &args).map_or_else(|e| format!("Error: {e}"), |r| r.output);
+        }
         let mut noop = |_: &str| {};
         let mut ctx = Ctx { cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
         match tools::run(n, &args, &mut ctx) {

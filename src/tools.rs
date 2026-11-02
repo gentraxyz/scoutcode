@@ -64,7 +64,7 @@ const MAX_LINE: usize = 2000;
 const VIEW_LINES: usize = 1000;
 const MAX_OUTPUT: usize = 30_000;
 
-pub const READ_ONLY: [&str; 5] = ["view", "list_dir", "glob", "grep", "web_fetch"];
+pub const READ_ONLY: [&str; 6] = ["view", "list_dir", "glob", "grep", "web_fetch", "web_search"];
 
 /// What the names of tools from the user's MCP servers start with (see mcp_client.rs).
 pub const MCP_PREFIX: &str = "mcp__";
@@ -115,9 +115,11 @@ pub fn specs(only: Option<&[&str]>, edit: EditTool) -> Vec<Value> {
         ("kill_shell", "Stop a background shell.", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
         ("web_fetch", "Fetch a URL (http/https) and return its text. HTML is converted to plain text. Use for docs, issues and API references.",
             json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})),
+        ("web_search", "Search the web. Returns titles, URLs, dates and the sentences that best match the query; read a page with web_fetch. Use it for current information, docs you don't have a URL for, and error messages.",
+            json!({"type":"object","properties":{"query":{"type":"string","description":"What to search for, in plain words"},"num_results":{"type":"integer","description":"1-10, default 5"},"include_domains":{"type":"array","items":{"type":"string"},"description":"Only these sites, e.g. [\"docs.rs\"]"},"exclude_domains":{"type":"array","items":{"type":"string"}},"start_published_date":{"type":"string","description":"Only pages published after this ISO date"},"category":{"type":"string","enum":["news","research paper","github","pdf","company","personal site"]}},"required":["query"]})),
         ("todo_write", "Keep a todo list for multi-step work. Send the whole list each time. Exactly one item should be in_progress while working. Use it for tasks with 3+ steps; skip it for simple ones.",
             json!({"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"]}}},"required":["todos"]})),
-        ("task", "Hand a self-contained research task to a sub-agent with read-only tools (read, list, glob, grep, web_fetch). It returns one final report. Use it for broad searches across many files so your own context stays small. Give it a complete prompt: it cannot see this conversation.",
+        ("task", "Hand a self-contained research task to a sub-agent with read-only tools (read, list, glob, grep, web_fetch, web_search). It returns one final report. Use it for broad searches across many files so your own context stays small. Give it a complete prompt: it cannot see this conversation.",
             json!({"type":"object","properties":{"description":{"type":"string","description":"3-5 words"},"prompt":{"type":"string","description":"The full task and what to report back"}},"required":["description","prompt"]})),
         ("present_plan", "Plan mode only: show the user your implementation plan (Markdown, concrete steps and files) and ask them to approve it. If they approve, you can start making changes.",
             json!({"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"]})),
@@ -164,7 +166,7 @@ pub fn canonical(name: &str, args: Value) -> (String, Value) {
 }
 
 pub fn known(name: &str) -> bool {
-    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory")
+    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "web_search" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory")
 }
 
 pub fn permission(name: &str) -> Permission {
@@ -210,6 +212,7 @@ pub fn label(name: &str, a: &Value) -> String {
         "bash" => s(a, "command").into(),
         "shell_output" | "kill_shell" => s(a, "id").into(),
         "web_fetch" => s(a, "url").into(),
+        "web_search" => s(a, "query").into(),
         "todo_write" => format!("{} items", a.get("todos").and_then(Value::as_array).map_or(0, Vec::len)),
         "task" => s(a, "description").into(),
         "present_plan" => "plan".into(),
@@ -230,7 +233,7 @@ pub fn label(name: &str, a: &Value) -> String {
     }
 }
 
-/// Runs a file, shell or web tool. todo_write, task, present_plan and ask_questions belong to the agent.
+/// Runs a file, shell or web tool. todo_write, task, present_plan, ask_questions and web_search belong to the agent.
 pub fn run(name: &str, a: &Value, ctx: &mut Ctx) -> R {
     match name {
         "view" => view(a, ctx),
@@ -1111,6 +1114,42 @@ fn web_fetch(a: &Value, _ctx: &mut Ctx) -> R {
     }
     let kb = text.len() / 1024;
     Ok(ToolResult { output: format!("[{status} {url}]\n\n{text}"), is_error: status >= 400, summary: Some(format!("{status}, {kb} KB")), display: None })
+}
+
+/// Searches the web through ScoutCode's /search, which needs the ScoutCode settings, so the agent runs it rather than
+/// `run`. Only the result list comes from the server; reading a page is web_fetch's job, on this computer.
+pub fn web_search(cfg: &crate::config::Config, a: &Value) -> R {
+    let query = s(a, "query").trim();
+    if query.is_empty() {
+        return Err("query is required.".into());
+    }
+    let mut body = json!({"query": query, "num_results": a.get("num_results").and_then(Value::as_u64).unwrap_or(5).clamp(1, 10), "highlights": true});
+    for k in ["include_domains", "exclude_domains", "start_published_date", "category"] {
+        if let Some(v) = a.get(k).filter(|v| !v.is_null()) {
+            body[k] = v.clone();
+        }
+    }
+    let res = crate::api::search(cfg, &body).map_err(|e| match e.status {
+        404 => format!("Web search isn't available: the ScoutCode server at {} doesn't have it yet.", cfg.base_url),
+        _ => format!("Search failed: {e}"),
+    })?;
+    let results = res.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
+    if results.is_empty() {
+        return Ok(ToolResult::ok(format!("No results for \"{query}\"."), "no results"));
+    }
+    let mut out = format!("Results for \"{query}\". Use web_fetch to read a page.\n");
+    for (i, r) in results.iter().enumerate() {
+        let title = r.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("(no title)");
+        out += &format!("\n{}. {title}\n   {}\n", i + 1, s(r, "url"));
+        if let Some(d) = r.get("published_date").and_then(Value::as_str) {
+            out += &format!("   Published {}\n", d.get(..10).unwrap_or(d));
+        }
+        for h in r.get("highlights").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            out += &format!("   > {}\n", h.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+    }
+    let n = results.len();
+    Ok(ToolResult::ok(out, format!("{n} result{}", if n == 1 { "" } else { "s" })))
 }
 
 #[cfg(test)]

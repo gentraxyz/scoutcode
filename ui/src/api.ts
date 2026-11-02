@@ -20,7 +20,7 @@ export type Item =
 export type Model = {
   id: string; label: string; description: string | null; context: number | null; tools: boolean | null; vision: boolean | null; cost: string | null;
   providers: string[]; routesTo: string[]; available: boolean | null; openrouterId: string | null; nvidiaId: string | null; opencodeId: string | null; kiloId: string | null; kiloFree: boolean;
-  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; grokId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
+  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; grokId: string | null; hermesId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
   tier: number | null; openrouterTier: number | null;
 };
 
@@ -36,20 +36,25 @@ export type UsageInfo = {
   username: string; admin: boolean; resetsAt: string; money: Plan | null; cli: Plan | null; balance: number;
   bankedMoney: { amount: number; expiresAt: string }[]; bankedResets: { expiresAt: string }[]; users: ManagedUser[];
 };
+/** A file a linked chatbot changed, with the lines added and removed. */
+export type LinkEdit = { path: string; added: number; removed: number; created: boolean };
+/** One tool call a linked chatbot made, finished at `at` (ms since 1970). */
+export type LinkCall = { tool: string; label: string; ok: boolean; at: number; edits: LinkEdit[] };
+
 export type McpServer = {
   name: string; summary: string; disabled: boolean; state: 'off' | 'connecting' | 'ready' | 'failed'; error: string | null; tools: string[];
   form: { remote: boolean; command: string; args: string; env: string; url: string; headers: string };
 };
 export type UpdateStatus =
   | { state: 'idle' | 'checking' | 'upToDate' }
-  | { state: 'available' | 'ready'; version: string; notes: string }
+  | { state: 'available' | 'ready'; version: string; summary: string; changelog: string }
   | { state: 'downloading'; version: string; got: number; total: number }
   | { state: 'failed'; error: string };
 
 export type View = {
   cfg: {
-    loginNeeded: boolean; hasKey: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
-    nvidiaKey: string | null; kiloKey: string | null; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null;
+    loginNeeded: boolean; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
+    nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
     additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; autoUpdate: boolean; autoCompactTokens: number;
   };
   mode: string;
@@ -61,6 +66,7 @@ export type View = {
   kiroModelsError: string | null;
   opencodeModelsError: string | null;
   grokModelsError: string | null;
+  hermesModelsError: string | null;
   run: { running: boolean; stopping: boolean; status: string; anyRunning: boolean };
   todos: Todo[];
   totals: { totals: { promptTokens: number; completionTokens: number; cost: number; requests: number; balance?: number; cachedTokens: number }; context: number };
@@ -76,13 +82,18 @@ export type View = {
   focusEpoch: number;
   login: {
     busy: boolean; url: string | null; error: string | null; kiloCheck: { ok: boolean; message: string } | null;
-    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null; opencode: SignIn | null; opencodeError: string | null; grok: SignIn | null; grokError: string | null;
+    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null; opencode: SignIn | null; opencodeError: string | null; grok: SignIn | null; grokError: string | null; hermes: SignIn | null; hermesError: string | null;
   };
   skills: { name: string; about: string; source: string | null; dir: string }[];
-  link: { on: boolean; cwd: string; status: string; log: string[]; permission: Permission | null };
+  link: {
+    on: boolean; online: boolean; cwd: string; status: string; mode: string | null; since: number | null; running: string | null;
+    log: LinkCall[]; edits: LinkEdit[]; chatbots: { name: string; seen: number | null }[]; permission: Permission | null;
+  };
   usage: { info: UsageInfo | null; busy: boolean; message: [boolean, string] | null };
   voice: { state: 'idle' } | { state: 'recording'; level: number } | { state: 'busy'; label: string };
   updater: { enabled: boolean; version: string; status: UpdateStatus };
+  /** The releases since the version that ran before this one, newest first. Empty unless the app was just updated. */
+  whatsNew: { version: string; summary: string; changelog: string }[];
   mcp: { error: string | null; servers: McpServer[] };
 };
 
@@ -91,7 +102,7 @@ export type Statics = {
   efforts: string[];
   additionalProviders: { id: string; name: string; needsKey: boolean; note: string; keyUrl: string; keyLink: string; keyHint: string }[];
   kiloWarning: string;
-  plans: { copilot: string; devin: string; kiro: string; opencode: string; grok: string };
+  plans: { copilot: string; devin: string; kiro: string; opencode: string; grok: string; hermes: string };
   languages: [string, string][];
   exe: string;
 };

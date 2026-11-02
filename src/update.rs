@@ -25,7 +25,7 @@ const MANIFEST_URL: &str = "https://scoutcode.dev/download/latest.json";
 /// The public half of the release signing key.
 const PUBLIC_KEY: &str = "FkAxNq1jjgh/jX3njTG6VaAYarAfh9vnOhemGeXcZ7I=";
 const FIRST_CHECK_AFTER: Duration = Duration::from_secs(5);
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const CHECK_EVERY: Duration = Duration::from_secs(30);
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -34,8 +34,13 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Deserialize, Clone)]
 struct Manifest {
     version: String,
+    /// The summary and changelog together, from releases before they were separate.
     #[serde(default)]
     notes: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    changelog: String,
     platforms: HashMap<String, Build>,
 }
 
@@ -50,8 +55,19 @@ struct Build {
 #[derive(Clone)]
 struct Release {
     version: String,
-    notes: String,
+    summary: String,
+    changelog: String,
     build: Build,
+}
+
+/// One release's notes, from releases.json.
+#[derive(Deserialize, serde::Serialize, Clone, Debug)]
+pub struct ReleaseNote {
+    pub version: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub changelog: String,
 }
 
 #[derive(Clone, PartialEq)]
@@ -60,10 +76,10 @@ pub enum Status {
     Checking,
     UpToDate,
     /// Newer than this build, and waiting for the user because automatic downloads are off.
-    Available { version: String, notes: String },
+    Available { version: String, summary: String, changelog: String },
     Downloading { version: String, got: u64, total: u64 },
     /// Downloaded and verified: it takes over at the next restart.
-    Ready { version: String, notes: String },
+    Ready { version: String, summary: String, changelog: String },
     Failed(String),
 }
 
@@ -98,7 +114,7 @@ fn pending_path(exe: &Path, version: &str) -> PathBuf {
     exe.with_file_name(format!("update-{version}.exe"))
 }
 
-fn is_newer(candidate: &str, current: &str) -> bool {
+pub fn is_newer(candidate: &str, current: &str) -> bool {
     fn parts(v: &str) -> Option<[u64; 3]> {
         let mut it = v.split('.').map(|p| p.parse::<u64>().ok());
         let parsed = [it.next()??, it.next()??, it.next()??];
@@ -235,8 +251,12 @@ impl Worker {
         let mut wait = FIRST_CHECK_AFTER;
         loop {
             match rx.recv_timeout(wait) {
-                Ok(Command::Check) | Err(RecvTimeoutError::Timeout) => {
-                    self.check();
+                Ok(Command::Check) => {
+                    self.check(false);
+                    wait = CHECK_EVERY;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.check(true);
                     wait = CHECK_EVERY;
                 }
                 Ok(Command::Download) => {
@@ -254,12 +274,13 @@ impl Worker {
         self.ctx.request_repaint();
     }
 
-    fn check(&mut self) {
+    /// A `quiet` check is the timer's: it doesn't show "Checking", and a failed one leaves the status as it was.
+    fn check(&mut self, quiet: bool) {
         let waiting = match &*self.status.lock().unwrap() {
             Status::Ready { version, .. } => Some(version.clone()),
             _ => None,
         };
-        if waiting.is_none() {
+        if waiting.is_none() && !quiet {
             self.set(Status::Checking);
         }
         match latest() {
@@ -272,11 +293,11 @@ impl Worker {
                 clean_folder(exe_path(), Some(&pending));
                 self.found = Some(release.clone());
                 if sha256_of(&pending).as_deref() == Some(release.build.sha256.as_str()) {
-                    self.set(Status::Ready { version: release.version, notes: release.notes });
+                    self.set(Status::Ready { version: release.version, summary: release.summary, changelog: release.changelog });
                 } else if self.auto.load(Ordering::Relaxed) {
                     self.fetch(&release);
                 } else {
-                    self.set(Status::Available { version: release.version, notes: release.notes });
+                    self.set(Status::Available { version: release.version, summary: release.summary, changelog: release.changelog });
                 }
             }
             Ok(_) => {
@@ -286,14 +307,14 @@ impl Worker {
                 self.set(Status::UpToDate);
             }
             // An update that's ready doesn't stop being ready because the network dropped.
-            Err(_) if waiting.is_some() => {}
+            Err(_) if waiting.is_some() || quiet => {}
             Err(e) => self.set(Status::Failed(e)),
         }
     }
 
     fn fetch(&self, release: &Release) {
         match self.download(release) {
-            Ok(()) => self.set(Status::Ready { version: release.version.clone(), notes: release.notes.clone() }),
+            Ok(()) => self.set(Status::Ready { version: release.version.clone(), summary: release.summary.clone(), changelog: release.changelog.clone() }),
             Err(e) => self.set(Status::Failed(e)),
         }
     }
@@ -360,7 +381,25 @@ fn latest() -> Result<Option<Release>, String> {
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let Some(build) = manifest.platforms.get(&platform).cloned() else { return Ok(None) };
     verify_signature(PUBLIC_KEY, &signed_message(&platform, &manifest.version, &build.sha256), &build.signature)?;
-    Ok(Some(Release { version: manifest.version, notes: manifest.notes, build }))
+    let (summary, changelog) = if manifest.summary.is_empty() && manifest.changelog.is_empty() {
+        (String::new(), manifest.notes)
+    } else {
+        (manifest.summary, manifest.changelog)
+    };
+    Ok(Some(Release { version: manifest.version, summary, changelog, build }))
+}
+
+/// Every release newer than `since`, newest first, for "What's new" after an update.
+pub fn notes_since(since: &str) -> Result<Vec<ReleaseNote>, String> {
+    let manifest = std::env::var("SCOUT_UPDATE_URL").unwrap_or_else(|_| MANIFEST_URL.to_string());
+    let url = format!("{}?since={since}", manifest.replace("latest.json", "releases.json"));
+    let mut res = http().get(&url).config().timeout_global(Some(MANIFEST_TIMEOUT)).build().call().map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("the server answered {}", res.status().as_u16()));
+    }
+    let notes: Vec<ReleaseNote> = res.body_mut().read_json().map_err(|e| e.to_string())?;
+    // A folder release (--out) has no server to filter it.
+    Ok(notes.into_iter().filter(|n| is_newer(&n.version, since) && !is_newer(&n.version, VERSION)).collect())
 }
 
 /// What Settings > Apps shows. Purely cosmetic, so a failure is ignored.

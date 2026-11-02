@@ -230,14 +230,21 @@ pub fn preview(a: &Value, ctx: &Ctx) -> Display {
 }
 
 pub fn run(a: &Value, ctx: &mut Ctx) -> Result<ToolResult, String> {
-    let (scope, file, before, crlf, next) = plan(ctx.cwd, a)?;
+    let (scope, file, _, crlf, next) = plan(ctx.cwd, a)?;
     crate::tools::write_text(&file, &next, crlf)?;
     let shown = crate::tools::rel(ctx.cwd, &file);
+    // The chat shows what was remembered as a short note, not as a file change.
+    let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let (verb, note) = match s("action").as_str() {
+        "remove" => ("Forgot", s("old_text")),
+        "replace" => ("Updated", s("text")),
+        _ => ("Remembered", s("text")),
+    };
     Ok(ToolResult {
         output: format!("Saved {} memory ({shown}): {} of {} tokens used.", scope.name(), tokens(&next), scope.budget()),
         is_error: false,
-        summary: Some(format!("{} memory", scope.name())),
-        display: Some(Display::Diff { path: shown, lines: diff::diff_lines(&before, &next), created: before.is_empty() }),
+        summary: Some(verb.to_string()),
+        display: Some(Display::Text(note.trim_start_matches(['-', '*', ' ']).to_string())),
     })
 }
 
@@ -421,6 +428,7 @@ mod tests {
         assert!(matches!(preview(&call, &ctx), Display::Diff { created: true, .. }));
         let done = run(&call, &mut ctx).unwrap();
         assert!(done.output.starts_with("Saved project memory (.scout/memory.md)"), "{}", done.output);
+        assert!(matches!(&done.display, Some(Display::Text(t)) if t == "cargo test -p scout") && done.summary.as_deref() == Some("Remembered"));
         assert!(is_memory_file(&cwd, &dir.join(".scout").join("memory.md")) && !is_memory_file(&cwd, &dir.join("memory.md")));
         let p = prompt(&cwd);
         assert!(p.contains("<project_memory>\n## Commands\n- cargo test -p scout\n</project_memory>"), "{p}");

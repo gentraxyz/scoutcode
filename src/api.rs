@@ -134,7 +134,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(message: impl Into<String>, status: u16) -> Self {
+    pub fn new(message: impl Into<String>, status: u16) -> Self {
         ApiError { message: message.into(), status, retry_after: None, aborted: false }
     }
     pub fn aborted() -> Self {
@@ -180,6 +180,10 @@ fn is_kilo(cfg: &Config) -> bool {
 /// The key for a request that may go to Kilo. Its free models need no key, and it refuses a made-up one, so without a
 /// key no header goes at all. The same goes for an additional provider with a free tier.
 fn auth<B>(req: ureq::RequestBuilder<B>, cfg: &Config) -> Result<ureq::RequestBuilder<B>, ApiError> {
+    // ScoutCode's free models without an account: no key to send, just the mark that says this is the desktop app.
+    if cfg.is_guest() {
+        return Ok(req.header("x-scoutcode-desktop-guest", "1"));
+    }
     if cfg.api_key.is_none() && crate::config::ADDITIONAL.iter().any(|a| !a.needs_key && a.url == cfg.base_url) {
         return Ok(req);
     }
@@ -204,7 +208,14 @@ fn error_from(mut res: ureq::http::Response<ureq::Body>) -> ApiError {
     let mut message = serde_json::from_str::<Value>(&text)
         .ok()
         .and_then(|b| b.pointer("/error/message").or_else(|| b.get("message")).or_else(|| b.get("error")).or_else(|| b.get("detail")).and_then(Value::as_str).map(String::from))
-        .unwrap_or_else(|| if text.is_empty() { format!("HTTP {status}") } else { text.chars().take(500).collect() });
+        .unwrap_or_else(|| {
+            // An HTML error page (a 404 from the site, a proxy's 502) says no more than its title.
+            if text.trim_start().starts_with('<') {
+                let title = text.split_once("<title>").and_then(|(_, t)| t.split_once("</title>")).map(|(t, _)| t.trim()).filter(|t| !t.is_empty());
+                return title.map_or_else(|| format!("HTTP {status}"), String::from);
+            }
+            if text.is_empty() { format!("HTTP {status}") } else { text.chars().take(500).collect() }
+        });
     if status == 401 {
         message += " (check your sign-in or API key)";
     }
@@ -253,6 +264,8 @@ pub struct ModelInfo {
     pub kiro_id: Option<String>,
     /// The id Grok Build knows it by. Its entries are their own too, under "grok/…", for the same reason.
     pub grok_id: Option<String>,
+    /// The id Nous Portal knows it by. Its entries are their own too, under "hermes/…": its prices and free models are its own.
+    pub hermes_id: Option<String>,
     /// The additional provider that serves it, and the id it knows it by. These entries are their own too, under "ovh/…"
     /// and the like: the same name there can be a different build at a different price.
     pub additional: Option<(&'static str, String)>,
@@ -312,6 +325,7 @@ impl ModelInfo {
             devin_id: None,
             kiro_id: None,
             grok_id: None,
+            hermes_id: None,
             additional: None,
             hosted: false,
             free,
@@ -343,6 +357,9 @@ impl ModelInfo {
             return id;
         }
         if let ("grok", Some(id)) = (provider, &self.grok_id) {
+            return id;
+        }
+        if let ("hermes", Some(id)) = (provider, &self.hermes_id) {
             return id;
         }
         if let Some((_, id)) = self.additional.as_ref().filter(|(p, _)| *p == provider) {
@@ -501,6 +518,27 @@ pub fn list_additional(cfg: &Config, a: &crate::config::AdditionalProvider) -> R
     Ok(additional_models(a, c.api_key.is_some(), &body))
 }
 
+/// The entries of Nous Portal's catalog that can run Scout, with the free ones first.
+fn hermes_models(body: &Value) -> Vec<ModelInfo> {
+    let mut models: Vec<ModelInfo> = body
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(ModelInfo::from_json).filter(|m| m.tools == Some(true)).map(|m| ModelInfo { id: format!("hermes/{}", m.id), hermes_id: Some(m.id.clone()), ..m }).collect())
+        .unwrap_or_default();
+    models.sort_by_key(|m| !m.free);
+    models
+}
+
+/// Nous Portal's catalog. It's public, so reading it says nothing about the sign-in or key.
+pub fn list_hermes() -> Result<Vec<ModelInfo>, ApiError> {
+    let res = http().get(&format!("{}/models", crate::config::HERMES_URL)).call().map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().read_json().map_err(transport)?;
+    Ok(hermes_models(&body))
+}
+
 /// Whether Kilo answers and, with a key, takes it, which costs one request. Without a key that request is left out, to
 /// save the hourly limit. Says how it went either way.
 pub fn check_kilo(cfg: &Config) -> Result<String, String> {
@@ -536,6 +574,25 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert!(out.iter().find(|m| m.id == "nvidia/nemotron").unwrap().kilo_id.is_none(), "the same name isn't the same route");
         assert!(out.iter().find(|m| m.id == "openrouter/free").unwrap().kilo_free, "the same id is one entry");
+    }
+
+    #[test]
+    fn hermes_lists_free_models_first_and_only_those_with_tools() {
+        let entry = |id: &str, price: &str, params: &[&str]| json!({ "id": id, "name": id, "pricing": { "prompt": price, "completion": price }, "supported_parameters": params });
+        let body = json!({ "data": [entry("paid/big", "0.000001", &["tools"]), entry("paid/no-tools", "0.000001", &["temperature"]), entry("free/priced-zero", "0", &["tools"]), entry("step/flash:free", "0", &["tools", "reasoning"]), entry("free/no-tools:free", "0", &[])] });
+        let models = hermes_models(&body);
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["hermes/free/priced-zero", "hermes/step/flash:free", "hermes/paid/big"]);
+        assert!(models[0].free && models[1].free && !models[2].free);
+        assert_eq!(models[1].request_id("hermes"), "step/flash:free");
+    }
+
+    #[test]
+    #[ignore = "reads Nous Portal's public catalog"]
+    fn live_hermes_catalog() {
+        let models = list_hermes().unwrap();
+        let free = models.iter().filter(|m| m.free).count();
+        println!("{} models, {free} free, first: {}", models.len(), models[0].id);
+        assert!(free > 0 && models[0].free);
     }
 
     #[test]
@@ -575,6 +632,23 @@ mod tests {
         cfg.additional.clear();
         assert_eq!(cfg.for_provider("google").api_key, None);
         assert!(auth(http().get("http://localhost"), &cfg.for_provider("google")).is_err(), "Google doesn't");
+    }
+
+    /// Going without an account is only for ScoutCode: the mark must never reach another provider, and a key wins over it.
+    #[test]
+    fn guest_mode_is_only_for_scoutcode() {
+        let mut cfg = crate::config::load_config();
+        cfg.api_key = None;
+        cfg.guest = true;
+        assert!(cfg.is_guest());
+        assert!(cfg.for_provider("scoutcode").is_guest());
+        for provider in ["openrouter", "nvidia", "kilo", "hermes", "ovh", "google", "copilot"] {
+            assert!(!cfg.for_provider(provider).is_guest(), "{provider}");
+        }
+        assert!(!cfg.for_openrouter_key("sk-or").is_guest());
+        assert!(auth(http().get("http://localhost"), &cfg).is_ok(), "needs no key");
+        cfg.api_key = Some("scout-key".into());
+        assert!(!cfg.is_guest());
     }
 
     #[test]
@@ -735,11 +809,7 @@ pub fn usage_action(cfg: &Config, body: &Value) -> Result<UsageInfo, ApiError> {
 
 /// The models the key can use, and the username it belongs to when the server says.
 pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), ApiError> {
-    let res = http()
-        .get(&format!("{}/models", cfg.base_url))
-        .header("Authorization", &format!("Bearer {}", key(cfg)?))
-        .call()
-        .map_err(transport)?;
+    let res = auth(http().get(&format!("{}/models", cfg.base_url)), cfg)?.call().map_err(transport)?;
     if !res.status().is_success() {
         return Err(error_from(res));
     }
@@ -800,6 +870,17 @@ pub fn transcribe(cfg: &Config, wav: &[u8]) -> Result<String, ApiError> {
     }
     let body: Value = res.into_body().read_json().map_err(transport)?;
     Ok(body.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string())
+}
+
+/// Web search (Exa, through the server): the results' titles, URLs, dates and best-matching sentences, without the
+/// pages themselves, which web_fetch reads on this computer. `body` is the request as /search takes it.
+pub fn search(cfg: &Config, body: &Value) -> Result<Value, ApiError> {
+    let req = http().post(&format!("{}/search", cfg.base_url)).config().timeout_global(Some(Duration::from_secs(60))).build();
+    let res = auth(req, cfg)?.send_json(body).map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    res.into_body().read_json().map_err(transport)
 }
 
 pub struct ChatRequest<'a> {

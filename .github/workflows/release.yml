@@ -30,8 +30,6 @@ jobs:
           cache: npm
       - run: npm ci
       - id: check
-        env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
         run: npm run release -- check
 
   release:
@@ -50,12 +48,17 @@ jobs:
       - uses: ./.github/actions/setup
       - run: npm ci
 
+      # Before the long build, so missing setup fails in seconds. See docs/releasing.md.
       - name: Write the signing key
         shell: pwsh
         env:
           KEY: ${{ secrets.SCOUT_RELEASE_KEY_PEM }}
+          HAS_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
         run: |
           if (-not $env:KEY) { throw 'The release environment has no SCOUT_RELEASE_KEY_PEM secret.' }
+          if ($env:HAS_SERVICE_KEY -ne 'true') { throw 'The release environment has no SUPABASE_SERVICE_ROLE_KEY secret.' }
+          if (-not $env:SUPABASE_URL) { throw 'The repo has no SUPABASE_URL variable.' }
           $file = Join-Path $env:RUNNER_TEMP 'desktop-release-key.pem'
           [IO.File]::WriteAllText($file, $env:KEY)
           "SCOUT_RELEASE_KEY=$file" | Out-File $env:GITHUB_ENV -Append -Encoding utf8

@@ -214,7 +214,7 @@ function withRelease(history: DesktopReleaseNote[], version: string, notes: Note
 async function publish(version: string, notes: Notes, builds: Built[], key: crypto.KeyObject) {
   loadEnv();
   const { SUPABASE_URL: url, SUPABASE_SERVICE_ROLE_KEY: secret } = process.env;
-  if (!url || !secret) fail('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (the environment, or .env here).');
+  if (!url || !secret) fail('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (the environment, .env here, or the release environment on GitHub).');
   const db = createClient(url, secret, { auth: { persistSession: false, autoRefreshToken: false } });
 
   const { data: bucket } = await db.storage.getBucket(RELEASE_BUCKET);
@@ -279,17 +279,17 @@ function notesFrom(file: string, version: string): Notes {
 }
 
 /**
- * Whether Cargo.toml's version is newer than the live release, for CI to decide whether to build. Prints it, and adds
- * `version=` and `publish=` to $GITHUB_OUTPUT when that's set.
+ * Whether Cargo.toml's version is newer than the live release, for CI to decide whether to build. It reads the manifest
+ * installed apps read (SCOUT_UPDATE_URL overrides it, as in the app), so it needs no keys; publishing checks the bucket
+ * itself again. Prints the answer, and adds `version=` and `publish=` to $GITHUB_OUTPUT when that's set.
  */
 async function check() {
-  loadEnv();
   const version = cargoVersion();
   parts(version);
-  const base = process.env.SUPABASE_URL ?? fail('SUPABASE_URL must be set (the environment, or .env here).');
-  const res = await fetch(`${base}/storage/v1/object/public/${RELEASE_BUCKET}/${MANIFEST_PATH}?t=${Date.now()}`);
-  // Storage answers 400 or 404 before the first release. Anything else means we can't tell, so don't guess.
-  if (!res.ok && res.status !== 400 && res.status !== 404) fail(`could not read ${MANIFEST_PATH}: HTTP ${res.status}`);
+  const manifest = process.env.SCOUT_UPDATE_URL || 'https://scoutcode.dev/download/latest.json';
+  const res = await fetch(manifest, { cache: 'no-store' });
+  // The site answers 404 before the first release. Anything else means we can't tell, so don't guess.
+  if (!res.ok && res.status !== 404) fail(`could not read ${manifest}: HTTP ${res.status}`);
   const live = res.ok ? ((await res.json()) as DesktopRelease).version : null;
   const publish = !live || isNewer(version, live);
   console.log(publish ? `${version} is newer than ${live ?? 'nothing'}: publish it.` : `${version} is already out (live: ${live}). Nothing to publish.`);

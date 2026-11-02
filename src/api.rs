@@ -1,6 +1,7 @@
 use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -422,6 +423,88 @@ pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>, nvidia: V
     out
 }
 
+// ---------- the saved lists ----------
+
+impl ModelInfo {
+    fn to_cache(&self) -> Value {
+        json!({
+            "id": self.id, "name": self.name, "description": self.description, "context": self.context, "tools": self.tools, "vision": self.vision,
+            "cost": self.cost, "providers": self.providers, "routesTo": self.routes_to, "available": self.available,
+            "editTool": if self.edit_tool == crate::tools::EditTool::ApplyPatch { "apply_patch" } else { "str_replace" },
+            "openrouterId": self.openrouter_id, "nvidiaId": self.nvidia_id, "opencodeId": self.opencode_id, "kiloId": self.kilo_id,
+            "kiloFree": self.kilo_free, "kiloTier": self.kilo_tier, "copilotId": self.copilot_id, "devinId": self.devin_id, "kiroId": self.kiro_id,
+            "grokId": self.grok_id, "hermesId": self.hermes_id, "additional": self.additional, "hosted": self.hosted, "free": self.free,
+            "tier": self.tier, "openrouterTier": self.openrouter_tier,
+        })
+    }
+
+    fn from_cache(m: &Value) -> Option<Self> {
+        let s = |k: &str| m.get(k).and_then(Value::as_str).map(String::from);
+        let b = |k: &str| m.get(k).and_then(Value::as_bool);
+        let n = |k: &str| m.get(k).and_then(Value::as_u64);
+        let list = |k: &str| m.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+        // A provider this version doesn't know drops its models.
+        let additional = match m.get("additional") {
+            Some(Value::Array(a)) => {
+                let p = crate::config::additional_provider(a.first()?.as_str()?)?;
+                Some((p.id, a.get(1)?.as_str()?.to_string()))
+            }
+            _ => None,
+        };
+        Some(ModelInfo {
+            id: s("id")?,
+            name: s("name"),
+            description: s("description"),
+            context: n("context"),
+            tools: b("tools"),
+            vision: b("vision"),
+            cost: s("cost"),
+            providers: list("providers"),
+            routes_to: list("routesTo"),
+            available: b("available"),
+            edit_tool: crate::tools::EditTool::parse(m.get("editTool").and_then(Value::as_str).unwrap_or("")),
+            openrouter_id: s("openrouterId"),
+            nvidia_id: s("nvidiaId"),
+            opencode_id: s("opencodeId"),
+            kilo_id: s("kiloId"),
+            kilo_free: b("kiloFree").unwrap_or(false),
+            kilo_tier: n("kiloTier").map(|t| t as u8),
+            copilot_id: s("copilotId"),
+            devin_id: s("devinId"),
+            kiro_id: s("kiroId"),
+            grok_id: s("grokId"),
+            hermes_id: s("hermesId"),
+            additional,
+            hosted: b("hosted").unwrap_or(false),
+            free: b("free").unwrap_or(false),
+            tier: n("tier").map(|t| t as u8),
+            openrouter_tier: n("openrouterTier").map(|t| t as u8),
+        })
+    }
+}
+
+fn model_cache_file() -> std::path::PathBuf {
+    crate::config::home().join("model-lists.json")
+}
+
+/// Each provider's last model list, by the id `Config::provider` gives it, saved so the next start can show them at once.
+pub fn load_model_cache() -> HashMap<String, Vec<ModelInfo>> {
+    let Some(Value::Object(lists)) = std::fs::read_to_string(model_cache_file()).ok().and_then(|t| serde_json::from_str(&t).ok()) else { return HashMap::new() };
+    lists
+        .iter()
+        .filter_map(|(source, list)| Some((source.clone(), list.as_array()?.iter().filter_map(ModelInfo::from_cache).collect())))
+        .collect()
+}
+
+pub fn save_model_cache(lists: &HashMap<String, Vec<ModelInfo>>) {
+    let body: serde_json::Map<String, Value> = lists.iter().map(|(source, list)| (source.clone(), Value::Array(list.iter().map(ModelInfo::to_cache).collect()))).collect();
+    let path = model_cache_file();
+    let temp = path.with_extension("json.tmp");
+    if std::fs::write(&temp, Value::Object(body).to_string()).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
+    }
+}
+
 /// Whether NIM's list entry can chat. The list also has embeddings, safety filters, document parsers and so on, with no
 /// field to tell them apart.
 fn nvidia_chat_model(id: &str) -> bool {
@@ -563,6 +646,29 @@ pub fn check_kilo(cfg: &Config) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_models_come_back_the_same() {
+        let m = ModelInfo {
+            id: "ovh/qwen".into(),
+            name: Some("Qwen".into()),
+            context: Some(128_000),
+            vision: Some(false),
+            edit_tool: crate::tools::EditTool::ApplyPatch,
+            openrouter_id: Some("qwen/qwen".into()),
+            kilo_free: true,
+            kilo_tier: Some(2),
+            additional: Some(("ovh", "Qwen-32B".into())),
+            hosted: true,
+            ..Default::default()
+        };
+        let back = ModelInfo::from_cache(&m.to_cache()).unwrap();
+        assert_eq!(format!("{back:?}"), format!("{m:?}"));
+        // A provider this version doesn't know is dropped with its model.
+        let mut gone = m.to_cache();
+        gone["additional"] = json!(["nowhere", "x"]);
+        assert!(ModelInfo::from_cache(&gone).is_none());
+    }
 
     #[test]
     fn kilo_models_merge_by_id_only() {

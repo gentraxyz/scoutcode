@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type Fallbacks, type McpServer, type ModelRef, type UsageInfo } from './api';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
-import { AdditionalKey, AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
 
@@ -9,9 +9,11 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'instructions', title: 'Instructions', icon: 'chat', keywords: 'instructions project global rules preferences language russian english responses' },
   { id: 'memory', title: 'Memory', icon: 'file', keywords: 'memory remember project user profile facts context' },
   { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
+  { id: 'discord', title: 'Discord', icon: 'chat', keywords: 'discord rich presence profile status privacy share activity' },
   { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
   { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily monthly limits balance banked reset chart history' },
-  { id: 'account', title: 'Account', icon: 'user', keywords: 'account sign in sign out login key username billing' },
+  { id: 'account', title: 'Account', icon: 'user', keywords: 'account scoutcode sign in sign out login key username billing' },
+  { id: 'providers', title: 'Providers', icon: 'user', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro kilo models' },
   { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
@@ -123,6 +125,19 @@ function Notifications() {
       <SettingRow title="Flash the taskbar button" sub="Scout's button blinks until you switch back to it."><Toggle label="Flash the taskbar button" on={flash} onChange={(on) => act('setNotify', { flash: on, toast })} /></SettingRow>
       <SettingRow title="Windows notification" sub="A notification in the corner of the screen says what Scout needs."><Toggle label="Windows notification" on={toast} onChange={(on) => act('setNotify', { flash, toast: on })} /></SettingRow>
       <SettingRow title="Try it" sub="Shows a notification now, whatever is chosen above."><button type="button" className="button" onClick={() => act('testNotification')}>Send a test</button></SettingRow>
+    </>
+  );
+}
+
+function Discord() {
+  const cfg = useView('cfg');
+  const presence = cfg.discordPresence;
+  const project = cfg.discordProject;
+  return (
+    <>
+      <Heading title="Discord" sub="Shows on your Discord profile that you're using Scout. Off unless you turn it on." />
+      <SettingRow title="Show Scout on Discord" sub="Your profile shows \“Using Scout\” while the app is open. Nothing else is sent."><Toggle label="Show Scout on Discord" on={presence} onChange={(on) => act('setDiscord', { presence: on, project: on && project })} /></SettingRow>
+      <SettingRow title="Show the folder's name" sub="Adds \“Working on <folder>\”, using only the folder's name, never its path, chats or files. Needs the setting above."><Toggle label="Show the folder's name" on={project} onChange={(on) => act('setDiscord', { presence, project: on })} /></SettingRow>
     </>
   );
 }
@@ -338,56 +353,13 @@ function Usage() {
 
 // ---------- account ----------
 
-function OpenRouterKeys() {
-  const { openrouterKeys: keys } = useView('cfg');
-  const [name, setName] = useState('');
-  return (
-    <div className="stack">
-      <SectionLabel>OpenRouter</SectionLabel>
-      <p className="small dim">Tried from the top. If one fails, the next one is used. Saved on this PC. Models on OpenRouter bill your OpenRouter account.</p>
-      {keys.map((k, i) => (
-        <SettingRow key={i} title={`${i + 1}. ${k.name}`} sub={k.masked}>
-          {i > 0 && <button type="button" className="button" onClick={() => act('editOpenrouterKey', { at: i, op: 'up' })}>Up</button>}
-          {i + 1 < keys.length && <button type="button" className="button" onClick={() => act('editOpenrouterKey', { at: i, op: 'down' })}>Down</button>}
-          <button type="button" className="button" onClick={() => act('editOpenrouterKey', { at: i, op: 'remove' })}>Remove</button>
-        </SettingRow>
-      ))}
-      <div className="field-420 stack">
-        <input className="input" placeholder="Name, e.g. Work" value={name} onChange={(e) => setName(e.target.value)} />
-        <KeyField hint="sk-or-…" button="Add key" onSave={(key) => { act('addOpenrouterKey', { name: name.trim(), key }); setName(''); }} />
-      </div>
-    </div>
-  );
-}
-
-function OwnAccount({ which, title, note, who, planText, planUrl }: { which: 'copilot' | 'devin' | 'kiro'; title: string; note: string; who: string | null; planText: string; planUrl: string }) {
-  const rowTitle = which === 'copilot' ? 'GitHub account' : `${title} account`;
-  return (
-    <div className="stack">
-      <SectionLabel>{title}</SectionLabel>
-      <p className="small dim">{note}</p>
-      {who ? (
-        <>
-          <SettingRow title={rowTitle} sub={who}>
-            <button type="button" className="button" onClick={() => act('signOutOf', { which, uninstall: false })}>Sign out</button>
-            <button type="button" className="button" onClick={() => act('signOutOf', { which, uninstall: true })}>Sign out and uninstall</button>
-          </SettingRow>
-          <Link href={planUrl} className="small">{planText}</Link>
-        </>
-      ) : <div className="field-420"><SignInEntry which={which} /></div>}
-    </div>
-  );
-}
-
 function Account() {
   const cfg = useView('cfg');
-  const login = useView('login');
-  const { plans, kiloWarning, additionalProviders } = useCore((s) => s.statics);
   const name = cfg.username ?? (cfg.hasKey ? 'Unknown until the model list loads' : 'Not signed in');
   const account = () => openExternal(`${cfg.baseUrl.replace(/\/v1$/, '')}/account`);
   return (
     <>
-      <Heading title="Account" sub="The ScoutCode account this app uses." />
+      <Heading title="Account" sub="The ScoutCode account this app uses. Other providers' accounts and keys are under Providers." />
       {cfg.guest ? (
         <>
           <SettingRow title="Without an account" sub={GUEST_NOTE}><button type="button" className="button" onClick={() => { act('setGuest', { on: false }); ui.set({ settings: null }); }}>Stop</button></SettingRow>
@@ -405,91 +377,206 @@ function Account() {
           <SettingRow title="Sign out" sub="Forgets the login on this PC."><button type="button" className="button" onClick={() => { act('signOut'); ui.set({ settings: null }); }}>Sign out</button></SettingRow>
         </>
       )}
-      <OpenRouterKeys />
-      <div className="stack">
-        <SectionLabel>NVIDIA NIM</SectionLabel>
-        <p className="small dim">Saved on this PC. Models on NVIDIA NIM use your NVIDIA account.</p>
-        {cfg.nvidiaKey
-          ? <SettingRow title="NVIDIA key" sub={cfg.nvidiaKey}><button type="button" className="button" onClick={() => act('saveNvidiaKey', { key: null })}>Remove</button></SettingRow>
-          : <div className="field-420"><NvidiaEntry /></div>}
+    </>
+  );
+}
+
+// ---------- providers ----------
+
+function OpenRouterKeys() {
+  const { openrouterKeys: keys } = useView('cfg');
+  const [name, setName] = useState('');
+  return (
+    <>
+      <p className="small dim">Tried from the top. If one fails, the next one is used. Saved on this PC. Models on OpenRouter bill your OpenRouter account.</p>
+      {keys.map((k, i) => (
+        <SettingRow key={i} title={`${i + 1}. ${k.name}`} sub={k.masked}>
+          {i > 0 && <button type="button" className="button" onClick={() => act('editOpenrouterKey', { at: i, op: 'up' })}>Up</button>}
+          {i + 1 < keys.length && <button type="button" className="button" onClick={() => act('editOpenrouterKey', { at: i, op: 'down' })}>Down</button>}
+          <button type="button" className="button" onClick={() => act('editOpenrouterKey', { at: i, op: 'remove' })}>Unlink</button>
+        </SettingRow>
+      ))}
+      <div className="field-420 stack">
+        <input className="input" placeholder="Name, e.g. Work" value={name} onChange={(e) => setName(e.target.value)} />
+        <KeyField hint="sk-or-…" button={keys.length ? 'Add another key' : 'Link with a key'} onSave={(key) => { act('addOpenrouterKey', { name: name.trim(), key }); setName(''); }} />
       </div>
-      <div className="stack">
-        <SectionLabel>Additional providers</SectionLabel>
-        {cfg.additional.map((l) => {
-          const a = additionalProviders.find((p) => p.id === l.id);
-          if (!a) return null;
-          return (
-            <div key={l.id} className="stack">
-              <SettingRow title={a.name} sub={l.masked ?? 'Free, no key'}><button type="button" className="button" onClick={() => act('unlinkAdditional', { id: l.id })}>Remove</button></SettingRow>
-              {/* Linked without a key, so one is only for higher limits. */}
-              {!l.masked && <div className="field-420"><AdditionalKey id={l.id} /></div>}
+    </>
+  );
+}
+
+type OwnWhich = 'copilot' | 'devin' | 'kiro' | 'codex' | 'claude';
+
+function OwnAccount({ which, title, note, who, planText, planUrl }: { which: OwnWhich; title: string; note: string; who: string | null; planText: string; planUrl: string }) {
+  const rowTitle = which === 'copilot' ? 'GitHub account' : `${title} account`;
+  return (
+    <>
+      <p className="small dim">{note}</p>
+      {who ? (
+        <SettingRow title={rowTitle} sub={who}>
+          <button type="button" className="button" onClick={() => act('signOutOf', { which, uninstall: false })}>Sign out</button>
+          <button type="button" className="button" onClick={() => act('signOutOf', { which, uninstall: true })}>Sign out and uninstall</button>
+        </SettingRow>
+      ) : <div className="field-420"><SignInEntry which={which} /></div>}
+      <Link href={planUrl} className="small">{planText}</Link>
+    </>
+  );
+}
+
+type ProviderEntry = { id: string; name: string; linked: boolean; status: string; body: ReactNode };
+
+function ProviderRow({ p, open, onToggle }: { p: ProviderEntry; open: boolean; onToggle: () => void }) {
+  return (
+    <div className={`provider-row ${open ? 'open' : ''}`}>
+      <button type="button" className="provider-head" aria-expanded={open} onClick={onToggle}>
+        <img className="logo" src={logo(p.id)} width={22} height={22} alt="" />
+        <div className="grow min0"><div className="setting-title">{p.name}</div><div className="small dim ellipsis">{p.status}</div></div>
+        {p.linked && <span className="badge">Linked</span>}
+        <Icon name={open ? 'chevronDown' : 'chevronRight'} />
+      </button>
+      {open && <div className="provider-body stack">{p.body}</div>}
+    </div>
+  );
+}
+
+/** Every provider of models besides ScoutCode: what's linked, and linking or unlinking each one. */
+function Providers() {
+  const cfg = useView('cfg');
+  const login = useView('login');
+  const { plans, kiloWarning, additionalProviders } = useCore((s) => s.statics);
+  const [open, setOpen] = useState<string | null>(null);
+  const own = (which: OwnWhich, name: string, note: string, on: boolean, planText: string, who = 'Signed in'): ProviderEntry => ({
+    id: which, name, linked: on, status: login[which] ? 'Signing in…' : on ? who : 'Not linked',
+    body: <OwnAccount which={which} title={name} note={note} who={on ? who : null} planText={planText} planUrl={plans[which]} />,
+  });
+  const keyRow = (title: string, masked: string, onRemove: () => void) => <SettingRow title={title} sub={masked}><button type="button" className="button" onClick={onRemove}>Unlink</button></SettingRow>;
+  const all: ProviderEntry[] = [
+    own('claude', 'Claude Code', CLAUDE_NOTE, cfg.claude, "See Claude's plans"),
+    own('codex', 'Codex', CODEX_NOTE, cfg.codex, "See Codex in ChatGPT's plans"),
+    own('copilot', 'GitHub Copilot', COPILOT_NOTE, cfg.copilot, 'No Copilot plan yet? Turn on the free one', cfg.copilotUser ?? 'Signed in'),
+    {
+      id: 'openrouter', name: 'OpenRouter', linked: cfg.openrouterKeys.length > 0,
+      status: cfg.openrouterKeys.length ? `${cfg.openrouterKeys.length} key${cfg.openrouterKeys.length === 1 ? '' : 's'}` : 'Not linked',
+      body: <OpenRouterKeys />,
+    },
+    {
+      id: 'nvidia', name: 'NVIDIA NIM', linked: !!cfg.nvidiaKey, status: cfg.nvidiaKey ?? 'Not linked',
+      body: (
+        <>
+          <p className="small dim">Saved on this PC. Models on NVIDIA NIM use your NVIDIA account.</p>
+          {cfg.nvidiaKey ? keyRow('NVIDIA key', cfg.nvidiaKey, () => act('saveNvidiaKey', { key: null })) : <div className="field-420"><NvidiaEntry /></div>}
+        </>
+      ),
+    },
+    {
+      id: 'opencode', name: 'OpenCode', linked: cfg.opencode,
+      status: login.opencode ? 'Signing in…' : !cfg.opencode ? 'Not linked' : cfg.opencodeSignedIn ? 'Signed in' : 'Free models only',
+      body: (
+        <>
+          <p className="small dim">{OPENCODE_NOTE}</p>
+          {cfg.opencode ? (
+            <>
+              <SettingRow title="OpenCode account" sub={cfg.opencodeSignedIn ? 'Signed in' : 'Not signed in: free models only'}>
+                {cfg.opencodeSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'opencode', uninstall: false })}>Sign out</button>}
+                <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: false })}>Turn off</button>
+                <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: true })}>Turn off and uninstall</button>
+              </SettingRow>
+              {!cfg.opencodeSignedIn && <div className="field-420"><SignInEntry which="opencode" /></div>}
+            </>
+          ) : <div className="field-420"><OpencodeEntry /></div>}
+          <Link href={plans.opencode} className="small">Open the OpenCode console</Link>
+        </>
+      ),
+    },
+    {
+      id: 'grok', name: 'Grok Build', linked: cfg.grokSignedIn || !!cfg.grokKey,
+      status: login.grok ? 'Signing in…' : cfg.grokSignedIn ? 'Signed in' : cfg.grokKey ?? 'Not linked',
+      body: (
+        <>
+          <p className="small dim">{GROK_NOTE}</p>
+          {cfg.grokSignedIn || cfg.grokKey ? (
+            <>
+              <SettingRow title="Grok account" sub={cfg.grokSignedIn ? 'Signed in' : 'Not signed in'}>
+                {cfg.grokSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: false })}>Sign out</button>}
+                <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: true })}>Remove and uninstall</button>
+              </SettingRow>
+              {!cfg.grokSignedIn && <div className="field-420"><SignInEntry which="grok" /></div>}
+              {cfg.grokKey
+                ? keyRow('xAI key', cfg.grokSignedIn ? `${cfg.grokKey}: used when signed out` : cfg.grokKey, () => act('saveGrokKey', { key: null }))
+                : !login.grok && <div className="field-420"><GrokKeyEntry /></div>}
+            </>
+          ) : <div className="field-420"><GrokEntry /></div>}
+          <Link href={plans.grok} className="small">Open the xAI console</Link>
+        </>
+      ),
+    },
+    {
+      id: 'hermes', name: 'Hermes', linked: cfg.hermesSignedIn || !!cfg.hermesKey,
+      status: login.hermes ? 'Signing in…' : cfg.hermesSignedIn ? 'Signed in' : cfg.hermesKey ?? 'Not linked',
+      body: (
+        <>
+          <p className="small dim">{HERMES_NOTE}</p>
+          {cfg.hermesSignedIn || cfg.hermesKey ? (
+            <>
+              {cfg.hermesSignedIn
+                ? <SettingRow title="Nous Portal account" sub="Signed in"><button type="button" className="button" onClick={() => act('signOutOf', { which: 'hermes', uninstall: false })}>Sign out</button></SettingRow>
+                : <div className="field-420"><SignInEntry which="hermes" /></div>}
+              {cfg.hermesKey
+                ? keyRow('Nous Portal key', cfg.hermesSignedIn ? `${cfg.hermesKey}: used when signed out` : cfg.hermesKey, () => act('saveHermesKey', { key: null }))
+                : !login.hermes && <div className="field-420"><HermesKeyEntry /></div>}
+            </>
+          ) : <div className="field-420"><HermesEntry /></div>}
+          <Link href={plans.hermes} className="small">Open Nous Portal</Link>
+        </>
+      ),
+    },
+    own('devin', 'Devin', DEVIN_NOTE, cfg.devin, "See Devin's plans"),
+    own('kiro', 'Kiro', KIRO_NOTE, cfg.kiro, "See Kiro's plans"),
+    ...additionalProviders.map((a): ProviderEntry => {
+      const l = cfg.additional.find((x) => x.id === a.id);
+      return {
+        id: a.id, name: a.name, linked: !!l, status: l ? l.masked ?? 'Free, no key' : 'Not linked',
+        body: (
+          <>
+            <p className="small dim">{a.note}</p>
+            {l ? (
+              <>
+                {keyRow(l.masked ? `${a.name} key` : 'Free, no key', l.masked ?? 'Add a key below for higher limits.', () => act('unlinkAdditional', { id: a.id }))}
+                {/* Linked without a key, so one is only for higher limits. */}
+                {!l.masked && <div className="field-420"><AdditionalKey id={a.id} /></div>}
+              </>
+            ) : a.needsKey
+              ? <div className="field-420"><AdditionalKey id={a.id} /></div>
+              : <div className="field-420"><button type="button" className="button wide" onClick={() => act('linkAdditional', { id: a.id, key: null })}>Use {a.name} for free</button></div>}
+          </>
+        ),
+      };
+    }),
+    {
+      // Its free models need nothing, so it's always linked; a key only adds the paid ones.
+      id: 'kilo', name: 'Kilo Code', linked: true, status: cfg.kiloKey ? `Free and paid models, key ${cfg.kiloKey}` : 'Free models, no key',
+      body: (
+        <>
+          <p className="small dim">Its free models need no account or key, so they're always in the model menu. {kiloWarning}</p>
+          {cfg.kiloKey ? keyRow('Kilo key', cfg.kiloKey, () => act('removeKiloKey')) : (
+            <div className="field-420 stack">
+              <p className="small dim">Optional: a key from your Kilo account, for its paid models.</p>
+              <KeyField hint="Kilo API key" button="Save Kilo key" onSave={(key) => act('saveKilo', { enabled: true, key })} />
             </div>
-          );
-        })}
-        <div className="field-420"><AdditionalOptions /></div>
-      </div>
-      <OwnAccount which="copilot" title="GitHub Copilot" note={COPILOT_NOTE} who={cfg.copilot ? cfg.copilotUser ?? 'Signed in' : null} planText="No Copilot plan yet? Turn on the free one" planUrl={plans.copilot} />
-      <OwnAccount which="devin" title="Devin" note={DEVIN_NOTE} who={cfg.devin ? 'Signed in' : null} planText="See Devin's plans" planUrl={plans.devin} />
-      <OwnAccount which="kiro" title="Kiro" note={KIRO_NOTE} who={cfg.kiro ? 'Signed in' : null} planText="See Kiro's plans" planUrl={plans.kiro} />
-      <div className="stack">
-        <SectionLabel>OpenCode</SectionLabel>
-        <p className="small dim">{OPENCODE_NOTE}</p>
-        {cfg.opencode ? (
-          <>
-            <SettingRow title="OpenCode account" sub={cfg.opencodeSignedIn ? 'Signed in' : 'Not signed in: free models only'}>
-              {cfg.opencodeSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'opencode', uninstall: false })}>Sign out</button>}
-              <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: false })}>Turn off</button>
-              <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: true })}>Turn off and uninstall</button>
-            </SettingRow>
-            {!cfg.opencodeSignedIn && <div className="field-420"><SignInEntry which="opencode" /></div>}
-            <Link href={plans.opencode} className="small">Open the OpenCode console</Link>
-          </>
-        ) : <div className="field-420"><OpencodeEntry /></div>}
-      </div>
-      <div className="stack">
-        <SectionLabel>Grok Build</SectionLabel>
-        <p className="small dim">{GROK_NOTE}</p>
-        {cfg.grokSignedIn || cfg.grokKey ? (
-          <>
-            <SettingRow title="Grok account" sub={cfg.grokSignedIn ? 'Signed in' : 'Not signed in'}>
-              {cfg.grokSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: false })}>Sign out</button>}
-              <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: true })}>Remove and uninstall</button>
-            </SettingRow>
-            {!cfg.grokSignedIn && <div className="field-420"><SignInEntry which="grok" /></div>}
-            {cfg.grokKey
-              ? <SettingRow title="xAI key" sub={cfg.grokSignedIn ? `${cfg.grokKey}: used when signed out` : cfg.grokKey}><button type="button" className="button" onClick={() => act('saveGrokKey', { key: null })}>Remove</button></SettingRow>
-              : !login.grok && <div className="field-420"><GrokKeyEntry /></div>}
-            <Link href={plans.grok} className="small">Open the xAI console</Link>
-          </>
-        ) : <div className="field-420"><GrokEntry /></div>}
-      </div>
-      <div className="stack">
-        <SectionLabel>Hermes</SectionLabel>
-        <p className="small dim">{HERMES_NOTE}</p>
-        {cfg.hermesSignedIn || cfg.hermesKey ? (
-          <>
-            {cfg.hermesSignedIn
-              ? <SettingRow title="Nous Portal account" sub="Signed in"><button type="button" className="button" onClick={() => act('signOutOf', { which: 'hermes', uninstall: false })}>Sign out</button></SettingRow>
-              : <div className="field-420"><SignInEntry which="hermes" /></div>}
-            {cfg.hermesKey
-              ? <SettingRow title="Nous Portal key" sub={cfg.hermesSignedIn ? `${cfg.hermesKey}: used when signed out` : cfg.hermesKey}><button type="button" className="button" onClick={() => act('saveHermesKey', { key: null })}>Remove</button></SettingRow>
-              : !login.hermes && <div className="field-420"><HermesKeyEntry /></div>}
-          </>
-        ) : <div className="field-420"><HermesEntry /></div>}
-        <Link href={plans.hermes} className="small">Open Nous Portal</Link>
-      </div>
-      <div className="stack">
-        <SectionLabel>Kilo Code (free)</SectionLabel>
-        <p className="small dim">Its free models need no account or key, so they're always in the model menu. {kiloWarning}</p>
-        {cfg.kiloKey ? <SettingRow title="Kilo key" sub={cfg.kiloKey}><button type="button" className="button" onClick={() => act('removeKiloKey')}>Remove</button></SettingRow> : (
-          <div className="field-420 stack">
-            <p className="small dim">Optional: a key from your Kilo account, for its paid models.</p>
-            <KeyField hint="Kilo API key" button="Save Kilo key" onSave={(key) => act('saveKilo', { enabled: true, key })} />
-          </div>
-        )}
-        <div><button type="button" className="button" onClick={() => act('checkKilo')}>Test connection</button></div>
-        {login.kiloCheck && <div className={`small ${login.kiloCheck.ok ? 'muted' : 'red'}`}>{login.kiloCheck.message}</div>}
-      </div>
+          )}
+          <div><button type="button" className="button" onClick={() => act('checkKilo')}>Test connection</button></div>
+          {login.kiloCheck && <div className={`small ${login.kiloCheck.ok ? 'muted' : 'red'}`}>{login.kiloCheck.message}</div>}
+        </>
+      ),
+    },
+  ];
+  const list = (ps: ProviderEntry[]) => <div className="provider-list">{ps.map((p) => <ProviderRow key={p.id} p={p} open={open === p.id} onToggle={() => setOpen(open === p.id ? null : p.id)} />)}</div>;
+  const rest = all.filter((p) => !p.linked);
+  return (
+    <>
+      <Heading title="Providers" sub="Link your own accounts and keys to add their models to the model menu. Unlinking one takes its models out of the menu; your chats stay." />
+      <SectionLabel>Linked</SectionLabel>
+      {list(all.filter((p) => p.linked))}
+      {rest.length > 0 && <><SectionLabel>Not linked</SectionLabel>{list(rest)}</>}
     </>
   );
 }
@@ -584,7 +671,7 @@ function Mcp() {
   );
   return (
     <>
-      <Heading title="MCP servers" sub="Give Scout more tools by connecting it to MCP servers, on this computer or remote. Scout asks before each call until you choose to always allow a tool. A server runs with your access to this computer, so only add ones you trust. Devin, Kiro, OpenCode and Grok Build use their own tools, so they don't get these." />
+      <Heading title="MCP servers" sub="Give Scout more tools by connecting it to MCP servers, on this computer or remote. Scout asks before each call until you choose to always allow a tool. A server runs with your access to this computer, so only add ones you trust. Claude Code, Codex, Devin, Kiro, OpenCode and Grok Build use their own tools, so they don't get these." />
       {error && <div className="small red">{error}</div>}
       {servers.length === 0 && <p className="small dim">None yet.</p>}
       {servers.map((s) => (
@@ -757,9 +844,11 @@ export function Settings() {
           {tab === 'instructions' && <Instructions />}
           {tab === 'memory' && <Memory />}
           {tab === 'notifications' && <Notifications />}
+          {tab === 'discord' && <Discord />}
           {tab === 'fallbacks' && <FallbacksPage />}
           {tab === 'usage' && <Usage />}
           {tab === 'account' && <Account />}
+          {tab === 'providers' && <Providers />}
           {tab === 'skills' && <Skills />}
           {tab === 'mcp' && <Mcp />}
           {tab === 'chatbots' && <Chatbots />}

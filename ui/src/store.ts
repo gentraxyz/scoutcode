@@ -23,7 +23,7 @@ export type CoreState = { view: View; models: Model[]; items: Item[]; statics: S
 export const core = createStore<CoreState>(null as unknown as CoreState);
 
 export type DockTab = 'terminal' | 'changes' | 'files';
-export type SettingsTab = 'instructions' | 'memory' | 'notifications' | 'fallbacks' | 'usage' | 'account' | 'skills' | 'mcp' | 'chatbots' | 'updates';
+export type SettingsTab = 'instructions' | 'memory' | 'notifications' | 'discord' | 'fallbacks' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'updates';
 
 export const ui = createStore({
   sidebar: true,

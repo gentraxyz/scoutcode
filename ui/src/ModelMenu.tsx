@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
 import { act, tokens, type Model, type ModelRef } from './api';
-import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalOptions, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ChatbotsPanel } from './Chatbots';
 import { core, useCore, useView } from './store';
 import { Icon, IconButton, Link, Popover, Star } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
-type Tab = 'starred' | 'scoutcode' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'additional' | 'chatbots';
-const TABS: [Tab, string][] = [['starred', 'Starred'], ['chatbots', 'MCP chatbots'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['hermes', 'Hermes'], ['additional', 'Additional Providers']];
+type Tab = 'starred' | 'scoutcode' | 'claude' | 'codex' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'additional' | 'chatbots';
+const TABS: [Tab, string][] = [['starred', 'Starred'], ['chatbots', 'MCP chatbots'], ['scoutcode', 'ScoutCode'], ['claude', 'Claude Code'], ['codex', 'Codex'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['hermes', 'Hermes'], ['additional', 'Additional Providers']];
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
 type ModelRow = { key: string; provider: string; name: string; star: string; model: Model };
@@ -22,6 +22,8 @@ function allRows(models: Model[]): ModelRow[] {
     }
   };
   add((m) => (m.hosted ? 'scoutcode' : null), (m) => m.id);
+  add((m) => (m.claudeId ? 'claude' : null), (m) => m.id);
+  add((m) => (m.codexId ? 'codex' : null), (m) => m.id);
   add((m) => (m.openrouterId ? 'openrouter' : null), (m) => m.openrouterId);
   add((m) => (m.nvidiaId ? 'nvidia' : null), (m) => m.nvidiaId);
   add((m) => (m.opencodeId ? 'opencode' : null), (m) => m.id);
@@ -44,7 +46,7 @@ function RailIcon({ tab }: { tab: Tab }) {
   if (tab === 'starred') return <Star on={false} />;
   if (tab === 'additional') return <Icon name="plus" />;
   if (tab === 'chatbots') return <Icon name="chat" />;
-  const file = { scoutcode: '', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes' }[tab];
+  const file = { scoutcode: '', claude: 'claude', codex: 'codex', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes' }[tab];
   if (!file) return <img className="logo" src={scoutLogo} width={16} height={16} alt="" />;
   return <img className="logo" src={logo(file)} width={16} height={16} alt="" />;
 }
@@ -100,6 +102,8 @@ function SignedOut({ tab }: { tab: Tab }) {
       {tab === 'copilot' && <><div className="small dim">{COPILOT_NOTE}</div><SignInEntry which="copilot" /></>}
       {tab === 'devin' && <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>}
       {tab === 'kiro' && <><div className="small dim">{KIRO_NOTE}</div><SignInEntry which="kiro" /></>}
+      {tab === 'claude' && <><div className="small dim">{CLAUDE_NOTE}</div><SignInEntry which="claude" /></>}
+      {tab === 'codex' && <><div className="small dim">{CODEX_NOTE}</div><SignInEntry which="codex" /></>}
       {tab === 'grok' && <><div className="small dim">{GROK_NOTE}</div><GrokEntry /></>}
       {tab === 'hermes' && <><div className="small dim">{HERMES_NOTE}</div><HermesEntry /></>}
     </div>
@@ -114,6 +118,8 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const loading = useView('modelsLoading');
   const additionalErrors = useView('additionalErrors');
   const kiroError = useView('kiroModelsError');
+  const codexError = useView('codexModelsError');
+  const claudeError = useView('claudeModelsError');
   const opencodeError = useView('opencodeModelsError');
   const grokError = useView('grokModelsError');
   const hermesError = useView('hermesModelsError');
@@ -123,7 +129,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const [search, setSearch] = useState('');
   const [adding, setAdding] = useState(false);
   const [hover, setHover] = useState<{ m: Model; top: number; left: number } | null>(null);
-  const signedIn = (t: Tab) => ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, additional: cfg.additional.length > 0, starred: true, kilo: true, chatbots: link.on })[t];
+  const signedIn = (t: Tab) => ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, additional: cfg.additional.length > 0, starred: true, kilo: true, chatbots: link.on })[t];
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => {
     const all = allRows(models);
@@ -154,6 +160,8 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
         {tab === 'kilo' && <div className="tiny dim">{kiloWarning}</div>}
         {tab === 'scoutcode' && cfg.guest && <div className="tiny dim">{GUEST_NOTE} Sign in from Settings &gt; Account for more.</div>}
         {tab === 'kiro' && cfg.kiro && kiroError && <div className="tiny red">{kiroError}</div>}
+        {tab === 'codex' && cfg.codex && codexError && <div className="tiny red">{codexError}</div>}
+        {tab === 'claude' && cfg.claude && claudeError && <div className="tiny red">{claudeError}</div>}
         {tab === 'grok' && signedIn('grok') && grokError && <div className="tiny red">{grokError}</div>}
         {tab === 'hermes' && signedIn('hermes') && (
           <>

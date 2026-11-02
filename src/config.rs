@@ -102,6 +102,10 @@ pub struct Config {
     pub devin_enabled: bool,
     /// The user has signed in to Kiro here. Its CLI keeps the token; Scout never sees it.
     pub kiro_enabled: bool,
+    /// The user has signed in to Codex here. Its CLI keeps the token; Scout never sees it.
+    pub codex_enabled: bool,
+    /// The user has signed in to Claude Code here. Its CLI keeps the token; Scout never sees it.
+    pub claude_enabled: bool,
     /// The user has turned on OpenCode here. Its free models need no account.
     pub opencode_enabled: bool,
     /// The user has signed in to an OpenCode account here. Its CLI keeps the token; Scout never sees it.
@@ -116,7 +120,7 @@ pub struct Config {
     pub hermes_key: Option<String>,
     /// The additional providers the user has linked, in the order they linked them.
     pub additional: Vec<LinkedProvider>,
-    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok", "hermes" or an additional provider's id. The model is that provider's id for it.
+    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id. The model is that provider's id for it.
     pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
     pub username: Option<String>,
@@ -138,6 +142,10 @@ pub struct Config {
     /// background. None until they choose, which the first run asks.
     pub notify_flash: Option<bool>,
     pub notify_toast: Option<bool>,
+    /// Desktop app only: show "Using Scout" on the user's Discord profile. Off until they turn it on.
+    pub discord_presence: bool,
+    /// Desktop app only: include the open folder's name in that presence. Off until they turn it on.
+    pub discord_project: bool,
     /// Desktop app only: download new versions in the background, ready for the next restart.
     pub auto_update: bool,
     /// Desktop app only: the version that last ran here, to tell when the app has been updated.
@@ -251,6 +259,8 @@ pub fn load_config() -> Config {
         copilot_user: s.get("copilotUser").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         devin_enabled: s.get("devinEnabled").and_then(Value::as_bool).unwrap_or(false),
         kiro_enabled: s.get("kiroEnabled").and_then(Value::as_bool).unwrap_or(false),
+        codex_enabled: s.get("codexEnabled").and_then(Value::as_bool).unwrap_or(false),
+        claude_enabled: s.get("claudeEnabled").and_then(Value::as_bool).unwrap_or(false),
         opencode_enabled: s.get("opencodeEnabled").and_then(Value::as_bool).unwrap_or(false),
         opencode_signed_in: s.get("opencodeSignedIn").and_then(Value::as_bool).unwrap_or(false),
         grok_signed_in: s.get("grokSignedIn").and_then(Value::as_bool).unwrap_or(false),
@@ -280,6 +290,8 @@ pub fn load_config() -> Config {
         projects: s.get("desktopProjects").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         notify_flash: s.get("desktopFlash").and_then(Value::as_bool),
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
+        discord_presence: s.get("discordPresence").and_then(Value::as_bool).unwrap_or(false),
+        discord_project: s.get("discordProject").and_then(Value::as_bool).unwrap_or(false),
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
         last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),
         fallbacks: s.get("modelFallbacks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
@@ -331,7 +343,7 @@ impl Config {
 
     /// Whether Kilo is the only provider there's a way to use.
     pub fn only_kilo(&self) -> bool {
-        self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty()
+        self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty()
     }
 
     /// Whether requests to ScoutCode go without an account.
@@ -390,6 +402,8 @@ impl Config {
         self.copilot_user = other.copilot_user.clone();
         self.devin_enabled = other.devin_enabled;
         self.kiro_enabled = other.kiro_enabled;
+        self.codex_enabled = other.codex_enabled;
+        self.claude_enabled = other.claude_enabled;
         self.opencode_enabled = other.opencode_enabled;
         self.opencode_signed_in = other.opencode_signed_in;
         self.grok_signed_in = other.grok_signed_in;

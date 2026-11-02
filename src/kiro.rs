@@ -290,7 +290,7 @@ pub fn start(model: &str, cwd: &str, mode: &str, effort: &str, prompt: String, i
 pub fn explain(message: &str) -> String {
     let m = message.to_lowercase();
     if m.contains("not logged in") || m.contains("authentication required") || m.contains("does not have access") {
-        return "Kiro isn't signed in, or this account can't use it. Sign in under Settings > Account.".into();
+        return "Kiro isn't signed in, or this account can't use it. Sign in under Settings > Providers.".into();
     }
     if ["quota", "credit", "usage limit", "rate limit", "throttl", "upgrade"].iter().any(|w| m.contains(w)) {
         return format!("Your Kiro credits may have run out ({message}). Plans are at {PLAN_URL}. This chat is saved, so you can carry on by picking another provider in the model menu.");
@@ -353,8 +353,8 @@ mod tests {
 
     #[test]
     fn errors_say_what_to_do() {
-        assert!(explain("Authentication required. Not logged in. Set the KIRO_API_KEY environment variable").contains("Settings > Account"));
-        assert!(explain("Kiro could not load the available models because this account does not have access to them.").contains("Settings > Account"));
+        assert!(explain("Authentication required. Not logged in. Set the KIRO_API_KEY environment variable").contains("Settings > Providers"));
+        assert!(explain("Kiro could not load the available models because this account does not have access to them.").contains("Settings > Providers"));
         assert!(explain("monthly credits used").contains(PLAN_URL));
         assert_eq!(explain("boom"), "Kiro: boom");
     }
@@ -379,7 +379,7 @@ mod tests {
         let cwd = cwd.to_string_lossy();
         let refused = start("auto", &cwd, "default", "low", "hi".into(), vec![], false).err().unwrap();
         println!("signed out: {refused}");
-        assert!(explain(&refused).contains("Settings > Account"));
+        assert!(explain(&refused).contains("Settings > Providers"));
         unsafe { std::env::set_var("KIRO_API_KEY", "ksk_notarealkey") };
         let run = start("auto", &cwd, "plan", "low", "hi".into(), vec![], false).unwrap();
         let failed = loop {
@@ -390,7 +390,7 @@ mod tests {
             }
         };
         println!("made-up key: {failed}");
-        assert!(explain(&failed).contains("Settings > Account"));
+        assert!(explain(&failed).contains("Settings > Providers"));
         run.finish();
     }
 }

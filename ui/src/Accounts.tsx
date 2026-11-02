@@ -6,6 +6,8 @@ import { Link, Spinner } from './widgets';
 
 export const COPILOT_NOTE = "Uses your own GitHub account's Copilot plan, from this PC. Each request counts against that plan's allowance, so don't share an account or run it unattended at volume. Signing in downloads about 150 MB.";
 export const KIRO_NOTE = "Uses your own Kiro account and plan, from this PC, so your chats go to AWS and its model providers, and Kiro's free plan allows 50 credits a month. Don't share an account. Kiro runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. Signing in downloads about 330 MB and shares the sign-in with any other Kiro CLI on this PC.";
+export const CLAUDE_NOTE = "Uses your own Claude Pro or Max plan, from this PC, so your chats go to Anthropic and count against that plan's limits. Don't share an account. Claude Code runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It doesn't load a project's Claude Code settings, hooks or MCP servers. Signing in installs Node.js and Claude Code, about 450 MB, and keeps the sign-in apart from any other Claude Code on this PC.";
+export const CODEX_NOTE = "Uses your own ChatGPT plan, from this PC, so your chats go to OpenAI and count against that plan's Codex limits. Don't share an account. Codex runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode gives it full access. Signing in installs Node.js and Codex, about 500 MB, and keeps the sign-in apart from any other Codex on this PC.";
 export const OPENCODE_WARNING = "Some of OpenCode's free models may keep your prompts or use them to improve the model, so don't send them anything private.";
 export const OPENCODE_NOTE = `Its free models need no account, and signing in to your OpenCode account adds the paid ones, billed by OpenCode. ${OPENCODE_WARNING} OpenCode runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It downloads about 80 MB, and keeps its sign-in and settings apart from any other OpenCode on this PC.`;
 export const GROK_NOTE = "Uses your own Grok sign-in, or an xAI API key billed per token, from this PC, so your chats go to xAI. Don't share an account. Grok Build runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It doesn't read a project's AGENTS.md or other Grok settings, and won't run in your home folder. It downloads about 50 MB, and keeps its sign-in and settings apart from any other Grok on this PC.";
@@ -134,13 +136,17 @@ const SIGN_INS = {
   copilot: { name: 'Copilot', button: 'Sign in with GitHub' },
   devin: { name: 'Devin', button: 'Sign in to Devin' },
   kiro: { name: 'Kiro', button: 'Sign in to Kiro' },
+  codex: { name: 'Codex', button: 'Sign in with ChatGPT' },
+  claude: { name: 'Claude Code', button: 'Sign in with Claude' },
   opencode: { name: 'OpenCode', button: 'Sign in to OpenCode' },
   grok: { name: 'Grok Build', button: 'Sign in to Grok' },
   hermes: { name: 'Hermes', button: 'Sign in with Nous Portal' },
 };
 
+export type SignInWhich = 'copilot' | 'devin' | 'kiro' | 'codex' | 'claude' | 'opencode' | 'grok' | 'hermes';
+
 /** The sign-in button, or the code and the download's progress while it's going on. */
-export function SignInEntry({ which, compact = false }: { which: 'copilot' | 'devin' | 'kiro' | 'opencode' | 'grok' | 'hermes'; compact?: boolean }) {
+export function SignInEntry({ which, compact = false }: { which: SignInWhich; compact?: boolean }) {
   const login = useView('login');
   const s = login[which];
   const error = login[`${which}Error`];
@@ -168,6 +174,7 @@ export function SignInEntry({ which, compact = false }: { which: 'copilot' | 'de
           {s.url && <Link href={s.url} className="small">Open the page again</Link>}
         </>
       ) : <Spinner />}
+      {!s.code && s.waiting && s.url && <Link href={s.url} className="small">Open the sign-in page again</Link>}
       <div className="small muted">{line}</div>
       <button type="button" className="button" onClick={() => act('cancelSignIn', { which })}>Cancel</button>
     </div>

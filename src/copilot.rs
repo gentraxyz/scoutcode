@@ -232,7 +232,7 @@ pub fn sign_in(cancel: Arc<AtomicBool>, send: impl Fn(Update) + Clone + Send + '
 /// Whether Copilot takes this kind of token. Classic personal tokens are the one kind it refuses, and it only says "Not authenticated".
 pub fn check_token(token: &str) -> Result<(), String> {
     if token.starts_with("ghp_") {
-        return Err("Copilot doesn't accept classic GitHub tokens (ghp_). Sign in under Settings > Account, or use a fine-grained token with the Copilot Requests permission.".into());
+        return Err("Copilot doesn't accept classic GitHub tokens (ghp_). Sign in under Settings > Providers, or use a fine-grained token with the Copilot Requests permission.".into());
     }
     Ok(())
 }
@@ -295,7 +295,7 @@ impl Run {
     /// ones, and sends `prompt`. Scout asks the user about each tool itself, so the tools skip the runtime's permission
     /// step and anything else the runtime might try is refused.
     pub fn start(cfg: &Config, model: &str, cwd: &str, system: String, prompt: String, images: Vec<(String, String)>, specs: &[Value]) -> Result<Run, String> {
-        let token = cfg.copilot_token.clone().ok_or("Sign in to GitHub Copilot under Settings > Account first.")?;
+        let token = cfg.copilot_token.clone().ok_or("Sign in to GitHub Copilot under Settings > Providers first.")?;
         check_token(&token)?;
         let options = client_options(&token, cwd)?;
         let (tx, rx) = channel();
@@ -418,7 +418,7 @@ pub fn explain(message: &str, kind: &str, resets: Option<&str>) -> String {
         return format!("Your Copilot allowance has run out. {when} This chat is saved, so you can carry on by picking another provider in the model menu.");
     }
     if m.contains("not authenticated") || m.contains("authentication info") || m.contains("401") || m.contains("bad credentials") {
-        return "GitHub didn't accept your Copilot sign-in. Sign in again under Settings > Account.".into();
+        return "GitHub didn't accept your Copilot sign-in. Sign in again under Settings > Providers.".into();
     }
     if ["subscription", "not entitled", "no access", "not enabled", "403"].iter().any(|w| m.contains(w)) {
         return format!("This GitHub account can't use Copilot yet ({message}). Turn on the free plan at {PLAN_URL}, then try again.");

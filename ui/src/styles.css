@@ -314,6 +314,12 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .badge { font-size: 10.5px; padding: 0 6px; border-radius: 9px; color: var(--green); background: color-mix(in srgb, var(--green) 15%, transparent); }
 .model-card { position: fixed; z-index: 60; width: 284px; padding: 12px; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 10px; box-shadow: 0 8px 28px rgb(0 0 0 / 55%); display: flex; flex-direction: column; gap: 4px; pointer-events: none; }
 .provider-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.provider-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.provider-row + .provider-row { border-top: 1px solid var(--border); }
+.provider-head { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; text-align: left; color: var(--muted); }
+.provider-head:hover, .provider-row.open .provider-head { background: var(--hover); color: var(--strong); }
+.provider-head img { object-fit: contain; border-radius: 5px; }
+.provider-body { padding: 4px 14px 14px 46px; }
 .sign-in-code { font-size: 20px; font-weight: 600; color: var(--strong); user-select: text; }
 
 /* login */

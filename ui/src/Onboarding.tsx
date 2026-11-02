@@ -4,7 +4,7 @@
 import { useState, type ReactNode } from 'react';
 import { act, type View } from './api';
 import {
-  AdditionalKey, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, HERMES_NOTE, HermesEntry, KeyField,
+  AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, HERMES_NOTE, HermesEntry, KeyField,
   KIRO_NOTE, logo, NvidiaEntry, OPENCODE_NOTE, ScoutKeyEntry, SignInEntry,
 } from './Accounts';
 import { core, useCore, useView } from './store';
@@ -35,6 +35,8 @@ const PROVIDERS: Provider[] = [
   { id: 'nvidia', name: 'NVIDIA NIM', group: 'login', linked: (c) => !!c.nvidiaKey },
   { id: 'google', name: 'Google AI Studio', group: 'login', linked: additional('google') },
   { id: 'hermes', name: 'Hermes', group: 'login', linked: (c) => c.hermesSignedIn || !!c.hermesKey },
+  { id: 'claude', name: 'Claude Code', group: 'setup', linked: (c) => c.claude },
+  { id: 'codex', name: 'Codex', group: 'setup', linked: (c) => c.codex },
   { id: 'copilot', name: 'GitHub Copilot', group: 'setup', linked: (c) => c.copilot },
   { id: 'grok', name: 'Grok Build', group: 'setup', linked: (c) => c.grokSignedIn || !!c.grokKey },
   { id: 'kiro', name: 'Kiro', group: 'setup', linked: (c) => c.kiro },
@@ -165,6 +167,12 @@ function Setup({ p, linked }: { p: Provider; linked: boolean }) {
     case 'grok':
       if (linked) return done(cfg.grokSignedIn ? 'Signed in to Grok.' : 'Using your xAI key.');
       return <><div className="small dim">{GROK_NOTE}</div><GrokEntry /></>;
+    case 'claude':
+      if (linked) return done('Signed in to Claude Code.');
+      return <><div className="small dim">{CLAUDE_NOTE}</div><SignInEntry which="claude" /></>;
+    case 'codex':
+      if (linked) return done('Signed in to Codex.');
+      return <><div className="small dim">{CODEX_NOTE}</div><SignInEntry which="codex" /></>;
     case 'kiro':
       if (linked) return done('Signed in to Kiro.');
       return <><div className="small dim">{KIRO_NOTE}</div><SignInEntry which="kiro" /></>;

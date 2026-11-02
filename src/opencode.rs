@@ -158,15 +158,21 @@ fn cli(args: &[&str]) -> Command {
     c
 }
 
-/// Whether the account list has anyone on it. It says so with success either way.
+/// Whether the account list has anyone on it. It says so with success either way, and both streams get a colour reset
+/// even when there's nothing else, so that doesn't count.
 fn lists_an_account(output: &str) -> bool {
-    !output.trim().is_empty() && !output.contains("No accounts found")
+    let clean = plain(output);
+    !clean.trim().is_empty() && !clean.contains("No accounts found")
 }
 
 pub fn signed_in() -> bool {
     let mut c = cli(&["console", "orgs"]);
-    c.stdout(Stdio::piped());
-    c.output().is_ok_and(|o| o.status.success() && lists_an_account(&String::from_utf8_lossy(&o.stdout)))
+    // The list goes to stderr, not stdout.
+    c.stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.output().is_ok_and(|o| {
+        let both = [o.stdout, o.stderr].concat();
+        o.status.success() && lists_an_account(&String::from_utf8_lossy(&both))
+    })
 }
 
 pub fn sign_out() {
@@ -183,10 +189,10 @@ pub fn set_up(send: impl Fn(Update) + Send + 'static) {
     });
 }
 
-/// What a line of the login says, without its colours and box drawing: where to go, or the code to enter there.
-fn login_line(line: &str) -> (Option<String>, Option<String>) {
+/// The CLI's output without its colours.
+fn plain(text: &str) -> String {
     let mut clean = String::new();
-    let mut chars = line.chars().peekable();
+    let mut chars = text.chars();
     while let Some(c) = chars.next() {
         if c == '\u{1b}' {
             // An escape sequence ends with its first letter.
@@ -199,6 +205,12 @@ fn login_line(line: &str) -> (Option<String>, Option<String>) {
             clean.push(c);
         }
     }
+    clean
+}
+
+/// What a line of the login says, without its colours and box drawing: where to go, or the code to enter there.
+fn login_line(line: &str) -> (Option<String>, Option<String>) {
+    let clean = plain(line);
     let after = |label: &str| clean.split_once(label).map(|(_, v)| v.trim().to_string()).filter(|v| !v.is_empty());
     (after("Go to:"), after("Enter code:"))
 }
@@ -384,7 +396,7 @@ pub fn forget(session: &str) {
 pub fn explain(message: &str) -> String {
     let m = message.to_lowercase();
     if m.contains("sign in") || m.contains("signed out") || m.contains("not logged in") || m.contains("unauthorized") || m.contains("invalid credential") {
-        return "OpenCode isn't signed in, or this account can't use that model. Sign in under Settings > Account.".into();
+        return "OpenCode isn't signed in, or this account can't use that model. Sign in under Settings > Providers.".into();
     }
     if ["credit", "usage limit", "rate limit", "billing", "insufficient", "upgrade"].iter().any(|w| m.contains(w)) {
         return format!("OpenCode's limit may have been reached ({message}). Your account is at {PLAN_URL}. This chat is saved, so you can carry on by picking another provider in the model menu.");
@@ -465,7 +477,10 @@ mod tests {
     fn signed_out_says_so() {
         assert!(!lists_an_account("\nNo accounts found\n"));
         assert!(!lists_an_account(""));
-        assert!(lists_an_account("someone@example.com  Personal\n"));
+        // What it really prints signed out and in, stdout then stderr.
+        assert!(!lists_an_account("\u{1b}[0m\r\n\u{1b}[0m\r\nNo accounts found\r\n"));
+        assert!(!lists_an_account("\u{1b}[0m\r\n"));
+        assert!(lists_an_account("\u{1b}[0m\r\n  \u{1b}[92m\u{25cf}\u{1b}[0m \u{1b}[96m\u{1b}[1mPersonal\u{1b}[0m  \u{1b}[90msomeone@example.com\u{1b}[0m\n"));
     }
 
     #[test]
@@ -478,7 +493,7 @@ mod tests {
 
     #[test]
     fn errors_say_what_to_do() {
-        assert!(explain("Upstream request failed: Invalid credential").contains("Settings > Account"));
+        assert!(explain("Upstream request failed: Invalid credential").contains("Settings > Providers"));
         assert!(explain("Free usage limit reached.").contains(PLAN_URL));
         assert_eq!(explain("boom"), "OpenCode: boom");
     }

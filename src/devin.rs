@@ -553,7 +553,7 @@ impl Run {
 pub fn explain(message: &str) -> String {
     let m = message.to_lowercase();
     if m.contains("log in") || m.contains("login") || m.contains("authenticate") {
-        return "Devin isn't signed in. Sign in under Settings > Account.".into();
+        return "Devin isn't signed in. Sign in under Settings > Providers.".into();
     }
     if ["quota", "credit", "allowance", "exhausted", "usage limit", "rate limit", "upgrade"].iter().any(|w| m.contains(w)) {
         return format!("Your Devin allowance may have run out ({message}). Plans are at {PLAN_URL}. This chat is saved, so you can carry on by picking another provider in the model menu.");
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn errors_say_what_to_do() {
-        assert!(explain("Please log in to use Devin. Use `/login` to authenticate again.").contains("Settings > Account"));
+        assert!(explain("Please log in to use Devin. Use `/login` to authenticate again.").contains("Settings > Providers"));
         assert!(explain("quota exceeded").contains(PLAN_URL));
         assert_eq!(explain("boom"), "Devin: boom");
     }

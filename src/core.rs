@@ -58,7 +58,7 @@ pub struct Outgoing {
     pub files: Vec<String>,
 }
 
-/// Signing in to Copilot, Devin, Kiro, OpenCode, Grok or Hermes, while it's going on.
+/// Signing in to Copilot, Devin, Kiro, Codex, Claude Code, OpenCode, Grok or Hermes, while it's going on.
 #[derive(Default)]
 struct SignIn {
     /// The code to enter, and where. Copilot, OpenCode, Grok and Hermes only.
@@ -68,12 +68,14 @@ struct SignIn {
     installed: bool,
     /// The CLI is there and the browser should be open.
     waiting: bool,
+    /// The page the browser should be open on, when the CLI said. Codex and Claude Code only.
+    page: Option<String>,
     cancel: Arc<AtomicBool>,
 }
 
 impl SignIn {
     fn json(&self) -> Value {
-        json!({ "code": self.code.as_ref().map(|c| &c.0), "url": self.code.as_ref().map(|c| &c.1), "done": self.progress.0, "total": self.progress.1, "installed": self.installed, "waiting": self.waiting })
+        json!({ "code": self.code.as_ref().map(|c| &c.0), "url": self.code.as_ref().map(|c| &c.1).or(self.page.as_ref()), "done": self.progress.0, "total": self.progress.1, "installed": self.installed, "waiting": self.waiting })
     }
 }
 
@@ -86,6 +88,10 @@ struct Login {
     devin_error: Option<String>,
     kiro: Option<SignIn>,
     kiro_error: Option<String>,
+    codex: Option<SignIn>,
+    codex_error: Option<String>,
+    claude: Option<SignIn>,
+    claude_error: Option<String>,
     opencode: Option<SignIn>,
     opencode_error: Option<String>,
     grok: Option<SignIn>,
@@ -232,6 +238,8 @@ pub struct Core {
     start_hermes: bool,
     hermes_models_error: Option<String>,
     kiro_models_error: Option<String>,
+    codex_models_error: Option<String>,
+    claude_models_error: Option<String>,
     opencode_models_error: Option<String>,
     grok_models_error: Option<String>,
     /// Every saved chat, from every folder; the sidebar groups them by project.
@@ -328,7 +336,7 @@ fn model_sources(cfg: &Config) -> Vec<&'static str> {
     // Always asked for: Kilo's free models need no key.
     out.push("kilo");
     out.extend(config::ADDITIONAL.iter().filter(|a| cfg.linked(a.id).is_some()).map(|a| a.id));
-    let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
+    let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
     out.extend(on.into_iter().filter(|(_, on)| *on).map(|(s, _)| s));
     out
 }
@@ -340,6 +348,8 @@ fn cli_model(source: &str, id: String, name: String) -> ModelInfo {
         "copilot" => m.copilot_id = Some(id),
         "devin" => m.devin_id = Some(id),
         "kiro" => m.kiro_id = Some(id),
+        "codex" => m.codex_id = Some(id),
+        "claude" => m.claude_id = Some(id),
         "opencode" => {
             m.free = crate::opencode::is_free(&id);
             m.opencode_id = Some(id);
@@ -350,12 +360,14 @@ fn cli_model(source: &str, id: String, name: String) -> ModelInfo {
 }
 
 /// What a CLI provider's list has even when it can't be read: its default, which needs no list. It's all Copilot's free
-/// plan gets, lets Devin pick for the plan, and is what a new OpenCode or Grok session starts on.
+/// plan gets, lets Devin pick for the plan, and is what a new Codex, Claude Code, OpenCode or Grok session starts on.
 fn default_models(source: &str) -> Vec<ModelInfo> {
     let name = match source {
         "copilot" => "Copilot Auto",
         "devin" => "Devin Default",
         "kiro" => "Kiro Auto",
+        "codex" => "Codex Default",
+        "claude" => "Claude Code Default",
         "opencode" => "OpenCode Default",
         "grok" => "Grok Default",
         _ => return vec![],
@@ -391,6 +403,15 @@ fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>,
         "kilo" => crate::api::list_kilo(cfg).map_err(|e| format!("Kilo Code: {}", e.message)),
         "copilot" => Ok(with_default(crate::copilot::list_models(cfg.copilot_token.as_deref().unwrap_or_default()))),
         "devin" => Ok(with_default(crate::devin::list_models())),
+        "codex" | "claude" => {
+            let (which, listed, explain): (_, _, fn(&String) -> String) = match source {
+                "codex" => ("codex", crate::codex::list_models(), |e| crate::codex::explain(e)),
+                _ => ("claude", crate::claude::list_models(), |e| crate::claude::explain(e)),
+            };
+            let error = listed.as_ref().err().map(explain);
+            h.send(Ev::AgentModelsError(which, error.clone()));
+            listed.map(with_default).map_err(|_| error.unwrap_or_default())
+        }
         "kiro" | "opencode" | "grok" => {
             let (listed, explain): (_, fn(&String) -> String) = match source {
                 "kiro" => (crate::kiro::list_models(), |e| crate::kiro::explain(e)),
@@ -490,7 +511,7 @@ fn model_json(m: &ModelInfo) -> Value {
     json!({
         "id": m.id, "label": m.label(), "description": m.description, "context": m.context, "tools": m.tools, "vision": m.vision, "cost": m.cost,
         "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id, "opencodeId": m.opencode_id,
-        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
+        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "codexId": m.codex_id, "claudeId": m.claude_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
         "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier,
     })
 }
@@ -586,6 +607,8 @@ impl Core {
             opencode_models_error: None,
             grok_models_error: None,
             kiro_models_error: None,
+            codex_models_error: None,
+            claude_models_error: None,
             projects: cfg.projects.clone(),
             starred: cfg.starred_models.clone(),
             cfg,
@@ -617,6 +640,7 @@ impl Core {
             seq: 0,
         };
         core.enter_project(&cwd);
+        core.update_discord();
         // The lists saved last time show at once; they're asked for again straight after.
         let cached = crate::api::load_model_cache();
         if !cached.is_empty() {
@@ -712,9 +736,9 @@ impl Core {
     /// Shows a model list, and tells the agent what it needs to know about each model.
     fn set_models(&mut self, m: Vec<ModelInfo>) {
         // The agent picks each model's edit tools from these, under the id it sends on any provider.
-        *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
-        *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
-        *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
+        *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
+        *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
+        *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
         self.models = m;
         self.models_changed = true;
     }
@@ -793,6 +817,8 @@ impl Core {
                     "bash" => "run a command",
                     "devin" => "use a Devin tool",
                     "kiro" => "use a Kiro tool",
+                    "codex" => "use a Codex tool",
+                    "claude" => "use a Claude Code tool",
                     "opencode" => "use an OpenCode tool",
                     "grok" => "use a Grok Build tool",
                     t if tools::is_mcp(t) => "use an MCP tool",
@@ -906,6 +932,9 @@ impl Core {
             Ev::Devin(u) => self.devin_update(u),
             Ev::Kiro(u) => self.kiro_update(u),
             Ev::KiroModelsError(e) => self.kiro_models_error = e,
+            Ev::AgentSignIn(which, u) => self.agent_update(which, u),
+            Ev::AgentModelsError("codex", e) => self.codex_models_error = e,
+            Ev::AgentModelsError(_, e) => self.claude_models_error = e,
             Ev::Opencode(u) => self.opencode_update(u),
             Ev::OpencodeModelsError(e) => self.opencode_models_error = e,
             Ev::Grok(u) => self.grok_update(u),
@@ -1370,6 +1399,82 @@ impl Core {
         }
     }
 
+    /// Where signing in to Codex ("codex") or Claude Code ("claude") stands.
+    fn agent_login(&mut self, which: &str) -> (&mut Option<SignIn>, &mut Option<String>) {
+        if which == "codex" { (&mut self.login.codex, &mut self.login.codex_error) } else { (&mut self.login.claude, &mut self.login.claude_error) }
+    }
+
+    /// Starts signing in to Codex or Claude Code: Node and the agent download, then its login opens the browser.
+    pub fn agent_sign_in(&mut self, which: &str) {
+        let which = if which == "codex" { "codex" } else { "claude" };
+        let sign_in = SignIn::default();
+        let cancel = sign_in.cancel.clone();
+        let (slot, error) = self.agent_login(which);
+        *slot = Some(sign_in);
+        *error = None;
+        let h = self.hooks.clone();
+        let send = move |u| h.send(Ev::AgentSignIn(which, u));
+        if which == "codex" { crate::codex::sign_in(cancel, send) } else { crate::claude::sign_in(cancel, send) }
+    }
+
+    fn agent_update(&mut self, which: &'static str, update: crate::node::Update) {
+        use crate::node::Update;
+        match update {
+            Update::Done => {
+                *self.agent_login(which).0 = None;
+                self.save_agent(which, true);
+                self.choose_model("auto", which);
+            }
+            Update::Failed(e) => {
+                // Cancelling fails with no message.
+                let (slot, error) = self.agent_login(which);
+                *slot = None;
+                *error = (!e.is_empty()).then_some(e);
+            }
+            Update::Progress { done, total } => {
+                if let Some(s) = self.agent_login(which).0 {
+                    s.progress = (done, total);
+                }
+            }
+            Update::Waiting(page) => {
+                if let Some(s) = self.agent_login(which).0 {
+                    s.waiting = true;
+                    s.page = page.or(s.page.take());
+                }
+            }
+        }
+    }
+
+    /// Turns Codex or Claude Code on or off. Without it, a model that ran there moves back to ScoutCode.
+    fn save_agent(&mut self, which: &str, on: bool) {
+        if which == "codex" {
+            config::save_one("codexEnabled", json!(on));
+            self.cfg.codex_enabled = on;
+        } else {
+            config::save_one("claudeEnabled", json!(on));
+            self.cfg.claude_enabled = on;
+        }
+        if !on && self.chat.provider == which {
+            self.choose_model("auto", "scoutcode");
+        }
+        self.keys_changed();
+    }
+
+    pub fn agent_sign_out(&mut self, which: &str, uninstall: bool) {
+        if which == "codex" {
+            crate::codex::sign_out();
+            if uninstall {
+                crate::codex::remove_runtime();
+            }
+        } else {
+            crate::claude::sign_out();
+            if uninstall {
+                crate::claude::remove_runtime();
+            }
+        }
+        self.save_agent(which, false);
+    }
+
     /// Turns OpenCode on, which downloads its CLI for the free models, or off, which signs out of it too. Without it, a
     /// model that ran on OpenCode moves back to ScoutCode.
     pub fn set_opencode(&mut self, on: bool, uninstall: bool) {
@@ -1591,11 +1696,13 @@ impl Core {
         self.choose_model(&key, "hermes");
     }
 
-    /// Stops a sign-in that's under way: `which` is "copilot", "devin", "kiro", "opencode", "grok" or "hermes".
+    /// Stops a sign-in that's under way: `which` is "copilot", "devin", "kiro", "codex", "claude", "opencode", "grok" or "hermes".
     pub fn cancel_sign_in(&mut self, which: &str) {
         let slot = match which {
             "copilot" => &mut self.login.copilot,
             "devin" => &mut self.login.devin,
+            "codex" => &mut self.login.codex,
+            "claude" => &mut self.login.claude,
             "opencode" => &mut self.login.opencode,
             "grok" => &mut self.login.grok,
             "hermes" => &mut self.login.hermes,
@@ -1975,6 +2082,7 @@ impl Core {
         self.chat_epoch += 1;
         let cwd = self.chat.cwd.clone();
         self.enter_project(&cwd);
+        self.update_discord();
         self.files_epoch += 1;
         self.focus_epoch += 1;
     }
@@ -2184,6 +2292,25 @@ impl Core {
         self.updater.set_auto(on);
     }
 
+    /// Turns the Discord profile status on or off, and whether it names the open folder.
+    pub fn set_discord(&mut self, presence: bool, project: bool) {
+        self.cfg.discord_presence = presence;
+        self.cfg.discord_project = project;
+        let mut m = serde_json::Map::new();
+        m.insert("discordPresence".into(), json!(presence));
+        m.insert("discordProject".into(), json!(project));
+        config::save_config(m);
+        self.update_discord();
+    }
+
+    /// Sends the current state to Discord: nothing when it's off, and the folder's name only when that's allowed.
+    pub fn update_discord(&self) {
+        let activity = self.cfg.discord_presence.then(|| crate::discord::Activity {
+            project: self.cfg.discord_project.then(|| crate::discord::project_name(&self.chat.cwd)).flatten(),
+        });
+        crate::discord::update(activity);
+    }
+
     pub fn set_notify(&mut self, flash: bool, toast: bool) {
         self.cfg.notify_flash = Some(flash);
         self.cfg.notify_toast = Some(toast);
@@ -2263,7 +2390,7 @@ impl Core {
         let cfg = &self.cfg;
         let hub = crate::mcp_client::hub();
         let steering: Vec<String> = self.chat.shared.steer.lock().unwrap().iter().map(|s| s.text.clone()).collect();
-        let login_needed = cfg.api_key.is_none() && !cfg.guest && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() && cfg.additional.is_empty();
+        let login_needed = cfg.api_key.is_none() && !cfg.guest && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.codex_enabled && !cfg.claude_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() && cfg.additional.is_empty();
         let voice = match &self.voice {
             Voice::Idle => json!({ "state": "idle" }),
             // Rounded so that it only goes out when it moves.
@@ -2305,6 +2432,8 @@ impl Core {
                 "copilotUser": cfg.copilot_user,
                 "devin": cfg.devin_enabled,
                 "kiro": cfg.kiro_enabled,
+                "codex": cfg.codex_enabled,
+                "claude": cfg.claude_enabled,
                 "opencode": cfg.opencode_enabled,
                 "opencodeSignedIn": cfg.opencode_signed_in,
                 "grokSignedIn": cfg.grok_signed_in,
@@ -2314,6 +2443,8 @@ impl Core {
                 "additional": cfg.additional.iter().map(|l| json!({ "id": l.id, "masked": l.key.as_deref().map(mask_key) })).collect::<Vec<_>>(),
                 "notifyFlash": cfg.notify_flash,
                 "notifyToast": cfg.notify_toast,
+                "discordPresence": cfg.discord_presence,
+                "discordProject": cfg.discord_project,
                 "autoUpdate": cfg.auto_update,
                 "autoCompactTokens": cfg.auto_compact_tokens,
                 "fallbacks": cfg.fallbacks,
@@ -2325,6 +2456,8 @@ impl Core {
             ("modelsLoading", json!(self.models_loading)),
             ("additionalErrors", json!(self.additional_errors)),
             ("kiroModelsError", json!(self.kiro_models_error)),
+            ("codexModelsError", json!(self.codex_models_error)),
+            ("claudeModelsError", json!(self.claude_models_error)),
             ("opencodeModelsError", json!(self.opencode_models_error)),
             ("grokModelsError", json!(self.grok_models_error)),
             ("hermesModelsError", json!(self.hermes_models_error)),
@@ -2352,6 +2485,8 @@ impl Core {
                 "copilot": self.login.copilot.as_ref().map(SignIn::json), "copilotError": self.login.copilot_error,
                 "devin": self.login.devin.as_ref().map(SignIn::json), "devinError": self.login.devin_error,
                 "kiro": self.login.kiro.as_ref().map(SignIn::json), "kiroError": self.login.kiro_error,
+                "codex": self.login.codex.as_ref().map(SignIn::json), "codexError": self.login.codex_error,
+                "claude": self.login.claude.as_ref().map(SignIn::json), "claudeError": self.login.claude_error,
                 "opencode": self.login.opencode.as_ref().map(SignIn::json), "opencodeError": self.login.opencode_error,
                 "grok": self.login.grok.as_ref().map(SignIn::json), "grokError": self.login.grok_error,
                 "hermes": self.login.hermes.as_ref().map(SignIn::json), "hermesError": self.login.hermes_error,
@@ -2430,7 +2565,7 @@ impl Core {
             "efforts": EFFORTS,
             "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name, "needsKey": a.needs_key, "note": a.note, "keyUrl": a.key_url, "keyLink": a.key_link, "keyHint": a.key_hint })).collect::<Vec<_>>(),
             "kiloWarning": config::KILO_WARNING,
-            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL, "hermes": crate::hermes::PLAN_URL },
+            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "codex": crate::codex::PLAN_URL, "claude": crate::claude::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL, "hermes": crate::hermes::PLAN_URL },
             "languages": crate::instructions::LANGUAGES,
             "exe": std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "Scout.exe".into()),
         })

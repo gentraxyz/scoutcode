@@ -128,13 +128,13 @@ fn bearer_from(file: &Path, portal: &str, key: Option<&str>) -> Result<String, A
     let _one_at_a_time = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let key_or = |message: &str| key.map(String::from).ok_or_else(|| ApiError::new(message, 401));
     let Some(login) = read(file) else {
-        return key_or("Not signed in to Hermes. Sign in or add a key under Settings > Account.");
+        return key_or("Not signed in to Hermes. Sign in or add a key under Settings > Providers.");
     };
     let at = now();
     if login.expires > at + REFRESH_WITHIN {
         return Ok(login.access);
     }
-    let ended = "Your Hermes sign-in has ended. Sign in again under Settings > Account.";
+    let ended = "Your Hermes sign-in has ended. Sign in again under Settings > Providers.";
     let Some(token) = login.refresh.as_deref() else {
         let _ = std::fs::remove_file(file);
         return key_or(ended);

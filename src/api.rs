@@ -263,6 +263,10 @@ pub struct ModelInfo {
     pub devin_id: Option<String>,
     /// The id Kiro knows it by. Kiro's entries are their own too, under "kiro/…", for the same reason.
     pub kiro_id: Option<String>,
+    /// The id Codex knows it by. Its entries are their own too, under "codex/…": its models depend on the ChatGPT plan.
+    pub codex_id: Option<String>,
+    /// The id Claude Code knows it by. Its entries are their own too, under "claude/…": its models depend on the Claude plan.
+    pub claude_id: Option<String>,
     /// The id Grok Build knows it by. Its entries are their own too, under "grok/…", for the same reason.
     pub grok_id: Option<String>,
     /// The id Nous Portal knows it by. Its entries are their own too, under "hermes/…": its prices and free models are its own.
@@ -325,6 +329,8 @@ impl ModelInfo {
             copilot_id: None,
             devin_id: None,
             kiro_id: None,
+            codex_id: None,
+            claude_id: None,
             grok_id: None,
             hermes_id: None,
             additional: None,
@@ -355,6 +361,12 @@ impl ModelInfo {
             return id;
         }
         if let ("kiro", Some(id)) = (provider, &self.kiro_id) {
+            return id;
+        }
+        if let ("codex", Some(id)) = (provider, &self.codex_id) {
+            return id;
+        }
+        if let ("claude", Some(id)) = (provider, &self.claude_id) {
             return id;
         }
         if let ("grok", Some(id)) = (provider, &self.grok_id) {
@@ -433,7 +445,7 @@ impl ModelInfo {
             "editTool": if self.edit_tool == crate::tools::EditTool::ApplyPatch { "apply_patch" } else { "str_replace" },
             "openrouterId": self.openrouter_id, "nvidiaId": self.nvidia_id, "opencodeId": self.opencode_id, "kiloId": self.kilo_id,
             "kiloFree": self.kilo_free, "kiloTier": self.kilo_tier, "copilotId": self.copilot_id, "devinId": self.devin_id, "kiroId": self.kiro_id,
-            "grokId": self.grok_id, "hermesId": self.hermes_id, "additional": self.additional, "hosted": self.hosted, "free": self.free,
+            "codexId": self.codex_id, "claudeId": self.claude_id, "grokId": self.grok_id, "hermesId": self.hermes_id, "additional": self.additional, "hosted": self.hosted, "free": self.free,
             "tier": self.tier, "openrouterTier": self.openrouter_tier,
         })
     }
@@ -472,6 +484,8 @@ impl ModelInfo {
             copilot_id: s("copilotId"),
             devin_id: s("devinId"),
             kiro_id: s("kiroId"),
+            codex_id: s("codexId"),
+            claude_id: s("claudeId"),
             grok_id: s("grokId"),
             hermes_id: s("hermesId"),
             additional,
@@ -1023,7 +1037,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     if !res.status().is_success() {
         let mut e = error_from(res);
         if is_kilo(cfg) {
-            e.message = e.message.replace("check your sign-in or API key", "paid Kilo models need a key: add one in Settings > Account");
+            e.message = e.message.replace("check your sign-in or API key", "paid Kilo models need a key: add one in Settings > Providers");
         }
         return Err(e);
     }

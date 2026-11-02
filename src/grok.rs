@@ -378,7 +378,7 @@ pub fn forget(session: &str) {
 pub fn explain(message: &str) -> String {
     let m = message.to_lowercase();
     if ["authentication", "not signed in", "session expired", "unauthorized", "401"].iter().any(|w| m.contains(w)) {
-        return "Grok Build isn't signed in, or its API key isn't valid. Sign in or check the key under Settings > Account.".into();
+        return "Grok Build isn't signed in, or its API key isn't valid. Sign in or check the key under Settings > Providers.".into();
     }
     if ["credit", "limit", "billing", "quota", "subscription", "insufficient", "upgrade", "429"].iter().any(|w| m.contains(w)) {
         return format!("Grok's limit may have been reached ({message}). Your account is at {PLAN_URL}. This chat is saved, so you can carry on by picking another provider in the model menu.");
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn errors_say_what_to_do() {
-        assert!(explain("Authentication required: no auth method id provided").contains("Settings > Account"));
+        assert!(explain("Authentication required: no auth method id provided").contains("Settings > Providers"));
         assert!(explain("You've hit your usage limit").contains(PLAN_URL));
         assert_eq!(explain("boom"), "Grok Build: boom");
     }

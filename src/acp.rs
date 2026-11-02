@@ -1,5 +1,5 @@
-//! The Agent Client Protocol, for CLIs that loop over the model and run their own tools: JSON-RPC over stdio. Kiro, OpenCode
-//! and Grok Build run this way. Scout shows what they do and answers their permission requests, but their edits are outside
+//! The Agent Client Protocol, for CLIs that loop over the model and run their own tools: JSON-RPC over stdio. Kiro, Codex,
+//! Claude Code, OpenCode and Grok Build run this way. Scout shows what they do and answers their permission requests, but their edits are outside
 //! Scout's undo. Each turn is one process, so the conversation always comes from Scout's messages and compaction and
 //! switching provider have nothing to keep in step.
 
@@ -247,7 +247,16 @@ impl Server {
     }
 
     pub fn new_session(&self, cwd: &str) -> Result<Value, String> {
-        self.conn.call("session/new", json!({"cwd": cwd, "mcpServers": []}), Duration::from_secs(60))
+        self.new_session_with(cwd, Value::Null)
+    }
+
+    /// A new session, with `meta` for the CLI's own extensions when it isn't null.
+    pub fn new_session_with(&self, cwd: &str, meta: Value) -> Result<Value, String> {
+        let mut params = json!({"cwd": cwd, "mcpServers": []});
+        if !meta.is_null() {
+            params["_meta"] = meta;
+        }
+        self.conn.call("session/new", params, Duration::from_secs(60))
     }
 
     pub fn delete_session(&self, session: &Value) {
@@ -267,6 +276,11 @@ pub fn options_of(session: &Value, option: &str) -> Vec<(String, String)> {
     let Some(options) = session.get("configOptions").and_then(Value::as_array) else { return vec![] };
     let found = options.iter().find(|o| o.get("id").and_then(Value::as_str) == Some(option));
     found.and_then(|m| m.get("options")).and_then(Value::as_array).map_or(vec![], |list| list.iter().filter_map(|o| Some((o.get("value")?.as_str()?.to_string(), o.get("name")?.as_str()?.to_string()))).collect())
+}
+
+/// The ids of the modes a session offers.
+pub fn modes_of(session: &Value) -> Vec<String> {
+    session.pointer("/modes/availableModes").and_then(Value::as_array).map_or(vec![], |list| list.iter().filter_map(|m| Some(m.get("id")?.as_str()?.to_string())).collect())
 }
 
 /// One session, on its own process: started for a turn and gone after it.
@@ -372,6 +386,9 @@ mod tests {
         assert_eq!(options_of(&session, "autopilot")[1], ("off".to_string(), "Supervised".to_string()));
         assert!(options_of(&session, "model").is_empty());
         assert!(options_of(&json!({}), "model").is_empty());
+        let session = json!({"modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}, {"id": "plan", "name": "Plan"}]}});
+        assert_eq!(modes_of(&session), ["default", "plan"]);
+        assert!(modes_of(&json!({})).is_empty());
     }
 
     #[test]

@@ -84,6 +84,10 @@ pub enum Ev {
     Kiro(crate::kiro::Update),
     /// Why Kiro's models couldn't be listed, from the last time the lists were loaded.
     KiroModelsError(Option<String>),
+    /// How setting up Codex ("codex") or Claude Code ("claude") and signing in to it is going.
+    AgentSignIn(&'static str, crate::node::Update),
+    /// Why Codex's or Claude Code's models couldn't be listed, from the last time the lists were loaded.
+    AgentModelsError(&'static str, Option<String>),
     /// How setting up OpenCode or signing in to it is going.
     Opencode(crate::opencode::Update),
     /// Why OpenCode's models couldn't be listed, from the last time the lists were loaded.
@@ -145,7 +149,7 @@ pub struct Shared {
     pub mode: Mutex<String>,
     /// The id to send to `provider`.
     pub model: Mutex<String>,
-    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "opencode", "grok", "hermes" or an additional provider's id.
+    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id.
     pub provider: Mutex<String>,
     pub effort: Mutex<String>,
     pub cancel: AtomicBool,
@@ -365,6 +369,28 @@ static KIRO: AcpCli = AcpCli {
     forget: |_| {},
 };
 
+static CODEX: AcpCli = AcpCli {
+    tool: "codex",
+    name: "Codex",
+    installed: crate::codex::installed,
+    ensure_runtime: crate::codex::ensure_runtime,
+    start: crate::codex::start,
+    explain: crate::codex::explain,
+    no_reply: "Codex finished without replying. Try rephrasing, or say \"continue\".",
+    forget: |_| {},
+};
+
+static CLAUDE: AcpCli = AcpCli {
+    tool: "claude",
+    name: "Claude Code",
+    installed: crate::claude::installed,
+    ensure_runtime: crate::claude::ensure_runtime,
+    start: crate::claude::start,
+    explain: crate::claude::explain,
+    no_reply: "Claude Code finished without replying. Try rephrasing, or say \"continue\".",
+    forget: |_| {},
+};
+
 static OPENCODE: AcpCli = AcpCli {
     tool: "opencode",
     name: "OpenCode",
@@ -373,7 +399,7 @@ static OPENCODE: AcpCli = AcpCli {
     start: crate::opencode::start,
     explain: crate::opencode::explain,
     // It reports a refused model, like one past its free limit, only in its own log.
-    no_reply: "OpenCode finished without replying. A free model may have hit its limit: try another, or sign in under Settings > Account.",
+    no_reply: "OpenCode finished without replying. A free model may have hit its limit: try another, or sign in under Settings > Providers.",
     forget: crate::opencode::forget,
 };
 
@@ -474,6 +500,12 @@ impl Agent {
             let content = self.acp_run(&KIRO, messages, false, h)?;
             return Ok(StreamResult { content, ..Default::default() });
         }
+        for cli in [&CODEX, &CLAUDE] {
+            if provider == cli.tool {
+                let content = self.acp_run(cli, messages, false, h)?;
+                return Ok(StreamResult { content, ..Default::default() });
+            }
+        }
         if provider == "opencode" {
             let content = self.acp_run(&OPENCODE, messages, false, h)?;
             return Ok(StreamResult { content, ..Default::default() });
@@ -570,7 +602,7 @@ impl Agent {
                     }
                     // Kilo's limit is per hour, so a retry seconds later fails too and burns what's left. Only its own short wait gets one.
                     if provider == "kilo" && e.status == 429 && !(attempt == 0 && e.retry_after.is_some_and(|s| s <= 60)) {
-                        return Err(ApiError { message: "Kilo's free models allow 200 requests an hour from your network, and that's used up. Switch provider in the model menu, use a paid model with a Kilo key (Settings > Account), or try again later.".into(), ..e });
+                        return Err(ApiError { message: "Kilo's free models allow 200 requests an hour from your network, and that's used up. Switch provider in the model menu, use a paid model with a Kilo key (Settings > Providers), or try again later.".into(), ..e });
                     }
                     let wait = e.retry_after.unwrap_or(2u64.pow(attempt + 1)).min(60);
                     h.send(Ev::Status(format!("{} · retrying in {wait}s ({}/4)", e.message.chars().take(120).collect::<String>(), attempt + 1)));
@@ -1658,7 +1690,7 @@ impl Agent {
             save_session(&mut self.session);
             return r;
         }
-        for cli in [&KIRO, &OPENCODE, &GROK] {
+        for cli in [&KIRO, &CODEX, &CLAUDE, &OPENCODE, &GROK] {
             if *self.shared.provider.lock().unwrap() == cli.tool {
                 self.session.model = self.shared.model.lock().unwrap().clone();
                 let req = self.session.messages.clone();

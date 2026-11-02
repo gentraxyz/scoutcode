@@ -26,7 +26,7 @@ export type Fallbacks = { chosen: boolean; all: ModelRef[]; models: [ModelRef, M
 export type Model = {
   id: string; label: string; description: string | null; context: number | null; tools: boolean | null; vision: boolean | null; cost: string | null;
   providers: string[]; routesTo: string[]; available: boolean | null; openrouterId: string | null; nvidiaId: string | null; opencodeId: string | null; kiloId: string | null; kiloFree: boolean;
-  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; grokId: string | null; hermesId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
+  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; codexId: string | null; claudeId: string | null; grokId: string | null; hermesId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
   tier: number | null; openrouterTier: number | null;
 };
 
@@ -60,8 +60,8 @@ export type UpdateStatus =
 export type View = {
   cfg: {
     loginNeeded: boolean; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
-    nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks;
+    nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks;
   };
   mode: string;
   model: { id: string; provider: string; key: string; short: string };
@@ -70,6 +70,8 @@ export type View = {
   modelsLoading: number;
   additionalErrors: string[];
   kiroModelsError: string | null;
+  codexModelsError: string | null;
+  claudeModelsError: string | null;
   opencodeModelsError: string | null;
   grokModelsError: string | null;
   hermesModelsError: string | null;
@@ -88,7 +90,7 @@ export type View = {
   focusEpoch: number;
   login: {
     busy: boolean; url: string | null; error: string | null; kiloCheck: { ok: boolean; message: string } | null;
-    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null; opencode: SignIn | null; opencodeError: string | null; grok: SignIn | null; grokError: string | null; hermes: SignIn | null; hermesError: string | null;
+    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null; codex: SignIn | null; codexError: string | null; claude: SignIn | null; claudeError: string | null; opencode: SignIn | null; opencodeError: string | null; grok: SignIn | null; grokError: string | null; hermes: SignIn | null; hermesError: string | null;
   };
   skills: { name: string; about: string; source: string | null; dir: string }[];
   link: {
@@ -108,7 +110,7 @@ export type Statics = {
   efforts: string[];
   additionalProviders: { id: string; name: string; needsKey: boolean; note: string; keyUrl: string; keyLink: string; keyHint: string }[];
   kiloWarning: string;
-  plans: { copilot: string; devin: string; kiro: string; opencode: string; grok: string; hermes: string };
+  plans: { copilot: string; devin: string; kiro: string; codex: string; claude: string; opencode: string; grok: string; hermes: string };
   languages: [string, string][];
   exe: string;
 };

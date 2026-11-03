@@ -129,7 +129,11 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const [search, setSearch] = useState('');
   const [adding, setAdding] = useState(false);
   const [hover, setHover] = useState<{ m: Model; top: number; left: number } | null>(null);
-  const signedIn = (t: Tab) => ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, additional: cfg.additional.length > 0, starred: true, kilo: true, chatbots: link.on })[t];
+  // A team's member sees what the team runs, and the providers on this PC it allows.
+  const team = cfg.team;
+  const teamRuns = (t: Tab) => !!team && (team.providers.includes(t) || (t === 'additional' && additionalProviders.some((a) => team.providers.includes(a.id))));
+  const shownTab = (t: Tab) => !team || t === 'starred' || t === 'chatbots' || teamRuns(t) || team.acp.includes(t);
+  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, additional: cfg.additional.length > 0, starred: true, kilo: true, chatbots: link.on })[t];
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => {
     const all = allRows(models);
@@ -138,18 +142,19 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
     if (q) list = all.filter((r) => [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q)));
     else if (tab === 'starred') list = all.filter((r) => starred.includes(r.star));
     else if (tab === 'additional') list = all.filter((r) => additionalProviders.some((a) => a.id === r.provider));
-    else list = all.filter((r) => r.provider === tab);
+    else list = all.filter((r) => r.provider === tab && (tab !== 'scoutcode' || signedIn('scoutcode') || r.model.free));
     // Starred first, in the order they were starred. The sort keeps the rest as they came.
     return [...list].sort((a, b) => (pos(a) === pos(b) ? 0 : pos(a) - pos(b)));
   }, [models, q, tab, starred, additionalProviders]);
-  const signIn = !q && (!signedIn(tab) || (tab === 'additional' && adding));
+  // ScoutCode always lists its free models; signing in only adds the rest and a banner suggests it.
+  const signIn = !q && tab !== 'scoutcode' && (!signedIn(tab) || (tab === 'additional' && adding));
   // Chatbots bring their own model, so the tab shows the link instead of a list.
   const chatbots = !q && tab === 'chatbots';
   const empty = loading > 0 ? 'Loading models…' : q ? 'No models match.' : tab === 'starred' ? 'Star a model to keep it here.' : 'No models here yet.';
   return (
     <div className="model-menu">
       <div className="rail">
-        {TABS.map(([t, tip]) => (
+        {TABS.filter(([t]) => shownTab(t)).map(([t, tip]) => (
           <button key={t} type="button" title={signedIn(t) ? tip : `${tip} (not connected)`} aria-label={signedIn(t) ? tip : `${tip} (not connected)`} className={`rail-tab ${tab === t && !q ? 'on' : ''} ${signedIn(t) ? '' : 'off'}`} onClick={() => { setTab(t); setSearch(''); setAdding(false); }}>
             <RailIcon tab={t} />
           </button>
@@ -158,6 +163,12 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
       <div className="model-column">
         <input className="input" autoFocus placeholder="Search models" value={search} onChange={(e) => setSearch(e.target.value)} />
         {tab === 'kilo' && <div className="tiny dim">{kiloWarning}</div>}
+        {tab === 'scoutcode' && !q && !signedIn('scoutcode') && (
+          <div className="card-note">
+            <div className="small"><b className="strong">Sign in for more free requests.</b> <span className="dim">Your account's monthly desktop credit pays for the rest.</span></div>
+            <BrowserEntry />
+          </div>
+        )}
         {tab === 'scoutcode' && cfg.guest && <div className="tiny dim">{GUEST_NOTE} Sign in from Settings &gt; Account for more.</div>}
         {tab === 'kiro' && cfg.kiro && kiroError && <div className="tiny red">{kiroError}</div>}
         {tab === 'codex' && cfg.codex && codexError && <div className="tiny red">{codexError}</div>}
@@ -180,7 +191,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
           <>
             <div className="row">
               <b className="strong grow">Additional Providers</b>
-              {cfg.additional.length > 0 && (adding
+              {!team && cfg.additional.length > 0 && (adding
                 ? <button type="button" className="button" onClick={() => setAdding(false)}>Back</button>
                 : cfg.additional.length < additionalProviders.length && <button type="button" className="button" title="Add another provider" onClick={() => setAdding(true)}>+</button>)}
             </div>

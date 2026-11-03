@@ -910,6 +910,20 @@ fn usage_reply(res: ureq::http::Response<ureq::Body>) -> Result<UsageInfo, ApiEr
     }
 }
 
+/// The Scout Enterprise team the signed-in account is in, if any. A server from before teams has none.
+pub fn team_policy(cfg: &Config) -> Result<Option<crate::config::Team>, ApiError> {
+    let url = format!("{}/api/account/team", cfg.base_url.trim_end_matches("/v1"));
+    let res = http().get(&url).header("Authorization", &format!("Bearer {}", key(cfg)?)).call().map_err(transport)?;
+    match res.status().as_u16() {
+        200 => {
+            let body: Value = res.into_body().read_json().map_err(transport)?;
+            Ok(body.get("policy").filter(|p| !p.is_null()).and_then(|p| serde_json::from_value(p.clone()).ok()))
+        }
+        404 => Ok(None),
+        _ => Err(error_from(res)),
+    }
+}
+
 /// The signed-in account's limits this month.
 pub fn usage_info(cfg: &Config) -> Result<UsageInfo, ApiError> {
     let res = http().get(&usage_url(cfg)).header("Authorization", &format!("Bearer {}", key(cfg)?)).call().map_err(transport)?;

@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { connect } from './store';
 import './styles.css';
+import './theme';
 
 // The right-click menu is the browser's (Back, Reload, Inspect). Text fields keep theirs for copy and paste.
 document.addEventListener('contextmenu', (e) => {

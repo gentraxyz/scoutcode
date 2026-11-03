@@ -14,11 +14,15 @@ import { invoke, type DiffLines } from './api';
 import { GamesTab } from './Games';
 import { Resizer } from './Sidebar';
 import { ui, useUi, useView, type DockTab } from './store';
+import { subscribeTheme, themeColor } from './theme';
 import { DiffBody, Icon, IconButton, Modal, Spinner } from './widgets';
 
 // ---------- terminal ----------
 
-const TERMINAL_THEME = { background: '#1a1a1a', foreground: '#cccccc', cursor: '#cccccc', selectionBackground: '#ffffff30', black: '#262626', brightBlack: '#7a7a7a', red: '#e86464', green: '#4fbf7f', yellow: '#e5c07b', blue: '#5b9cf5', magenta: '#c586c0', cyan: '#56b6c2', white: '#cccccc', brightWhite: '#ededed' };
+/** xterm can't read CSS variables, so it takes the theme's colors when it opens and again when the theme changes. */
+function terminalTheme() {
+  return { background: themeColor('sidebar'), foreground: themeColor('text'), cursor: themeColor('text'), selectionBackground: '#ffffff30', black: themeColor('surface'), brightBlack: themeColor('dim'), red: '#e86464', green: '#4fbf7f', yellow: '#e5c07b', blue: '#5b9cf5', magenta: '#c586c0', cyan: '#56b6c2', white: themeColor('text'), brightWhite: themeColor('strong') };
+}
 
 /** Stays mounted while the panel is open, so the shell's screen survives switching tabs. */
 function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
@@ -29,7 +33,7 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
   const [run, setRun] = useState(0);
 
   useEffect(() => {
-    const xterm = new XTerm({ theme: TERMINAL_THEME, fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize: 13, scrollback: 5000, cursorBlink: true, allowProposedApi: true });
+    const xterm = new XTerm({ theme: terminalTheme(), fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize: 13, scrollback: 5000, cursorBlink: true, allowProposedApi: true });
     const fit = new FitAddon();
     xterm.loadAddon(fit);
     xterm.open(host.current!);
@@ -63,8 +67,10 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
     invoke('terminal_start', { cwd, rows: xterm.rows, cols: xterm.cols, output, exited: done }).catch((e) => setError(String(e)));
     const observer = new ResizeObserver(() => { if (host.current?.offsetWidth) fit.fit(); });
     observer.observe(host.current!);
+    const unsubscribe = subscribeTheme(() => { xterm.options.theme = terminalTheme(); });
     return () => {
       current = false;
+      unsubscribe();
       observer.disconnect();
       data.dispose();
       size.dispose();
@@ -178,12 +184,12 @@ function TreeFolder({ dir, depth, epoch, active, onOpen }: { dir: string; depth:
 }
 
 const editorTheme = EditorView.theme({
-  '&': { height: '100%', backgroundColor: '#1a1a1a', color: '#cccccc', fontSize: '12.5px' },
-  '.cm-content': { caretColor: '#cccccc', fontFamily: '"Cascadia Mono", Consolas, monospace' },
-  '.cm-gutters': { backgroundColor: '#1a1a1a', color: '#4d4d4d', border: 'none' },
-  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#232323' },
+  '&': { height: '100%', backgroundColor: 'var(--sidebar)', color: 'var(--text)', fontSize: '12.5px' },
+  '.cm-content': { caretColor: 'var(--text)', fontFamily: '"Cascadia Mono", Consolas, monospace' },
+  '.cm-gutters': { backgroundColor: 'var(--sidebar)', color: 'var(--faint)', border: 'none' },
+  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'rgb(255 255 255 / 3%)' },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: '#ffffff24 !important' },
-  '.cm-cursor': { borderLeftColor: '#cccccc' },
+  '.cm-cursor': { borderLeftColor: 'var(--text)' },
 }, { dark: true });
 
 const highlight = syntaxHighlighting(HighlightStyle.define([

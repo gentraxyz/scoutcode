@@ -193,7 +193,7 @@ function useShortcuts() {
 }
 
 export function App() {
-  const { loginNeeded } = useView('cfg');
+  const { loginNeeded, team } = useView('cfg');
   const sidebar = useUi((u) => u.sidebar);
   const dropping = useUi((u) => u.dropping);
   useShortcuts();
@@ -226,12 +226,16 @@ export function App() {
     };
   }, []);
 
-  // Once it's shown, the first-run screen stays up while the user links more providers, until they press Continue.
+  // Once it's shown, the first-run screen stays up while the user links more providers, until they press Continue. A
+  // Scout Enterprise team's member skips it as soon as they've signed in: the team has set their providers up.
   const [onboarding, setOnboarding] = useState(false);
   useEffect(() => {
     if (loginNeeded) setOnboarding(true);
   }, [loginNeeded]);
-  if (loginNeeded || onboarding) return <Login onDone={() => setOnboarding(false)} />;
+  useEffect(() => {
+    if (team) setOnboarding(false);
+  }, [!!team]);
+  if (!team && (loginNeeded || onboarding)) return <Login onDone={() => setOnboarding(false)} />;
   return (
     <div className="app">
       {sidebar && <Sidebar />}

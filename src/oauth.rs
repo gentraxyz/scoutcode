@@ -67,8 +67,18 @@ pub fn open_browser(url: &str) {
 }
 
 fn page(title: &str, text: &str) -> String {
+    // The site's dark palette (see the sign-in pages on scoutcode), so this tab matches the page that came before it.
     let body = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>{title}</title><body style=\"font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem\"><h2>{title}</h2><p>{text}</p></body>"
+        "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{title} · Scout</title>\
+        <style>:root{{color-scheme:dark}}html,body{{margin:0;min-height:100vh;background:#14120b;color:#edecec;font:14px/1.5 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;-webkit-font-smoothing:antialiased}}\
+        main{{min-height:100vh;display:grid;place-items:center;padding:24px}}\
+        .card{{box-sizing:border-box;width:100%;max-width:440px;padding:32px 30px 28px;border:1px solid rgba(237,236,236,.1);border-radius:14px;background:linear-gradient(180deg,#1d1b14 0%,#1b1913 100%);box-shadow:0 24px 60px rgba(0,0,0,.45)}}\
+        .mark{{width:40px;height:40px;border-radius:10px;background:#edecec;color:#14120b;display:grid;place-items:center;margin-bottom:18px}}\
+        .mark svg{{width:24px;height:24px}}\
+        h2{{margin:0 0 .6rem;font-size:1.3rem;font-weight:500;letter-spacing:-.02em}}\
+        p{{margin:0;color:#a09e97}}</style>\
+        <main><div class=\"card\"><div class=\"mark\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><path d=\"M18.65 4.84V8.79L10.74 13.32 16.03 16.57V20.21L7.48 15.07V11.37ZM13.35 27.16V23.21L21.26 18.68 15.97 15.43V11.79L24.52 16.93V20.63Z\" fill=\"currentColor\" stroke=\"currentColor\" stroke-width=\"1\" stroke-linejoin=\"round\"/></svg></div>\
+        <h2>{title}</h2><p>{text}</p></div></main>"
     );
     format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
 }

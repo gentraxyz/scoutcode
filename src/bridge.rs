@@ -133,6 +133,20 @@ fn permission_answer(answer: &str, feedback: Option<String>) -> PermissionAnswer
 #[tauri::command]
 fn act(core: Shared, action: Action) -> Result<(), String> {
     let mut c = core.lock().unwrap();
+    // A Scout Enterprise team's members use the team's providers: they can't add their own, and can only sign in on this PC
+    // to the ones the team allows.
+    if let Some(t) = c.team() {
+        let own = match &action {
+            Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SetGuest { on: true } => true,
+            Action::SaveNvidiaKey { key } | Action::SaveGrokKey { key } | Action::SaveHermesKey { key } => key.is_some(),
+            Action::SetOpencode { on, .. } => *on && !t.acp.iter().any(|a| a == "opencode"),
+            Action::SignIn { which } => !t.acp.iter().any(|a| a == which),
+            _ => false,
+        };
+        if own {
+            return Err(format!("{} manages your providers. Ask a team admin to add it.", t.name));
+        }
+    }
     match action {
         Action::Stop => c.stop(),
         Action::NewChat => c.new_chat(),

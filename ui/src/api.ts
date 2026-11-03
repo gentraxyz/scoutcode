@@ -61,9 +61,12 @@ export type UpdateStatus =
 /** Experimental games: where they show, and whether they open and close with Scout's work. */
 export type Games = { on: boolean; place: 'float' | 'panel'; openOnRun: boolean; autoClose: boolean; pos: [number, number] | null };
 
+/** The Scout Enterprise team the account is in: the providers it runs through the server, and the ones on this PC it allows. */
+export type Team = { name: string; role: string; providers: string[]; acp: string[] };
+
 export type View = {
   cfg: {
-    loginNeeded: boolean; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
+    loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
     additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks; experimentalImages: boolean; imageModel: string | null; games: Games;
   };

@@ -111,6 +111,8 @@ pub enum Ev {
     AdditionalErrors(Vec<String>),
     /// The account the key belongs to, from the model list.
     User(String),
+    /// The Scout Enterprise team the account is in, read before the model list when it changed.
+    Team(Option<crate::config::Team>),
     /// The account's limits for Settings > Usage, and what to say when it follows a change.
     Usage(Result<crate::api::UsageInfo, String>, Option<String>),
     /// The account's limits, from the 30-second refresh.
@@ -526,7 +528,8 @@ impl Agent {
             messages
         };
         // OpenRouter tries the user's keys in order. A key that fails hands the request to the next one.
-        let mut cfgs: Vec<Config> = if provider == "openrouter" {
+        // A team's OpenRouter goes through the server instead, with the team's key.
+        let mut cfgs: Vec<Config> = if provider == "openrouter" && !self.cfg.team.as_ref().is_some_and(|t| t.runs("openrouter")) {
             self.cfg
                 .openrouter_keys
                 .iter()
@@ -572,7 +575,7 @@ impl Agent {
                 }
             };
             // A sign-in's token can run out between attempts, so each one asks.
-            let signed = if provider == "hermes" { crate::hermes::bearer(self.cfg.hermes_key.as_deref()).map(|t| cfgs[key].api_key = Some(t)) } else { Ok(()) };
+            let signed = if provider == "hermes" && !self.cfg.team.as_ref().is_some_and(|t| t.runs("hermes")) { crate::hermes::bearer(self.cfg.hermes_key.as_deref()).map(|t| cfgs[key].api_key = Some(t)) } else { Ok(()) };
             match signed.and_then(|()| api::stream_chat(&cfgs[key], req, &mut on, &self.shared.cancel)) {
                 Ok(r) => {
                     self.add_usage(&r, !quiet, h);

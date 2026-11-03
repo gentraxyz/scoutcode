@@ -2,11 +2,13 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type Fallbacks, type Games, type McpServer, type ModelRef, type UsageInfo } from './api';
 import { closeGame } from './Games';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
-import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
+import { BACKGROUNDS, ELEMENTS, setTheme, useTheme } from './theme';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
 
 const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[] = [
+  { id: 'appearance', title: 'Appearance', icon: 'palette', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style' },
   { id: 'instructions', title: 'Instructions', icon: 'chat', keywords: 'instructions project global rules preferences language russian english responses' },
   { id: 'memory', title: 'Memory', icon: 'file', keywords: 'memory remember project user profile facts context' },
   { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
@@ -140,6 +142,42 @@ function Discord() {
       <Heading title="Discord" sub="Shows on your Discord profile that you're using Scout. Off unless you turn it on." />
       <SettingRow title="Show Scout on Discord" sub="Your profile shows \“Using Scout\” while the app is open. Nothing else is sent."><Toggle label="Show Scout on Discord" on={presence} onChange={(on) => act('setDiscord', { presence: on, project: on && project })} /></SettingRow>
       <SettingRow title="Show the folder's name" sub="Adds \“Working on <folder>\”, using only the folder's name, never its path, chats or files. Needs the setting above."><Toggle label="Show the folder's name" on={project} onChange={(on) => act('setDiscord', { presence, project: on })} /></SettingRow>
+    </>
+  );
+}
+
+/** Colors, picked from short lists of ones that go together. */
+function Appearance() {
+  const theme = useTheme();
+  const elements = ELEMENTS.find((e) => e.id === theme.elements)!.vars;
+  return (
+    <>
+      <Heading title="Appearance" sub="How Scout looks in this window. It changes right away and is kept for next time." />
+      <SectionLabel>Background</SectionLabel>
+      <div className="swatches" role="radiogroup" aria-label="Background">
+        {BACKGROUNDS.map((b) => (
+          <button key={b.id} type="button" role="radio" aria-checked={b.id === theme.background} className={`swatch ${b.id === theme.background ? 'selected' : ''}`} onClick={() => setTheme({ background: b.id })}>
+            <span className="swatch-preview">
+              <i style={{ width: '30%', background: b.vars.sidebar }} />
+              <i style={{ flex: 1, background: b.vars.bg, padding: 7 }}>
+                <i style={{ height: 8, width: '70%', borderRadius: 3, background: b.vars.surface }} />
+                <i style={{ height: 8, width: '40%', marginTop: 5, marginLeft: 'auto', borderRadius: 3, background: elements.primary }} />
+              </i>
+            </span>
+            {b.name}
+          </button>
+        ))}
+      </div>
+      <SectionLabel>Buttons and highlights</SectionLabel>
+      <div className="swatches" role="radiogroup" aria-label="Buttons and highlights">
+        {ELEMENTS.map((e) => (
+          <button key={e.id} type="button" role="radio" aria-checked={e.id === theme.elements} className={`swatch ${e.id === theme.elements ? 'selected' : ''}`} onClick={() => setTheme({ elements: e.id })}>
+            <span className="swatch-dot" style={{ background: e.vars.primary }} />
+            {e.name}
+          </button>
+        ))}
+      </div>
+      <div className="row"><button type="button" className="button ghost compact" onClick={() => setTheme({ background: 'graphite', elements: 'gray' })}>Reset to default</button></div>
     </>
   );
 }
@@ -437,6 +475,7 @@ function Account() {
       ) : (
         <>
           <SettingRow title="Signed in as" sub={name} />
+          {cfg.team && <SettingRow title="Team" sub={`${cfg.team.name}, Scout Enterprise (${cfg.team.role === 'admin' ? 'admin' : 'member'}). Code review is free.`} />}
           <SettingRow title={cfg.browserSignIn ? 'Browser sign-in' : 'API key'} sub={cfg.browserSignIn ? 'Uses your monthly desktop credit, then any banked money and balance.' : "Pays from your account's money."} />
           <SettingRow title="Account page" sub="Keys, balance and billing on scoutcode.dev."><button type="button" className="button" onClick={account}>Open</button></SettingRow>
           <SettingRow title="Sign out" sub="Forgets the login on this PC."><button type="button" className="button" onClick={() => { act('signOut'); ui.set({ settings: null }); }}>Sign out</button></SettingRow>
@@ -515,6 +554,27 @@ function Providers() {
   });
   const keyRow = (title: string, masked: string, onRemove: () => void) => <SettingRow title={title} sub={masked}><button type="button" className="button" onClick={onRemove}>Unlink</button></SettingRow>;
   const all: ProviderEntry[] = [
+    {
+      id: 'scoutcode', name: 'ScoutCode', linked: cfg.hasKey || cfg.guest,
+      status: cfg.hasKey ? 'Signed in' : cfg.guest ? 'Free models only' : 'Not linked',
+      body: (
+        <>
+          <p className="small dim">{GUEST_NOTE}</p>
+          {cfg.hasKey ? (
+            <SettingRow title="ScoutCode account" sub={cfg.username ?? 'Signed in'}>
+              <button type="button" className="button" onClick={() => act('signOut')}>Sign out</button>
+            </SettingRow>
+          ) : (
+            <div className="field-420 stack">
+              <BrowserEntry />
+              <GuestEntry />
+              <div className="small dim">Or use an API key:</div>
+              <ScoutKeyEntry />
+            </div>
+          )}
+        </>
+      ),
+    },
     own('claude', 'Claude Code', CLAUDE_NOTE, cfg.claude, "See Claude's plans"),
     own('codex', 'Codex', CODEX_NOTE, cfg.codex, "See Codex in ChatGPT's plans"),
     own('copilot', 'GitHub Copilot', COPILOT_NOTE, cfg.copilot, 'No Copilot plan yet? Turn on the free one', cfg.copilotUser ?? 'Signed in'),
@@ -635,6 +695,21 @@ function Providers() {
     },
   ];
   const list = (ps: ProviderEntry[]) => <div className="provider-list">{ps.map((p) => <ProviderRow key={p.id} p={p} open={open === p.id} onToggle={() => setOpen(open === p.id ? null : p.id)} />)}</div>;
+  if (cfg.team) {
+    // A Scout Enterprise team's member: the team's providers, whose keys stay on the server, and the ones on this PC it allows.
+    const names: Record<string, string> = { scoutcode: 'ScoutCode Cloud', openrouter: 'OpenRouter', nvidia: 'NVIDIA NIM', kilo: 'Kilo Code', hermes: 'Hermes', ...Object.fromEntries(additionalProviders.map((a) => [a.id, a.name])) };
+    const allowed = all.filter((p) => cfg.team!.acp.includes(p.id));
+    return (
+      <>
+        <Heading title="Providers" sub={`${cfg.team.name} manages your providers and models. To add one, ask a team admin.`} />
+        <SectionLabel>From your team</SectionLabel>
+        {cfg.team.providers.length
+          ? cfg.team.providers.map((id) => <SettingRow key={id} title={names[id] ?? id} sub="Through ScoutCode with your team's key, which isn't kept on this PC." />)
+          : <p className="small dim">Your team hasn't turned on any providers yet.</p>}
+        {allowed.length > 0 && <><SectionLabel>Sign in on this PC</SectionLabel><p className="small dim">Your team allows these. They run on this PC with your own account.</p>{list(allowed)}</>}
+      </>
+    );
+  }
   const rest = all.filter((p) => !p.linked);
   return (
     <>
@@ -906,6 +981,7 @@ export function Settings() {
           {shown.length === 0 && <div className="small dim">Nothing matches.</div>}
         </nav>
         <div className="settings-page" key={tab}>
+          {tab === 'appearance' && <Appearance />}
           {tab === 'instructions' && <Instructions />}
           {tab === 'memory' && <Memory />}
           {tab === 'notifications' && <Notifications />}

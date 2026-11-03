@@ -324,6 +324,14 @@ fn mask_key(key: &str) -> String {
 /// The providers whose models are listed, by the id `Config::provider` gives them, in the order the list shows them.
 fn model_sources(cfg: &Config) -> Vec<&'static str> {
     let mut out = vec![];
+    // In a Scout Enterprise team, only what the team runs, and the providers on this PC it allows that are signed in.
+    if let Some(t) = &cfg.team {
+        let relayed = ["scoutcode", "openrouter", "nvidia", "kilo"].into_iter().chain(config::ADDITIONAL.iter().map(|a| a.id)).chain(["hermes"]);
+        out.extend(relayed.filter(|s| t.runs(s)));
+        let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on())];
+        out.extend(on.into_iter().filter(|(s, on)| *on && cfg.acp_allowed(s)).map(|(s, _)| s));
+        return out;
+    }
     if cfg.api_key.is_some() || cfg.guest {
         out.push("scoutcode");
     }
@@ -386,6 +394,8 @@ fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>,
             }
             Ok(models)
         }
+        // A team's goes through the server, with the team's key.
+        "openrouter" if cfg.team.is_some() => crate::api::list_openrouter(cfg).map_err(|e| format!("OpenRouter: {}", e.message)),
         // The first key, in order, that lists the models is used.
         "openrouter" => {
             let mut failed = String::new();
@@ -427,7 +437,11 @@ fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>,
             listed.map(with_default).map_err(|_| error.unwrap_or_default())
         }
         "hermes" => {
-            let listed = crate::api::list_hermes().map_err(|e| format!("Could not load Hermes' models: {}", e.message));
+            let mut listed = crate::api::list_hermes().map_err(|e| format!("Could not load Hermes' models: {}", e.message));
+            // Nous lists its catalog to anyone, so a team's choice of models is kept to here.
+            if let (Some(t), Ok(list)) = (&cfg.team, &mut listed) {
+                list.retain(|m| m.hermes_id.as_deref().is_some_and(|id| t.allows("hermes", id)));
+            }
             h.send(Ev::HermesModelsError(listed.as_ref().err().cloned()));
             listed
         }
@@ -694,6 +708,17 @@ impl Core {
         let cfg = self.cfg.clone();
         let h = self.hooks.clone();
         std::thread::spawn(move || {
+            // Whether the account is in a Scout Enterprise team decides which providers there are, so that goes first. When
+            // it changed, the models are asked for again with it; when it can't be read, the one saved last time stays.
+            if cfg.api_key.is_some() && !cfg.is_guest() {
+                if let Ok(team) = crate::api::team_policy(&cfg) {
+                    if team != cfg.team {
+                        // Ends this fetch: see where it's handled.
+                        h.send(Ev::Team(team));
+                        return;
+                    }
+                }
+            }
             let sources = model_sources(&cfg);
             let mut lists = crate::api::load_model_cache();
             let first = sources.iter().copied().find(|s| *s == cfg.provider);
@@ -945,6 +970,11 @@ impl Core {
             Ev::HermesModelsError(e) => self.hermes_models_error = e,
             Ev::LoginUrl(u) => self.login.url = Some(u),
             Ev::User(u) => self.set_user(Some(u)),
+            // In place of this fetch's last list, which a new one with the team replaces.
+            Ev::Team(t) => {
+                self.models_loading -= 1;
+                self.set_team(t);
+            }
             Ev::Usage(r, said) => {
                 self.usage.busy = false;
                 match r {
@@ -1054,9 +1084,31 @@ impl Core {
         }
     }
 
-    /// A new key may be someone else's, so the username is dropped until the model list names it.
+    /// Joining, leaving or changing a team swaps the providers the models come from.
+    fn set_team(&mut self, team: Option<config::Team>) {
+        config::save_one("team", json!(team));
+        let joined = self.cfg.team.is_none() && team.is_some();
+        self.cfg.team = team;
+        // A new member on a provider the team doesn't run starts on ScoutCode's route when the team runs that.
+        if let Some(t) = self.cfg.team.clone().filter(|_| joined) {
+            if !t.runs(&self.chat.provider) && !t.acp.contains(&self.chat.provider) && t.runs("scoutcode") {
+                self.choose_model("auto", "scoutcode");
+            }
+        }
+        self.keys_changed();
+    }
+
+    pub fn team(&self) -> Option<&config::Team> {
+        self.cfg.team.as_ref()
+    }
+
+    /// A new key may be someone else's, so the username is dropped until the model list names it, and the team with it.
     fn set_key(&mut self, key: Option<String>) {
         self.set_user(None);
+        if self.cfg.team.is_some() {
+            config::save_one("team", Value::Null);
+            self.cfg.team = None;
+        }
         self.usage = Default::default();
         self.cfg.api_key = key;
         if self.cfg.only_kilo() && self.chat.provider == "scoutcode" {
@@ -2420,7 +2472,7 @@ impl Core {
         let cfg = &self.cfg;
         let hub = crate::mcp_client::hub();
         let steering: Vec<String> = self.chat.shared.steer.lock().unwrap().iter().map(|s| s.text.clone()).collect();
-        let login_needed = cfg.api_key.is_none() && !cfg.guest && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.codex_enabled && !cfg.claude_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() && cfg.additional.is_empty();
+        let login_needed = cfg.team.is_none() && cfg.api_key.is_none() && !cfg.guest && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.codex_enabled && !cfg.claude_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() && cfg.additional.is_empty();
         let voice = match &self.voice {
             Voice::Idle => json!({ "state": "idle" }),
             // Rounded so that it only goes out when it moves.
@@ -2449,6 +2501,7 @@ impl Core {
         vec![
             ("cfg", json!({
                 "loginNeeded": login_needed,
+                "team": cfg.team.as_ref().map(|t| json!({ "name": t.name, "role": t.role, "providers": t.providers.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), "acp": t.acp })),
                 "hasKey": cfg.api_key.is_some(),
                 "guest": cfg.is_guest(),
                 "browserSignIn": config::is_sign_in(cfg.api_key.as_deref()),

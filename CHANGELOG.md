@@ -4,6 +4,14 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.12
+Sign-in pages in the dark look, ScoutCode in Providers, and free models without an account.
+
+- The page you see after signing in to Scout is dark now, like the rest of the site.
+- ScoutCode is in Settings > Providers, with sign-in, free models, or an API key in one place. Settings > Providers also scrolls through a long list.
+- Without signing in, ScoutCode's free models are listed in the model menu, with a suggestion to sign in for more.
+- Codex has the ChatGPT logo in the model menu.
+
 ## 0.1.11
 A game to play while Scout works, and a quieter gray look.
 

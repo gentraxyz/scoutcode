@@ -199,6 +199,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   return (
     <>
       <p className="muted onboarding-ask">Pick where Scout gets its models. Link as many as you like.</p>
+      <p className="small dim onboarding-hint">In a Scout Enterprise team? Pick ScoutCode and sign in: your team has set everything else up.</p>
       <div className="provider-picker">
         <div className="picker-label free">Free</div>
         <div className="picker-groups">

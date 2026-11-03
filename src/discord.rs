@@ -3,15 +3,22 @@
 //! Off by default. Nothing is sent unless the user turns it on in Settings, and the folder name is only sent when they
 //! turn that on as well. Paths, chats, prompts and file names are never sent.
 
-use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-/// The Discord application that Scout's presence belongs to. Empty until one is registered at
-/// discord.com/developers, which keeps presence off without any other change.
-const CLIENT_ID: &str = "";
+/// The Discord application that Scout's presence belongs to (discord.com/developers). Its Rich Presence art asset
+/// named "scout" is the profile's image.
+const CLIENT_ID: &str = "1567289830969442344";
+
+/// Discord's frames are small; anything bigger means the stream is out of step.
+const MAX_FRAME: usize = 64 * 1024;
+
+/// A connection to Discord: a named pipe on Windows, a Unix socket elsewhere.
+trait Pipe: Read + Write + Send {}
+impl<T: Read + Write + Send> Pipe for T {}
+type Conn = Box<dyn Pipe>;
 
 /// How often a missing connection to Discord is retried, so presence appears once Discord starts after Scout.
 const RETRY_EVERY: Duration = Duration::from_secs(30);
@@ -42,73 +49,128 @@ pub fn update(activity: Option<Activity>) {
 
 fn run(rx: Receiver<Option<Activity>>) {
     let mut last: Option<Activity> = None;
-    let mut conn: Option<File> = None;
+    let mut conn: Option<Conn> = None;
     loop {
         match rx.recv_timeout(RETRY_EVERY) {
             Ok(activity) => last = activity,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
+        // Closing the connection is what clears the profile.
         let Some(activity) = last.clone() else {
             conn = None;
             continue;
         };
-        if CLIENT_ID.is_empty() {
-            continue;
-        }
         if conn.is_none() {
             conn = connect();
         }
-        if let Some(file) = conn.as_mut() {
-            if set_activity(file, &activity).is_err() {
+        if let Some(pipe) = conn.as_mut() {
+            if set_activity(pipe, &activity).is_err() {
                 conn = None;
             }
         }
     }
 }
 
-/// Opens the first Discord IPC pipe that answers the handshake.
-fn connect() -> Option<File> {
-    for i in 0..10 {
-        let Ok(mut file) = std::fs::OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")) else {
-            continue;
-        };
+/// The places Discord listens: discord-ipc-0 to 9, under each folder the desktop, Flatpak and Snap builds use.
+fn endpoints() -> Vec<String> {
+    #[cfg(windows)]
+    let dirs = vec![r"\\.\pipe".to_string()];
+    #[cfg(not(windows))]
+    let dirs = {
+        let mut base: Vec<String> = ["XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"].iter().filter_map(|v| std::env::var(v).ok()).collect();
+        base.push("/tmp".into());
+        let mut dirs = Vec::new();
+        for b in base {
+            let b = b.trim_end_matches('/').to_string();
+            for sub in ["", "/app/com.discordapp.Discord", "/snap.discord", "/.flatpak/dev.vencord.Vesktop/xdg-run"] {
+                let dir = format!("{b}{sub}");
+                if !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            }
+        }
+        dirs
+    };
+    dirs.iter().flat_map(|d| (0..10).map(move |i| format!("{d}/discord-ipc-{i}"))).collect()
+}
+
+fn open(path: &str) -> Option<Conn> {
+    #[cfg(windows)]
+    return std::fs::OpenOptions::new().read(true).write(true).open(path).ok().map(|f| Box::new(f) as Conn);
+    #[cfg(not(windows))]
+    return std::os::unix::net::UnixStream::connect(path).ok().map(|s| {
+        let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
+        Box::new(s) as Conn
+    });
+}
+
+/// Opens the first Discord connection that accepts Scout's handshake with a READY.
+fn connect() -> Option<Conn> {
+    for path in endpoints() {
+        let Some(mut pipe) = open(&path) else { continue };
         let hello = serde_json::json!({ "v": 1, "client_id": CLIENT_ID });
-        if send_frame(&mut file, 0, &hello).is_ok() && read_frame(&mut file).is_ok() {
-            return Some(file);
+        if send_frame(&mut pipe, 0, &hello).is_err() {
+            continue;
+        }
+        if matches!(read_reply(&mut pipe, None), Ok(reply) if reply["evt"] == "READY") {
+            return Some(pipe);
         }
     }
     None
 }
 
-fn set_activity(file: &mut File, activity: &Activity) -> std::io::Result<()> {
+fn set_activity(pipe: &mut Conn, activity: &Activity) -> std::io::Result<()> {
     let mut body = serde_json::json!({ "details": "Using Scout", "assets": { "large_image": "scout", "large_text": "Scout" } });
     if let Some(state) = activity.state() {
         body["state"] = serde_json::json!(state);
     }
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let cmd = serde_json::json!({ "cmd": "SET_ACTIVITY", "args": { "pid": std::process::id(), "activity": body }, "nonce": nonce.to_string() });
-    send_frame(file, 1, &cmd)?;
-    read_frame(file).map(drop)
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0).to_string();
+    let cmd = serde_json::json!({ "cmd": "SET_ACTIVITY", "args": { "pid": std::process::id(), "activity": body }, "nonce": nonce });
+    send_frame(pipe, 1, &cmd)?;
+    let reply = read_reply(pipe, Some(&nonce))?;
+    if reply["evt"] == "ERROR" {
+        return Err(std::io::Error::other(reply["data"]["message"].as_str().unwrap_or("Discord refused the activity").to_string()));
+    }
+    Ok(())
+}
+
+/// Reads frames until the reply: answering pings, failing on close, and skipping events that aren't for `nonce`.
+fn read_reply(pipe: &mut Conn, nonce: Option<&str>) -> std::io::Result<serde_json::Value> {
+    loop {
+        let (op, body) = read_frame(pipe)?;
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        match op {
+            1 if nonce.is_none_or(|n| value["nonce"] == n) => return Ok(value),
+            2 => return Err(std::io::Error::other(value["message"].as_str().unwrap_or("Discord closed the connection").to_string())),
+            3 => send_frame(pipe, 4, &value)?,
+            _ => {}
+        }
+    }
 }
 
 /// Discord's IPC frame: an opcode and a length, both little-endian u32, then the JSON body.
-fn send_frame(file: &mut File, op: u32, body: &serde_json::Value) -> std::io::Result<()> {
+fn send_frame(pipe: &mut Conn, op: u32, body: &serde_json::Value) -> std::io::Result<()> {
     let data = body.to_string();
     let mut frame = Vec::with_capacity(8 + data.len());
     frame.extend_from_slice(&op.to_le_bytes());
     frame.extend_from_slice(&(data.len() as u32).to_le_bytes());
     frame.extend_from_slice(data.as_bytes());
-    file.write_all(&frame)
+    pipe.write_all(&frame)?;
+    pipe.flush()
 }
 
-fn read_frame(file: &mut File) -> std::io::Result<Vec<u8>> {
+fn read_frame(pipe: &mut Conn) -> std::io::Result<(u32, Vec<u8>)> {
     let mut header = [0u8; 8];
-    file.read_exact(&mut header)?;
+    pipe.read_exact(&mut header)?;
+    let op = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+    if len > MAX_FRAME {
+        return Err(std::io::Error::other("Discord sent an oversized frame"));
+    }
     let mut body = vec![0u8; len];
-    file.read_exact(&mut body)?;
-    Ok(body)
+    pipe.read_exact(&mut body)?;
+    Ok((op, body))
 }
 
 /// The folder's name for the profile, or None when the path has no usable name.

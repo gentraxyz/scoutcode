@@ -64,6 +64,39 @@ pub struct LinkedProvider {
     pub key: Option<String>,
 }
 
+/// The Scout Enterprise team the signed-in account is in, as the server says (GET /api/account/team). It holds no keys:
+/// the team keeps those on the server, and its providers' requests go through /v1/team/<provider> with the user's own
+/// sign-in. Saved so the app starts the same way offline, and replaced whenever the model list is read.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Team {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    /// The providers that go through the server, with the models members may use on each (None for every one).
+    pub providers: Vec<TeamProvider>,
+    /// The providers members sign in to on this PC themselves (Claude Code, Kiro…), which the team allows.
+    pub acp: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TeamProvider {
+    pub id: String,
+    pub models: Option<Vec<String>>,
+}
+
+impl Team {
+    /// Whether the team runs `provider` for its members.
+    pub fn runs(&self, provider: &str) -> bool {
+        self.providers.iter().any(|p| p.id == provider)
+    }
+
+    /// Whether members may use `model` (that provider's own id for it) on `provider`.
+    pub fn allows(&self, provider: &str, model: &str) -> bool {
+        self.providers.iter().find(|p| p.id == provider).is_some_and(|p| p.models.as_ref().is_none_or(|m| m.iter().any(|x| x == model)))
+    }
+}
+
 /// Where Kilo is: KILO_BASE_URL overrides it for testing.
 pub fn kilo_url() -> String {
     std::env::var("KILO_BASE_URL").map(|u| u.trim_end_matches('/').to_string()).unwrap_or_else(|_| KILO_URL.to_string())
@@ -158,6 +191,8 @@ pub struct Config {
     pub image_model: Option<String>,
     /// Desktop app only, experimental: a game to play while Scout works.
     pub games: Games,
+    /// The Scout Enterprise team the account is in. While there is one, its providers replace the user's own.
+    pub team: Option<Team>,
 }
 
 /// A model in the picker: its list key and where it runs.
@@ -325,6 +360,7 @@ pub fn load_config() -> Config {
         experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
         image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
         games: s.get("games").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        team: s.get("team").and_then(|v| serde_json::from_value(v.clone()).ok()),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
@@ -371,9 +407,14 @@ impl Config {
         self.hermes_signed_in || self.hermes_key.is_some()
     }
 
+    /// Whether a provider members sign in to on this PC (Claude Code, Kiro…) may be used: always, outside a team.
+    pub fn acp_allowed(&self, which: &str) -> bool {
+        self.team.as_ref().is_none_or(|t| t.acp.iter().any(|a| a == which))
+    }
+
     /// Whether Kilo is the only provider there's a way to use.
     pub fn only_kilo(&self) -> bool {
-        self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty()
+        self.team.is_none() && self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty()
     }
 
     /// Whether requests to ScoutCode go without an account.
@@ -391,6 +432,12 @@ impl Config {
     pub fn for_provider(&self, provider: &str) -> Config {
         let mut c = self.clone();
         c.guest = self.guest && provider == "scoutcode";
+        // A team's providers go through ScoutCode's server, which adds the team's key, with the user's own sign-in.
+        if provider != "scoutcode" && self.team.as_ref().is_some_and(|t| t.runs(provider)) {
+            c.guest = false;
+            c.base_url = format!("{}/team/{provider}", self.base_url);
+            return c;
+        }
         if provider == "openrouter" {
             c.base_url = OPENROUTER_URL.to_string();
             c.api_key = self.openrouter_keys.first().map(|k| k.key.clone());
@@ -444,6 +491,7 @@ impl Config {
         self.experimental_images = other.experimental_images;
         self.image_model = other.image_model.clone();
         self.games = other.games.clone();
+        self.team = other.team.clone();
     }
 }
 
@@ -490,6 +538,32 @@ mod tests {
 
     fn m(key: &str) -> ModelRef {
         ModelRef { key: key.into(), provider: "scoutcode".into() }
+    }
+
+    #[test]
+    fn a_teams_providers_go_through_the_server_with_the_users_own_sign_in() {
+        let mut cfg = load_config();
+        cfg.base_url = "https://scoutcode.dev/v1".into();
+        cfg.api_key = Some("scout-oauth-me".into());
+        cfg.openrouter_keys = vec![OpenRouterKey { name: "Mine".into(), key: "sk-or-mine".into() }];
+        cfg.team = Some(Team {
+            id: "t".into(),
+            name: "Acme".into(),
+            role: "member".into(),
+            providers: vec![TeamProvider { id: "openrouter".into(), models: Some(vec!["a/b".into()]) }, TeamProvider { id: "scoutcode".into(), models: None }],
+            acp: vec!["claude".into()],
+        });
+        let or = cfg.for_provider("openrouter");
+        assert_eq!(or.base_url, "https://scoutcode.dev/v1/team/openrouter");
+        assert_eq!(or.api_key.as_deref(), Some("scout-oauth-me"), "never the user's own key");
+        // What the team doesn't run keeps going where it did, and ScoutCode is ScoutCode.
+        assert_eq!(cfg.for_provider("scoutcode").base_url, "https://scoutcode.dev/v1");
+        assert_eq!(cfg.for_provider("nvidia").base_url, NVIDIA_URL);
+        let t = cfg.team.as_ref().unwrap();
+        assert!(t.allows("openrouter", "a/b") && !t.allows("openrouter", "c/d") && t.allows("scoutcode", "anything") && !t.allows("nvidia", "x"));
+        assert!(cfg.acp_allowed("claude") && !cfg.acp_allowed("kiro"));
+        cfg.team = None;
+        assert!(cfg.acp_allowed("kiro"));
     }
 
     #[test]

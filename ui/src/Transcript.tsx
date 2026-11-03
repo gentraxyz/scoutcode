@@ -12,13 +12,13 @@ type ToolItem = Extract<Item, { kind: 'tool' }>;
 export function toolTitle(name: string): string {
   const titles: Record<string, string> = {
     view: 'Read', write_file: 'Write', edit_file: 'Edit', multi_edit: 'Edit', apply_patch: 'Patch', list_dir: 'List', glob: 'Find', grep: 'Search', bash: 'Run',
-    shell_output: 'Output', kill_shell: 'Stop', web_fetch: 'Fetch', web_search: 'Web search', todo_write: 'Todos', task: 'Task', present_plan: 'Plan', ask_questions: 'Ask', update_memory: 'Memory',
+    shell_output: 'Output', kill_shell: 'Stop', web_fetch: 'Fetch', web_search: 'Web search', todo_write: 'Todos', task: 'Task', present_plan: 'Plan', ask_questions: 'Ask', update_memory: 'Memory', generate_image: 'Image',
   };
   return titles[name] ?? name.replace(/^mcp__/, '');
 }
 
 /** Whether a tool's output starts open: the ones that change files, whose diffs are the point. */
-const OPEN_BY_DEFAULT = new Set(['write_file', 'edit_file', 'multi_edit', 'apply_patch', 'todo_write']);
+const OPEN_BY_DEFAULT = new Set(['write_file', 'edit_file', 'multi_edit', 'apply_patch', 'todo_write', 'generate_image']);
 
 export function Markdown({ text }: { text: string }) {
   return (

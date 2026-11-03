@@ -217,6 +217,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .memory-verb { flex: none; color: var(--strong); font-style: normal; }
 .tool-progress { padding: 0 0 4px 30px; font-size: 12px; }
 .tool-output { padding: 2px 0 8px 30px; }
+.tool-image { margin: 0; display: inline-flex; flex-direction: column; gap: 6px; }
+.tool-image img { display: block; max-width: min(100%, 384px); max-height: 384px; border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); }
 .tool-text { margin: 0; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; font: 12.5px/18px var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .diff-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }

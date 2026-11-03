@@ -30,6 +30,7 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         open_url,
         reveal,
         usage_log,
+        image_models,
         instructions_load,
         instructions_save,
         memory_load,
@@ -106,6 +107,7 @@ enum Action {
     SetNotify { flash: bool, toast: bool },
     TestNotification,
     SetDiscord { presence: bool, project: bool },
+    SetImages { on: bool, model: Option<String> },
     UsageRefresh,
     UsageChange { body: Value, said: String },
     ToggleLink { mode: String },
@@ -195,6 +197,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         },
         Action::SetNotify { flash, toast } => c.set_notify(flash, toast),
         Action::SetDiscord { presence, project } => c.set_discord(presence, project),
+        Action::SetImages { on, model } => c.set_images(on, model),
         Action::TestNotification => crate::notify::toast("Scout", "This is how Scout will tell you it's done."),
         Action::UsageRefresh => c.usage_request(None),
         Action::UsageChange { body, said } => c.usage_request(Some((body, said))),
@@ -365,6 +368,14 @@ fn usage_log() -> Value {
         "days": crate::usage::last_days(&log, 30).into_iter().map(|(day, d)| json!({ "day": day, "tokens": d.tokens, "cost": d.cost, "requests": d.requests })).collect::<Vec<_>>(),
         "seededOn": seeded,
     })
+}
+
+/// The ScoutCode server's image models, for Settings > Experimental.
+#[tauri::command(async)]
+fn image_models(core: Shared<'_>) -> Result<Value, String> {
+    let cfg = core.lock().unwrap().scout_cfg();
+    let models = crate::api::image_models(&cfg).map_err(|e| e.to_string())?;
+    Ok(Value::Array(models.into_iter().map(|(id, name, cost)| json!({ "id": id, "name": name, "cost": cost })).collect()))
 }
 
 #[tauri::command]

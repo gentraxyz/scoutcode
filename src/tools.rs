@@ -23,6 +23,8 @@ pub enum Display {
     /// One patch that changed several files: a Diff for each.
     Diffs(Vec<Display>),
     Todos(Vec<Todo>),
+    /// An image a tool made: where it was saved, and a small copy as a data: URL to show.
+    Image { path: String, preview: String },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -166,12 +168,22 @@ pub fn canonical(name: &str, args: Value) -> (String, Value) {
 }
 
 pub fn known(name: &str) -> bool {
-    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "web_search" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory")
+    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "web_search" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory" | "generate_image")
+}
+
+/// Experimental, only offered when Settings > Experimental turns it on: makes an image on the ScoutCode server.
+pub fn image_spec() -> Value {
+    json!({"type":"function","function":{"name":"generate_image","description":"Make an image from a text description and save it in the project, e.g. an icon, illustration, mockup or placeholder art. Describe the subject, style, colors and composition in detail. Each call makes one image and costs money, so make what's asked for, not variations nobody requested. It can't edit an existing image or write exact text reliably.",
+        "parameters":{"type":"object","properties":{
+            "prompt":{"type":"string","description":"What the image shows, in detail"},
+            "path":{"type":"string","description":"Where to save it, a new file in the project, e.g. assets/hero.png. .png, .jpg or .webp"},
+            "aspect_ratio":{"type":"string","enum":["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"],"description":"Default 1:1"}
+        },"required":["prompt","path"]}}})
 }
 
 pub fn permission(name: &str) -> Permission {
     match name {
-        "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "update_memory" => Permission::Edit,
+        "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "update_memory" | "generate_image" => Permission::Edit,
         "bash" => Permission::Exec,
         // Anything could be behind one, so it's asked about like a command.
         n if is_mcp(n) => Permission::Exec,
@@ -213,6 +225,7 @@ pub fn label(name: &str, a: &Value) -> String {
         "shell_output" | "kill_shell" => s(a, "id").into(),
         "web_fetch" => s(a, "url").into(),
         "web_search" => s(a, "query").into(),
+        "generate_image" => s(a, "path").into(),
         "todo_write" => format!("{} items", a.get("todos").and_then(Value::as_array).map_or(0, Vec::len)),
         "task" => s(a, "description").into(),
         "present_plan" => "plan".into(),
@@ -277,6 +290,7 @@ pub fn preview(name: &str, a: &Value, ctx: &Ctx) -> Option<Display> {
         }
         "apply_patch" => Some(crate::patch::preview(a, ctx)),
         "update_memory" => Some(crate::memory::preview(a, ctx)),
+        "generate_image" => Some(Display::Text(format!("Make an image (this costs money) and save it to {}:\n\n{}", s(a, "path"), s(a, "prompt")))),
         _ => None,
     }
 }
@@ -298,11 +312,37 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
+/// The path a model sent, in this machine's terms: ~ is the home folder, and on Windows Git Bash's /c/... (what the bash
+/// tool prints) is C:\..., while a bare /src means the project's src rather than the root of the drive.
+fn native(p: &str) -> PathBuf {
+    if p == "~" || p.starts_with("~/") || p.starts_with("~\\") {
+        if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
+            return PathBuf::from(home).join(p[1..].trim_start_matches(['/', '\\']));
+        }
+    }
+    if cfg!(windows) {
+        static DRIVE: OnceLock<Regex> = OnceLock::new();
+        if let Some(c) = DRIVE.get_or_init(|| Regex::new(r"^/(?:mnt/|cygdrive/)?([A-Za-z])(?:/|$)").unwrap()).captures(p) {
+            return PathBuf::from(format!("{}:\\{}", c[1].to_uppercase(), &p[c[0].len()..]));
+        }
+        if p.starts_with(['/', '\\']) && !p.starts_with("//") && !p.starts_with(r"\\") {
+            return PathBuf::from(p.trim_start_matches(['/', '\\']));
+        }
+    }
+    PathBuf::from(p)
+}
+
 pub fn resolve(cwd: &str, p: &str) -> Result<PathBuf, String> {
     if p.is_empty() {
         return Err("A path is required.".into());
     }
-    Ok(normalize(&Path::new(cwd).join(p)))
+    let abs = normalize(&Path::new(cwd).join(native(p)));
+    // Spelled as on disk below the project, so src/App.ts and src/app.ts are one file to the view-before-edit check.
+    Ok(match canon(&abs).strip_prefix(canon(Path::new(cwd))) {
+        Ok(r) if r.as_os_str().is_empty() => PathBuf::from(cwd),
+        Ok(r) => Path::new(cwd).join(r),
+        Err(_) => abs,
+    })
 }
 
 pub fn rel(cwd: &str, abs: &Path) -> String {
@@ -1157,9 +1197,111 @@ pub fn web_search(cfg: &crate::config::Config, a: &Value) -> R {
     Ok(ToolResult::ok(out, format!("{n} result{}", if n == 1 { "" } else { "s" })))
 }
 
+/// Makes an image through ScoutCode's /images/generations and saves it at `path`, which must be a new file: undo can
+/// only put back text, so an image never replaces one. Like web_search, the agent runs it, since it needs the settings.
+pub fn generate_image(cfg: &crate::config::Config, a: &Value, cwd: &str) -> R {
+    use base64::Engine;
+    let prompt = s(a, "prompt").trim();
+    if prompt.is_empty() {
+        return Err("prompt is required.".into());
+    }
+    let file = resolve(cwd, s(a, "path"))?;
+    if file.exists() {
+        return Err(format!("{} already exists. Save the image as a new file.", rel(cwd, &file)));
+    }
+    let ext = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let format = match ext.as_str() {
+        "png" => image::ImageFormat::Png,
+        "jpg" | "jpeg" => image::ImageFormat::Jpeg,
+        "webp" => image::ImageFormat::WebP,
+        _ => return Err("path must end in .png, .jpg or .webp.".into()),
+    };
+    let mut body = json!({"prompt": prompt, "n": 1});
+    if let Some(r) = a.get("aspect_ratio").and_then(Value::as_str).filter(|r| !r.is_empty()) {
+        body["aspect_ratio"] = json!(r);
+    }
+    if let Some(m) = &cfg.image_model {
+        body["model"] = json!(m);
+    }
+    let res = crate::api::generate_image(cfg, &body).map_err(|e| match e.status {
+        404 if e.message.contains("image model") => format!("{e} Pick another in Settings > Experimental."),
+        404 => format!("Image generation isn't available: the ScoutCode server at {} doesn't have it yet.", cfg.base_url),
+        503 => "Image generation isn't set up on the ScoutCode server yet (it has no image models).".into(),
+        _ => format!("Image generation failed: {e}"),
+    })?;
+    let b64 = res.pointer("/data/0/b64_json").and_then(Value::as_str).ok_or("The server sent no image.")?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("The server sent an unreadable image: {e}"))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| format!("The server sent an unreadable image: {e}"))?;
+    // Saved in the format the path asks for. JPEG has no transparency, so it goes on white.
+    let mut out = std::io::Cursor::new(Vec::new());
+    let saved = if format == image::ImageFormat::Jpeg { image::DynamicImage::ImageRgb8(img.to_rgb8()) } else { img.clone() };
+    saved.write_to(&mut out, format).map_err(|e| format!("Could not encode the image: {e}"))?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&file, out.into_inner()).map_err(|e| e.to_string())?;
+    let mut thumb = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img.thumbnail(512, 512).to_rgb8()).write_to(&mut thumb, image::ImageFormat::Jpeg).map_err(|e| e.to_string())?;
+    let preview = format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(thumb.into_inner()));
+    let path = rel(cwd, &file);
+    let (w, h) = (img.width(), img.height());
+    let said = res.get("text").and_then(Value::as_str).filter(|t| !t.trim().is_empty()).map(|t| format!("\nThe image model said: {}", t.trim())).unwrap_or_default();
+    Ok(ToolResult {
+        output: format!("Saved a {w}x{h} image to {path}.{said}"),
+        is_error: false,
+        summary: Some(format!("{w}x{h}")),
+        display: Some(Display::Image { path, preview }),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_takes_paths_however_models_write_them() {
+        let dir = std::env::temp_dir().join(format!("scout-resolve-{}", crate::session::now_ms()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("App.ts"), "").unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        let file = Path::new(&cwd).join("src").join("App.ts");
+        assert_eq!(resolve(&cwd, "src/App.ts").unwrap(), file);
+        assert_eq!(resolve(&cwd, "./src/../src/App.ts").unwrap(), file);
+        assert_eq!(resolve(&cwd, &file.to_string_lossy()).unwrap(), file);
+        assert_eq!(resolve(&cwd, ".").unwrap(), PathBuf::from(&cwd));
+        assert_eq!(resolve(&cwd, "src/New.ts").unwrap(), Path::new(&cwd).join("src").join("New.ts"));
+        if cfg!(windows) {
+            assert_eq!(resolve(&cwd, r"src\App.ts").unwrap(), file);
+            // Windows doesn't care about case, so neither does the view-before-edit check.
+            assert_eq!(resolve(&cwd, "SRC/app.TS").unwrap(), file);
+            assert_eq!(resolve(&cwd, "/src/App.ts").unwrap(), file);
+            let drive = &cwd[..1];
+            let bash = format!("/{}{}", drive.to_lowercase(), cwd[2..].replace('\\', "/"));
+            assert_eq!(resolve(&cwd, &format!("{bash}/src/App.ts")).unwrap(), file);
+            assert_eq!(resolve(&cwd, &format!("/mnt{bash}/src/App.ts")).unwrap(), file);
+            assert_eq!(resolve(&cwd, &cwd.replace('\\', "/")).unwrap(), PathBuf::from(&cwd));
+        }
+        let home = PathBuf::from(std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap());
+        assert_eq!(canon(&resolve(&cwd, "~/scout-nothing.txt").unwrap()), canon(&home.join("scout-nothing.txt")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn generate_image_never_replaces_a_file_and_needs_an_image_extension() {
+        let dir = std::env::temp_dir().join(format!("scout-image-{}", crate::session::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("logo.png"), b"old").unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        // Settings that point nowhere: both calls must fail before any request.
+        let mut cfg = crate::config::load_config();
+        cfg.base_url = "http://127.0.0.1:9".into();
+        let e = generate_image(&cfg, &json!({"prompt": "a fox", "path": "logo.png"}), &cwd).unwrap_err();
+        assert!(e.contains("already exists"), "{e}");
+        let e = generate_image(&cfg, &json!({"prompt": "a fox", "path": "fox.gif"}), &cwd).unwrap_err();
+        assert!(e.contains(".png"), "{e}");
+        assert_eq!(std::fs::read(dir.join("logo.png")).unwrap(), b"old");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn search_runs_grep_for_the_query_as_written() {

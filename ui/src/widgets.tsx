@@ -213,6 +213,8 @@ export function ShowDisplay({ d }: { d: Display }) {
       return <pre className="tool-text">{d.text}</pre>;
     case 'todos':
       return <TodoList todos={d.todos} />;
+    case 'image':
+      return <figure className="tool-image"><img src={d.preview} alt={d.path} /><figcaption className="mono small dim">{d.path}</figcaption></figure>;
     case 'diffs':
       return <div className="stack">{d.diffs.map((x, i) => <ShowDisplay key={i} d={x} />)}</div>;
     case 'diff':

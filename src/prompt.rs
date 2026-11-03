@@ -115,6 +115,15 @@ pub fn os_name() -> &'static str {
     })
 }
 
+/// Models mix up the two path styles on Windows: Git Bash prints /c/Users/..., and they pass that to the file tools.
+fn paths_note() -> &'static str {
+    match (cfg!(windows), shell_name()) {
+        (true, "bash") => "give the file tools paths relative to the working directory (e.g. src/main.rs). The bash tool is Git Bash: it takes forward slashes and shows C:\\Users as /c/Users.",
+        (true, _) => "give the file tools paths relative to the working directory (e.g. src\\main.rs). The bash tool is PowerShell and takes Windows paths.",
+        _ => "give the file tools paths relative to the working directory (e.g. src/main.rs).",
+    }
+}
+
 pub fn environment(cwd: &str) -> String {
     let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let (y, m, d, ..) = crate::session::civil(crate::session::now_ms() / 1000);
@@ -122,6 +131,7 @@ pub fn environment(cwd: &str) -> String {
         format!("Working directory: {cwd}"),
         format!("Operating system: {}", os_name()),
         format!("Shell for the bash tool: {}", shell_name()),
+        format!("Paths: {}", paths_note()),
         format!("Date: {y:04}-{m:02}-{d:02}"),
         format!("Git repository: {}", branch.map(|b| format!("yes, branch {b}")).unwrap_or_else(|| "no".into())),
     ]
@@ -149,6 +159,21 @@ pub fn strip_mode_note(s: &str) -> &str {
         Some(i) if s.ends_with(']') => &s[..i],
         _ => s,
     }
+}
+
+const PLAN_NOTE: &str = "\n\n[Command /plan: before changing anything, look at what's involved and write a short, numbered plan for the request above. Then carry it out.]";
+
+/// What the model is sent for a message: a `/plan` gets its instruction added after the user's words.
+pub fn command_prompt(text: &str) -> String {
+    match text.strip_prefix("/plan") {
+        Some(rest) if rest.starts_with(char::is_whitespace) => format!("{text}{PLAN_NOTE}"),
+        _ => text.to_string(),
+    }
+}
+
+/// The user's text without a command's note, for display.
+pub fn strip_command_note(s: &str) -> &str {
+    s.strip_suffix(PLAN_NOTE).unwrap_or(s)
 }
 
 /// Rebuilt at turn boundaries to pick up saved instructions, then reused throughout the turn. Unchanged content
@@ -252,6 +277,15 @@ mod tests {
         let name = super::os_name();
         println!("{name}");
         assert!(!name.is_empty() && !name.starts_with(' '));
+    }
+
+    #[test]
+    fn plan_command_adds_its_note_and_shows_without_it() {
+        let sent = super::command_prompt("/plan add a dark theme");
+        assert!(sent.starts_with("/plan add a dark theme\n\n[Command /plan:"));
+        assert_eq!(super::strip_command_note(&sent), "/plan add a dark theme");
+        assert_eq!(super::command_prompt("/planet facts"), "/planet facts");
+        assert_eq!(super::command_prompt("plan it"), "plan it");
     }
 
     #[test]

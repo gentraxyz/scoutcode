@@ -152,6 +152,10 @@ pub struct Config {
     pub last_version: Option<String>,
     /// Desktop app only: the models to try when the chosen one fails.
     pub fallbacks: Fallbacks,
+    /// Experimental: the agent gets a generate_image tool, which makes images on the ScoutCode server. Off until turned on.
+    pub experimental_images: bool,
+    /// The server's image model generate_image uses. None for the server's default.
+    pub image_model: Option<String>,
 }
 
 /// A model in the picker: its list key and where it runs.
@@ -295,6 +299,8 @@ pub fn load_config() -> Config {
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
         last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),
         fallbacks: s.get("modelFallbacks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
+        image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
@@ -411,6 +417,8 @@ impl Config {
         self.hermes_signed_in = other.hermes_signed_in;
         self.hermes_key = other.hermes_key.clone();
         self.additional = other.additional.clone();
+        self.experimental_images = other.experimental_images;
+        self.image_model = other.image_model.clone();
     }
 }
 

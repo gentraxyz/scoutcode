@@ -622,6 +622,9 @@ impl Agent {
     /// Scout's own tools, then those of the user's MCP servers.
     fn all_specs(&self) -> Vec<Value> {
         let mut all = self.specs.1.clone();
+        if self.cfg.experimental_images {
+            all.push(tools::image_spec());
+        }
         all.extend(crate::mcp_client::hub().specs());
         all
     }
@@ -823,6 +826,12 @@ impl Agent {
         }
         if name == "web_search" {
             return tools::web_search(&self.cfg, args).unwrap_or_else(|e| ToolResult::err(e.clone(), e.chars().take(100).collect::<String>()));
+        }
+        if name == "generate_image" {
+            if !self.cfg.experimental_images {
+                return ToolResult::err("Image generation is off. The user can turn it on in Settings > Experimental.", "off");
+            }
+            return tools::generate_image(&self.cfg, args, &self.session.cwd).unwrap_or_else(|e| ToolResult::err(e.clone(), e.chars().take(100).collect::<String>()));
         }
         let cwd = self.session.cwd.clone();
         let mut progress = |t: &str| h.send(Ev::ToolProgress { id: id.to_string(), text: t.to_string() });

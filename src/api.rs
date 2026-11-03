@@ -1003,6 +1003,29 @@ pub fn search(cfg: &Config, body: &Value) -> Result<Value, ApiError> {
     res.into_body().read_json().map_err(transport)
 }
 
+/// Experimental image generation (an OpenRouter image model, through the server): the answer to /images/generations,
+/// with each image as base64. `body` is the request as that endpoint takes it.
+pub fn generate_image(cfg: &Config, body: &Value) -> Result<Value, ApiError> {
+    let req = http().post(&format!("{}/images/generations", cfg.base_url)).config().timeout_global(Some(Duration::from_secs(300))).build();
+    let res = auth(req, cfg)?.send_json(body).map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    res.into_body().with_config().limit(60 * 1024 * 1024).read_json().map_err(transport)
+}
+
+/// The server's image models, for Settings: (id, name, price).
+pub fn image_models(cfg: &Config) -> Result<Vec<(String, String, String)>, ApiError> {
+    let req = http().get(&format!("{}/images/models", cfg.base_url)).config().timeout_global(Some(Duration::from_secs(20))).build();
+    let res = auth(req, cfg)?.call().map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().read_json().map_err(transport)?;
+    let s = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    Ok(body.get("data").and_then(Value::as_array).into_iter().flatten().map(|m| (s(m, "id"), s(m, "name"), s(m, "cost"))).collect())
+}
+
 pub struct ChatRequest<'a> {
     pub model: &'a str,
     pub messages: &'a [Message],

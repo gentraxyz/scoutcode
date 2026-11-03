@@ -8,7 +8,8 @@ export type Display =
   | { type: 'text'; text: string }
   | { type: 'diff'; path: string; created: boolean; add: number; del: number; lines: DiffLines }
   | { type: 'diffs'; diffs: Display[] }
-  | { type: 'todos'; todos: Todo[] };
+  | { type: 'todos'; todos: Todo[] }
+  | { type: 'image'; path: string; preview: string };
 
 export type ToolResult = { isError: boolean; summary: string | null; display: Display };
 export type Item =
@@ -61,7 +62,7 @@ export type View = {
   cfg: {
     loginNeeded: boolean; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks; experimentalImages: boolean; imageModel: string | null;
   };
   mode: string;
   model: { id: string; provider: string; key: string; short: string };

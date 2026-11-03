@@ -83,7 +83,8 @@ Scout.exe --resume <session-id>    # reopen a saved chat (ids are file names in 
 | Ctrl+Shift+Space | Start or stop dictation |
 | Ctrl+S | Save in the editor |
 
-In the message box, `/compact [focus]`, `/undo`, `/prune` and `/new` work as commands.
+In the message box, type `/` to pick a command: `/plan <task>` (Scout writes a plan before it starts), `/compact [focus]`,
+`/undo`, `/prune` and `/new`.
 
 ### Where your data lives
 

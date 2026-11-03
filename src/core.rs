@@ -478,6 +478,7 @@ fn display_json(d: &Display) -> Value {
         }
         Display::Diffs(all) => json!({ "type": "diffs", "diffs": all.iter().map(display_json).collect::<Vec<_>>() }),
         Display::Todos(t) => json!({ "type": "todos", "todos": todos_json(t) }),
+        Display::Image { path, preview } => json!({ "type": "image", "path": path, "preview": preview }),
     }
 }
 
@@ -571,7 +572,8 @@ fn rebuild(s: &Session, next_id: &mut u64) -> Vec<Item> {
 
 fn user_parts(content: &Content) -> (String, Vec<String>) {
     let t = content.text();
-    attach::split(crate::prompt::strip_mode_note(&t))
+    let (text, files) = attach::split(crate::prompt::strip_mode_note(&t));
+    (crate::prompt::strip_command_note(&text).to_string(), files)
 }
 
 impl Core {
@@ -1874,6 +1876,10 @@ impl Core {
                     self.compact(arg.trim().to_string());
                     return true;
                 }
+                "plan" if arg.trim().is_empty() => {
+                    self.chat.status = "Say what to plan after /plan.".into();
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -1887,7 +1893,7 @@ impl Core {
             return;
         }
         let (cwd, files) = (self.chat.cwd.clone(), o.files.clone());
-        let text = o.text.clone();
+        let text = crate::prompt::command_prompt(&o.text);
         self.push(ItemKind::User { text: o.text, files: o.files });
         // Off the window's thread: reading attachments takes a while when images have to be shrunk.
         self.start(move |agent, h| {
@@ -2311,6 +2317,22 @@ impl Core {
         crate::discord::update(activity);
     }
 
+    /// Experimental image generation: whether the agent gets generate_image, and which server image model it uses.
+    /// Applies from the next message, when the agent takes the settings.
+    pub fn set_images(&mut self, on: bool, model: Option<String>) {
+        self.cfg.experimental_images = on;
+        self.cfg.image_model = model.filter(|m| !m.is_empty());
+        let mut m = serde_json::Map::new();
+        m.insert("experimentalImages".into(), json!(on));
+        m.insert("imageModel".into(), json!(self.cfg.image_model));
+        config::save_config(m);
+    }
+
+    /// The settings for ScoutCode's own server, for a request made outside the agent.
+    pub fn scout_cfg(&self) -> Config {
+        self.cfg.clone()
+    }
+
     pub fn set_notify(&mut self, flash: bool, toast: bool) {
         self.cfg.notify_flash = Some(flash);
         self.cfg.notify_toast = Some(toast);
@@ -2448,6 +2470,8 @@ impl Core {
                 "autoUpdate": cfg.auto_update,
                 "autoCompactTokens": cfg.auto_compact_tokens,
                 "fallbacks": cfg.fallbacks,
+                "experimentalImages": cfg.experimental_images,
+                "imageModel": cfg.image_model,
             })),
             ("mode", json!(self.chat.shared.mode())),
             ("model", json!({ "id": self.chat.model, "provider": self.chat.provider, "key": self.current_key(), "short": crate::api::short_id(&self.chat.model) })),

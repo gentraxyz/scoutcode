@@ -17,6 +17,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
+  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter' },
   { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
 ];
 
@@ -138,6 +139,43 @@ function Discord() {
       <Heading title="Discord" sub="Shows on your Discord profile that you're using Scout. Off unless you turn it on." />
       <SettingRow title="Show Scout on Discord" sub="Your profile shows \“Using Scout\” while the app is open. Nothing else is sent."><Toggle label="Show Scout on Discord" on={presence} onChange={(on) => act('setDiscord', { presence: on, project: on && project })} /></SettingRow>
       <SettingRow title="Show the folder's name" sub="Adds \“Working on <folder>\”, using only the folder's name, never its path, chats or files. Needs the setting above."><Toggle label="Show the folder's name" on={project} onChange={(on) => act('setDiscord', { presence, project: on })} /></SettingRow>
+    </>
+  );
+}
+
+type ImageModel = { id: string; name: string; cost: string };
+
+/** Features still being tried out. Each is off until turned on here. */
+function Experimental() {
+  const cfg = useView('cfg');
+  const on = cfg.experimentalImages;
+  const [models, setModels] = useState<ImageModel[] | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!on) return;
+    invoke<ImageModel[]>('image_models').then((m) => { setModels(m); setError(''); }, (e) => setError(String(e)));
+  }, [on]);
+  const picked = cfg.imageModel ?? '';
+  return (
+    <>
+      <Heading title="Experimental" sub="Features still being tried out. They may change or go away, and are off until you turn them on." />
+      <SettingRow
+        title="Image generation"
+        sub={'Scout can make images, such as icons, illustrations and placeholder art, and save them in your project. They’re made on the ScoutCode server by an image model on OpenRouter, and each one costs money from your account. Scout asks before making one unless you’ve allowed edits. Needs a ScoutCode account.'}
+      >
+        <Toggle label="Image generation" on={on} onChange={(v) => act('setImages', { on: v, model: cfg.imageModel })} />
+      </SettingRow>
+      {on && (
+        <SettingRow title="Image model" sub={error ? `Could not load the server's image models: ${error}` : models?.length === 0 ? 'The ScoutCode server has no image models yet.' : 'Which of the server’s image models makes them.'}>
+          {models === null && !error ? <Spinner /> : (
+            <select className="input select" value={picked} onChange={(e) => act('setImages', { on, model: e.target.value || null })}>
+              <option value="">Server default{models?.[0] ? ` (${models[0].name})` : ''}</option>
+              {models?.map((m) => <option key={m.id} value={m.id}>{m.name}{m.cost ? ` · ${m.cost}` : ''}</option>)}
+              {picked && models && !models.some((m) => m.id === picked) && <option value={picked}>{picked} (not on the server)</option>}
+            </select>
+          )}
+        </SettingRow>
+      )}
     </>
   );
 }
@@ -852,6 +890,7 @@ export function Settings() {
           {tab === 'skills' && <Skills />}
           {tab === 'mcp' && <Mcp />}
           {tab === 'chatbots' && <Chatbots />}
+          {tab === 'experimental' && <Experimental />}
           {tab === 'updates' && <Updates />}
         </div>
       </div>

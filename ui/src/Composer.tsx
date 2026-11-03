@@ -198,6 +198,15 @@ function QueuedRow({ text, files, status, children }: { text: string; files: num
 
 type Pick = { skill: boolean; name: string; about?: string };
 
+/** What can follow a `/` in the box. Scout's core runs them; `arg` ones take text after the name. */
+const COMMANDS: { name: string; about: string; arg?: string }[] = [
+  { name: 'plan', about: 'Have Scout write a plan before it starts', arg: 'what to do' },
+  { name: 'compact', about: 'Summarize the chat so far to free up context', arg: 'focus (optional)' },
+  { name: 'undo', about: "Take back the last turn and the files it changed" },
+  { name: 'prune', about: 'Drop old tool output from the context' },
+  { name: 'new', about: 'Start a new chat' },
+];
+
 function currentWord(text: string, cursor: number) {
   let start = cursor;
   while (start > 0 && !/\s/.test(text[start - 1])) start -= 1;
@@ -220,6 +229,11 @@ function InputBox() {
   const closedAt = useRef<number | null>(null);
   const [picks, setPicks] = useState<Pick[]>([]);
   const [pick, setPick] = useState(0);
+  // The / menu shows while the box holds just a command name, until Esc.
+  const [slashClosed, setSlashClosed] = useState(false);
+  const slashQuery = /^\/\S*$/.test(input) ? input.slice(1).toLowerCase() : null;
+  const commands = slashQuery === null || slashClosed ? [] : COMMANDS.filter((c) => c.name.startsWith(slashQuery));
+  useEffect(() => { if (slashQuery === null) setSlashClosed(false); setPick(0); }, [slashQuery]);
 
   // Not while someone is typing in the terminal or the editor.
   useEffect(() => {
@@ -261,8 +275,15 @@ function InputBox() {
     requestAnimationFrame(() => box.current?.setSelectionRange(at, at));
   };
 
-  const send = async (steer: boolean) => {
-    const text = input.trim();
+  const chooseCommand = (c: (typeof COMMANDS)[number]) => {
+    if (!c.arg) return void send(false, `/${c.name}`);
+    const text = `/${c.name} `;
+    ui.set({ input: text });
+    requestAnimationFrame(() => box.current?.setSelectionRange(text.length, text.length));
+  };
+
+  const send = async (steer: boolean, typed = input) => {
+    const text = typed.trim();
     if (!text && attachments.length === 0) return;
     const taken = await invoke<boolean>('send', { text, files: attachments, steer });
     if (!taken) return;
@@ -273,6 +294,12 @@ function InputBox() {
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    if (commands.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); return setPick((pick + 1) % commands.length); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); return setPick((pick + commands.length - 1) % commands.length); }
+      if ((e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); return chooseCommand(commands[pick] ?? commands[0]); }
+      if (e.key === 'Escape') { e.preventDefault(); return setSlashClosed(true); }
+    }
     if (mention) {
       if (picks.length > 0) {
         if (e.key === 'ArrowDown') { e.preventDefault(); return setPick((pick + 1) % picks.length); }
@@ -360,6 +387,18 @@ function InputBox() {
         onKeyUp={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') updateMention(); }}
         onBlur={() => setTimeout(() => setMention(null), 150)}
       />
+      {commands.length > 0 && (
+        <div className="mention-menu">
+          {commands.map((c, i) => (
+            <button key={c.name} type="button" className={`mention-row ${i === pick ? 'selected' : ''}`} onMouseDown={(e) => { e.preventDefault(); chooseCommand(c); }}>
+              <span className="strong mono">/{c.name}</span>
+              {c.arg && <span className="small faint nowrap">{c.arg}</span>}
+              <span className="small dim ellipsis grow">{c.about}</span>
+            </button>
+          ))}
+          <div className="tiny faint pad-x">↑↓ to choose · Enter or Tab to pick · Esc to close</div>
+        </div>
+      )}
       {mention && picks.length > 0 && (
         <div className="mention-menu">
           {picks.map((p, i) => (

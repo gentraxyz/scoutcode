@@ -4,6 +4,13 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.10
+A /plan command, experimental image generation, and file paths that work however a model writes them.
+
+- Type / in the message box to see the commands. /plan followed by a task asks Scout to write a short plan before it starts.
+- Turn on Settings > Experimental to let Scout make images (icons, illustrations, mockups) and save them in your project. It asks first, like any edit, and never replaces a file.
+- On Windows, the file tools now understand Git Bash paths (/c/Users/…), paths that start with / meaning the project, ~ for your home folder, and paths whose capitals don't match the file. Models are also told which path style each tool expects.
+
 ## 0.1.9
 Your own Claude Code and Codex plans, a Providers page for linking and unlinking every provider, and an optional Discord status.
 

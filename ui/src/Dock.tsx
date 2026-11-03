@@ -11,13 +11,14 @@ import { HighlightStyle, LanguageDescription, syntaxHighlighting } from '@codemi
 import { languages } from '@codemirror/language-data';
 import { tags } from '@lezer/highlight';
 import { invoke, type DiffLines } from './api';
+import { GamesTab } from './Games';
 import { Resizer } from './Sidebar';
 import { ui, useUi, useView, type DockTab } from './store';
 import { DiffBody, Icon, IconButton, Modal, Spinner } from './widgets';
 
 // ---------- terminal ----------
 
-const TERMINAL_THEME = { background: '#0a0b0e', foreground: '#d4d8df', cursor: '#f5a524', selectionBackground: '#f5a52455', black: '#15181e', brightBlack: '#767f8c', red: '#ec5f5f', green: '#4ac27d', yellow: '#f5a524', blue: '#4d8fff', magenta: '#c586c0', cyan: '#56b6c2', white: '#d4d8df', brightWhite: '#f3f4f6' };
+const TERMINAL_THEME = { background: '#1a1a1a', foreground: '#cccccc', cursor: '#cccccc', selectionBackground: '#ffffff30', black: '#262626', brightBlack: '#7a7a7a', red: '#e86464', green: '#4fbf7f', yellow: '#e5c07b', blue: '#5b9cf5', magenta: '#c586c0', cyan: '#56b6c2', white: '#cccccc', brightWhite: '#ededed' };
 
 /** Stays mounted while the panel is open, so the shell's screen survives switching tabs. */
 function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
@@ -177,12 +178,12 @@ function TreeFolder({ dir, depth, epoch, active, onOpen }: { dir: string; depth:
 }
 
 const editorTheme = EditorView.theme({
-  '&': { height: '100%', backgroundColor: '#0a0b0e', color: '#d4d8df', fontSize: '13px' },
-  '.cm-content': { caretColor: '#f5a524', fontFamily: '"Cascadia Mono", Consolas, monospace' },
-  '.cm-gutters': { backgroundColor: '#0a0b0e', color: '#4d545f', border: 'none' },
-  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#15181e' },
-  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: '#f5a52433 !important' },
-  '.cm-cursor': { borderLeftColor: '#f5a524' },
+  '&': { height: '100%', backgroundColor: '#1a1a1a', color: '#cccccc', fontSize: '12.5px' },
+  '.cm-content': { caretColor: '#cccccc', fontFamily: '"Cascadia Mono", Consolas, monospace' },
+  '.cm-gutters': { backgroundColor: '#1a1a1a', color: '#4d4d4d', border: 'none' },
+  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#232323' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: '#ffffff24 !important' },
+  '.cm-cursor': { borderLeftColor: '#cccccc' },
 }, { dark: true });
 
 const highlight = syntaxHighlighting(HighlightStyle.define([
@@ -361,10 +362,15 @@ function FilesTab({ cwd }: { cwd: string }) {
 // ---------- the panel ----------
 
 const TABS: [DockTab, string, string][] = [['terminal', 'Terminal', 'terminal'], ['changes', 'Changes', 'changes'], ['files', 'Files', 'files']];
+/** Only while the experimental games are on and set to show in the panel. */
+const GAMES_TAB: [DockTab, string, string] = ['games', 'Games', 'game'];
 
 export function Dock() {
   const open = useUi((u) => u.dockOpen);
-  const tab = useUi((u) => u.dockTab);
+  const { games } = useView('cfg');
+  const gamesTab = games.on && games.place === 'panel';
+  const picked = useUi((u) => u.dockTab);
+  const tab = picked === 'games' && !gamesTab ? 'terminal' : picked;
   const { cwd } = useView('chat');
   const [width, setWidth] = useState(560);
   const [termStarted, setTermStarted] = useState(false);
@@ -377,12 +383,13 @@ export function Dock() {
     <aside className="dock" style={{ width: Math.min(width, max), display: open ? undefined : 'none' }}>
       <Resizer side="left" width={Math.min(width, max)} min={320} max={max} onChange={setWidth} />
       <div className="dock-tabs">
-        {TABS.map(([id, title, icon]) => (
+        {[...TABS, ...(gamesTab ? [GAMES_TAB] : [])].map(([id, title, icon]) => (
           <button key={id} type="button" className={`dock-tab ${tab === id ? 'on' : ''}`} onClick={() => ui.set({ dockTab: id })}><Icon name={icon} size={14} />{title}</button>
         ))}
       </div>
       {termStarted && <TerminalTab cwd={cwd} visible={open && tab === 'terminal'} />}
       {open && tab === 'changes' && <ChangesTab cwd={cwd} />}
+      {open && tab === 'games' && <GamesTab />}
       {/* Kept mounted once used: it may hold unsaved edits. */}
       <div className="dock-keep" style={{ display: tab === 'files' ? undefined : 'none' }}><FilesTab cwd={cwd} /></div>
     </aside>

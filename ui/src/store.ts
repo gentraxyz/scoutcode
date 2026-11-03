@@ -22,7 +22,7 @@ function createStore<T>(initial: T) {
 export type CoreState = { view: View; models: Model[]; items: Item[]; statics: Statics };
 export const core = createStore<CoreState>(null as unknown as CoreState);
 
-export type DockTab = 'terminal' | 'changes' | 'files';
+export type DockTab = 'terminal' | 'changes' | 'files' | 'games';
 export type SettingsTab = 'instructions' | 'memory' | 'notifications' | 'discord' | 'fallbacks' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'experimental' | 'updates';
 
 export const ui = createStore({
@@ -41,6 +41,8 @@ export const ui = createStore({
   findOpen: false,
   findEpoch: 0,
   dropping: false,
+  /** The floating game card is up. In the panel, the game is open when the panel shows its tab. */
+  gameOpen: false,
 });
 
 export function useCore<T>(pick: (s: CoreState) => T): T {

@@ -35,6 +35,7 @@ const PATHS: Record<string, string> = {
   minimize: 'M3 8h10',
   maximize: 'M3.500 3.500h9v9h-9z',
   restore: 'M5.500 5.500h7v7h-7zM3.500 10.500v-7h7',
+  game: 'M5 5h6a3 3 0 0 1 3 3v1a2.300 2.300 0 0 1-4.100 1.400L9.200 9.800H6.800l-.700.600A2.300 2.300 0 0 1 2 9V8a3 3 0 0 1 3-3zM5 6.700v2.200M3.900 7.800h2.200M10.300 7.400h.01M11.700 8.600h.01',
 };
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
@@ -57,7 +58,7 @@ export function Spinner({ size = 12 }: { size?: number }) {
   return <span className="spinner" style={{ width: size, height: size }} aria-label="Working" />;
 }
 
-export function IconButton({ icon, tip, onClick, size = 28, active, disabled, className = '' }: { icon: string; tip: string; onClick?: (e: React.MouseEvent) => void; size?: number; active?: boolean; disabled?: boolean; className?: string }) {
+export function IconButton({ icon, tip, onClick, size = 30, active, disabled, className = '' }: { icon: string; tip: string; onClick?: (e: React.MouseEvent) => void; size?: number; active?: boolean; disabled?: boolean; className?: string }) {
   return (
     <button type="button" className={`icon-button ${active ? 'active' : ''} ${className}`} style={{ width: size, height: size }} title={tip} aria-label={tip} disabled={disabled} onClick={onClick}>
       <Icon name={icon} />
@@ -91,7 +92,8 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
   side?: 'auto' | 'top';
   className?: string;
   onOpen?: () => void;
-  width?: number;
+  /** Pixels, or 'anchor' to be as wide as the trigger. */
+  width?: number | 'anchor';
 }) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
@@ -116,7 +118,7 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
       position: 'fixed',
       left: Math.max(8, Math.min(left, window.innerWidth - p.width - 8)),
       ...(above ? { bottom: window.innerHeight - a.top + 6, maxHeight: a.top - 14 } : { top: a.bottom + 6 }),
-      width,
+      width: width === 'anchor' ? a.width : width,
     });
   }, [open, align, side, width]);
   useEffect(() => {
@@ -141,7 +143,7 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
   return (
     <>
       <span ref={anchor} className="popover-anchor">{trigger(open, toggle)}</span>
-      {open && <div ref={panel} className={`popover ${above ? 'above' : ''} ${className}`} style={{ ...style, width }}>{children(close)}</div>}
+      {open && <div ref={panel} className={`popover ${above ? 'above' : ''} ${className}`} style={{ width: width === 'anchor' ? anchor.current?.offsetWidth : width, ...style }}>{children(close)}</div>}
     </>
   );
 }

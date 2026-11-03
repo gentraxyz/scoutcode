@@ -156,6 +156,8 @@ pub struct Config {
     pub experimental_images: bool,
     /// The server's image model generate_image uses. None for the server's default.
     pub image_model: Option<String>,
+    /// Desktop app only, experimental: a game to play while Scout works.
+    pub games: Games,
 }
 
 /// A model in the picker: its list key and where it runs.
@@ -182,6 +184,27 @@ impl Fallbacks {
     pub fn after(&self, failed: &ModelRef) -> Vec<ModelRef> {
         let list = self.models.iter().find(|(m, _)| m == failed).map(|(_, l)| l).unwrap_or(&self.all);
         list.iter().filter(|m| *m != failed).cloned().collect()
+    }
+}
+
+/// Experimental games: where they show and when they open and close by themselves. Off until turned on.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Games {
+    pub on: bool,
+    /// "float", a card the user drags anywhere over the window, or "panel", a tab in the right-hand panel.
+    pub place: String,
+    /// Opens when Scout starts working.
+    pub open_on_run: bool,
+    /// Closes when Scout has finished, in every chat.
+    pub auto_close: bool,
+    /// Where the floating card was left: its top left, in window pixels. None for the corner above the message box.
+    pub pos: Option<(f64, f64)>,
+}
+
+impl Default for Games {
+    fn default() -> Self {
+        Games { on: false, place: "float".into(), open_on_run: true, auto_close: true, pos: None }
     }
 }
 
@@ -301,6 +324,7 @@ pub fn load_config() -> Config {
         fallbacks: s.get("modelFallbacks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
         image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
+        games: s.get("games").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
@@ -419,6 +443,7 @@ impl Config {
         self.additional = other.additional.clone();
         self.experimental_images = other.experimental_images;
         self.image_model = other.image_model.clone();
+        self.games = other.games.clone();
     }
 }
 

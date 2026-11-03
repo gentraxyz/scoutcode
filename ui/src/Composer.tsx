@@ -412,12 +412,13 @@ function InputBox() {
         </div>
       )}
       <div className="row composer-controls">
-        <IconButton icon="paperclip" tip="Attach files (or drop them on the window, or type @)" onClick={async () => {
+        <button type="button" className="round attach" title="Attach files (or drop them on the window, or type @)" aria-label="Attach files" onClick={async () => {
           const files = await invoke<string[]>('pick_attachments', { cwd: chat.cwd });
           const had = ui.get().attachments;
           ui.set({ attachments: [...had, ...files.filter((f) => !had.includes(f))] });
           focusComposer();
-        }} />
+        }}><Icon name="plus" /></button>
+        <span className="grow" />
         {voice.state === 'idle' && <IconButton icon="mic" tip="Dictate (Ctrl+Shift+Space). Transcribed by Deepgram through ScoutCode" onClick={() => act('toggleVoice')} />}
         {voice.state === 'recording' && (
           <button type="button" className="mic-live" title="Listening. Click (or Ctrl+Shift+Space) to stop and transcribe" onClick={() => act('toggleVoice')}>
@@ -426,7 +427,6 @@ function InputBox() {
           </button>
         )}
         {voice.state === 'busy' && <span className="mic-busy" title={voice.label}><Spinner size={14} /></span>}
-        <span className="grow" />
         {(ready || !running) && (
           <button type="button" className={`round send ${ready ? 'ready' : ''}`} disabled={!ready} aria-label="Send" title={running ? 'Queue (Enter) · Ctrl+click or Ctrl+Enter to send it now' : undefined} onClick={(e) => send(e.ctrlKey)}><Icon name="arrowUp" /></button>
         )}

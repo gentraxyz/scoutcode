@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { act, invoke } from './api';
 import { Composer, PermissionBody } from './Composer';
 import { Dock } from './Dock';
+import { closeGame, FloatingGame, gameShowing, openGame, useGameAutomation } from './Games';
 import { Onboarding } from './Onboarding';
 import { Settings, restartBlocker } from './Settings';
 import { addProject, Sidebar } from './Sidebar';
@@ -70,6 +71,13 @@ function WhatsNew() {
   );
 }
 
+function GameButton() {
+  const { games } = useView('cfg');
+  const showing = useUi(() => gameShowing(games));
+  if (!games.on) return null;
+  return <IconButton icon="game" tip={showing ? 'Close the game' : 'Play 2048 while Scout works'} active={showing} onClick={() => (showing ? closeGame() : openGame(games, true))} />;
+}
+
 function TopBar() {
   const sidebar = useUi((u) => u.sidebar);
   const dockOpen = useUi((u) => u.dockOpen);
@@ -83,6 +91,7 @@ function TopBar() {
       {/* The sidebar shows the folder; without it, the bar does. */}
       {!sidebar && <button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button>}
       <UpdatePill />
+      <GameButton />
       <IconButton icon="panel" tip={dockOpen ? 'Hide panel' : 'Show panel'} active={dockOpen} onClick={() => ui.set({ dockOpen: !dockOpen })} />
       <IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} />
       <IconButton icon="changes" tip="Changes" active={dockOpen && dockTab === 'changes'} onClick={() => toggleDock('changes')} />
@@ -188,6 +197,7 @@ export function App() {
   const sidebar = useUi((u) => u.sidebar);
   const dropping = useUi((u) => u.dropping);
   useShortcuts();
+  useGameAutomation();
   useEffect(() => {
     const offs = [
       listen<string[]>('dropped', async (e) => {
@@ -235,6 +245,7 @@ export function App() {
           <Dock />
         </div>
       </div>
+      <FloatingGame />
       <Settings />
       <DeleteDialog />
       <LinkPermission />

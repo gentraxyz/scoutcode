@@ -4,6 +4,12 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.11
+A game to play while Scout works, and a quieter gray look.
+
+- Turn on Games in Settings > Experimental to play 2048 while Scout works. It can float over the chat, where you drag it wherever you like, or sit in a Games tab in the side panel. It can open when Scout starts and close when it finishes, and your game is kept for next time.
+- The window has a calmer gray look, the attach button sits at the left of the message box, and the account menu shows your name and Scout's version.
+
 ## 0.1.10
 A /plan command, experimental image generation, and file paths that work however a model writes them.
 

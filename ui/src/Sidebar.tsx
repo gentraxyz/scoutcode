@@ -137,19 +137,29 @@ function Profile() {
   const { additionalProviders } = useCore((s) => s.statics);
   const linked = additionalProviders.find((a) => a.id === cfg.additional[0]?.id)?.name;
   const name = cfg.username ?? (cfg.browserSignIn ? 'Signed in' : cfg.hasKey ? 'API key' : cfg.openrouterKeys.length ? 'OpenRouter key' : cfg.nvidiaKey ? 'NVIDIA key' : cfg.claude ? 'Claude Code' : cfg.codex ? 'Codex' : cfg.opencode ? 'OpenCode' : cfg.grokSignedIn || cfg.grokKey ? 'Grok Build' : cfg.hermesSignedIn || cfg.hermesKey ? 'Hermes' : linked ?? (cfg.guest ? 'No account' : 'Kilo Code'));
+  const { version } = useView('updater');
   return (
     <div className="profile">
-      <Popover side="top" className="profile-menu" width={240} trigger={(_, toggle) => (
-        <button type="button" className="profile-row" onClick={toggle}>
+      <Popover side="top" className="profile-menu" width="anchor" trigger={(open, toggle) => (
+        <button type="button" className={`profile-row ${open ? 'open' : ''}`} onClick={toggle}>
           <span className="avatar">{name.charAt(0).toUpperCase()}</span>
           <span className="ellipsis grow">{name}</span>
-          <Icon name="more" />
+          <Icon name={open ? 'chevronDown' : 'chevronUp'} size={14} />
         </button>
       )}>
         {(close) => (
           <>
+            <div className="profile-head">
+              <span className="avatar big">{name.charAt(0).toUpperCase()}</span>
+              <div className="min0">
+                <div className="strong ellipsis">{name}</div>
+                <div className="tiny dim">Scout {version}</div>
+              </div>
+            </div>
+            <hr />
             <MenuItem icon="gear" onClick={() => { close(); ui.set({ settings: 'notifications' }); }}>Settings</MenuItem>
             <MenuItem icon="chart" onClick={() => { close(); ui.set({ settings: 'usage' }); }}>Usage</MenuItem>
+            <hr />
             <MenuItem icon="download" onClick={() => { close(); ui.set({ settings: 'updates' }); act('checkUpdates'); }}>Check for updates</MenuItem>
             <MenuItem icon="user" onClick={() => { close(); openExternal(`${cfg.baseUrl.replace(/\/v1$/, '')}/account`); }}>Account page</MenuItem>
           </>

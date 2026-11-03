@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type Fallbacks, type McpServer, type ModelRef, type UsageInfo } from './api';
+import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type Fallbacks, type Games, type McpServer, type ModelRef, type UsageInfo } from './api';
+import { closeGame } from './Games';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
@@ -17,7 +18,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
-  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter' },
+  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 play puzzle fun waiting' },
   { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
 ];
 
@@ -156,6 +157,12 @@ function Experimental() {
     invoke<ImageModel[]>('image_models').then((m) => { setModels(m); setError(''); }, (e) => setError(String(e)));
   }, [on]);
   const picked = cfg.imageModel ?? '';
+  const games = cfg.games;
+  const setGames = (next: Partial<Games>) => {
+    // A game that's open where it no longer belongs closes, rather than jumping elsewhere.
+    if (next.on === false || (next.place && next.place !== games.place)) closeGame();
+    act('setGames', { games: { ...games, ...next } });
+  };
   return (
     <>
       <Heading title="Experimental" sub="Features still being tried out. They may change or go away, and are off until you turn them on." />
@@ -175,6 +182,26 @@ function Experimental() {
             </select>
           )}
         </SettingRow>
+      )}
+      <SettingRow title="Games" sub="Something to play while Scout works: 2048 for now. Slide the tiles with the arrow keys, WASD or a swipe and join equal numbers to reach 2048. Open it with the gamepad at the top of the window. Your game is kept when it closes.">
+        <Toggle label="Games" on={games.on} onChange={(on) => setGames({ on })} />
+      </SettingRow>
+      {games.on && (
+        <>
+          <SettingRow title="Where it shows" sub={games.place === 'panel' ? 'A Games tab in the panel on the right.' : 'A card over the chat. Drag it by its bar to wherever you like, and it stays there.'}>
+            {games.place === 'float' && games.pos && <button type="button" className="button ghost compact" onClick={() => setGames({ pos: null })}>Reset position</button>}
+            <select className="input select" value={games.place} onChange={(e) => setGames({ place: e.target.value as Games['place'] })}>
+              <option value="float">Floating card</option>
+              <option value="panel">Side panel</option>
+            </select>
+          </SettingRow>
+          <SettingRow title="Open when Scout starts working" sub={games.place === 'panel' ? 'Unless the panel is showing another tab.' : 'It doesn’t take the keyboard from the message box until you click it.'}>
+            <Toggle label="Open when Scout starts working" on={games.openOnRun} onChange={(openOnRun) => setGames({ openOnRun })} />
+          </SettingRow>
+          <SettingRow title="Close when Scout finishes" sub="Once every chat is done, so you see the reply.">
+            <Toggle label="Close when Scout finishes" on={games.autoClose} onChange={(autoClose) => setGames({ autoClose })} />
+          </SettingRow>
+        </>
       )}
     </>
   );

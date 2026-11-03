@@ -2328,6 +2328,14 @@ impl Core {
         config::save_config(m);
     }
 
+    /// Experimental games: where they show and when they open and close. Only the window reads these.
+    pub fn set_games(&mut self, games: config::Games) {
+        let mut m = serde_json::Map::new();
+        m.insert("games".into(), json!(games));
+        self.cfg.games = games;
+        config::save_config(m);
+    }
+
     /// The settings for ScoutCode's own server, for a request made outside the agent.
     pub fn scout_cfg(&self) -> Config {
         self.cfg.clone()
@@ -2472,6 +2480,7 @@ impl Core {
                 "fallbacks": cfg.fallbacks,
                 "experimentalImages": cfg.experimental_images,
                 "imageModel": cfg.image_model,
+                "games": cfg.games,
             })),
             ("mode", json!(self.chat.shared.mode())),
             ("model", json!({ "id": self.chat.model, "provider": self.chat.provider, "key": self.current_key(), "short": crate::api::short_id(&self.chat.model) })),

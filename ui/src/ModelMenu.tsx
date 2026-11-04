@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { act, tokens, type Model, type ModelRef } from './api';
 import { AdditionalOptions, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ChatbotsPanel } from './Chatbots';
@@ -72,16 +72,59 @@ export function price(r: ModelRow): number {
   return tier ? TIER_USD[tier] : Infinity;
 }
 
+/**
+ * The Intelligence Index: how capable a model is for coding, from 1 (light) to 3 (frontier). An admin can set it on the
+ * server (Desktop models page); otherwise it is read from the name so it
+ * works for every provider's list. Small and cheap variants ("mini", "flash-lite", 8B…) are light; the newest flagship
+ * families are frontier; the rest sit in between. Auto picks a model per request, so it has none.
+ */
+export function intelligence(m: Model): 1 | 2 | 3 | null {
+  if (m.id === 'auto') return null;
+  // An admin's setting on the server wins over the guess.
+  if (m.intelligence === 1 || m.intelligence === 2 || m.intelligence === 3) return m.intelligence;
+  const n = `${m.id} ${m.label}`.toLowerCase().replace(/[_\s]+/g, '-');
+  if (/(^|[-/:])(mini|nano|lite|tiny|small)(?![a-z])|flash-lite|haiku-?3|gemma|phi-?\d|ministral|(^|[^\d.])(0\.\d|1|1\.5|2|3|4|7|8|9|12|14)b\b|\be[24]b\b/.test(n)) return 1;
+  if (/opus|fable|sonnet-?(4[.-]5|4[.-]6|5)|gpt-?5|\bo3\b|\bo4\b|gemini-?(2\.5|3)[\w.-]*pro|grok-?[45](?![\w.-]*fast)|deepseek[\w.-]*(r1|v3\.[12]|v4)|kimi-?k2|qwen-?3[\w.-]*(max|coder|235b|480b)|glm-?(4\.[5-9]|5)|minimax-?m2|gpt-?oss-?120b|codex/.test(n)) return 3;
+  return 2;
+}
+
+const INTEL_NAMES = ['', 'Light', 'Capable', 'Frontier'];
+
+/** Three bars, filled up to the model's Intelligence Index: more bars, smarter model. */
+export function IntelBars({ level }: { level: 1 | 2 | 3 | null }) {
+  if (!level) return null;
+  const tip = `Intelligence Index: ${INTEL_NAMES[level]} (${level} of 3)`;
+  return (
+    <span className="intel" title={tip} aria-label={tip} role="img">
+      {[1, 2, 3].map((i) => <span key={i} className={`intel-bar ${i <= level ? 'on' : ''}`} style={{ height: 4 + i * 3 }} />)}
+    </span>
+  );
+}
+
 /** How the model list is ordered, picked in the menu and kept for next time. Starred models always come first. */
 const SORTS = [
   ['cheap', 'Cheapest first'],
   ['pricey', 'Most expensive first'],
   ['name', 'Name (A–Z)'],
+  ['smart', 'Smartest first'],
   ['context', 'Largest context'],
 ] as const;
 type Sort = (typeof SORTS)[number][0];
 const SORT_KEY = 'scout.modelSort';
 const FREE_KEY = 'scout.modelFreeOnly';
+/** Providers hidden from the rail with a right-click, kept on this PC. */
+const HIDDEN_KEY = 'scout.hiddenProviders';
+/** Set once the menu has shown its right-click tip, the first time it opened. */
+const TIP_KEY = 'scout.modelMenuTipSeen';
+
+function savedHidden(): Tab[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? '[]');
+    return Array.isArray(v) ? v.filter((t): t is Tab => TABS.some(([id]) => id === t)) : [];
+  } catch {
+    return [];
+  }
+}
 
 function savedSort(): Sort {
   const s = localStorage.getItem(SORT_KEY);
@@ -95,6 +138,7 @@ function compare(sort: Sort, a: ModelRow, b: ModelRow): number {
     case 'pricey': return a.key === 'auto' ? -1 : b.key === 'auto' ? 1 : last(price(a), price(b), -1);
     case 'name': return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
     case 'context': return last(a.model.context ?? Infinity, b.model.context ?? Infinity, -1);
+    case 'smart': return a.key === 'auto' ? -1 : b.key === 'auto' ? 1 : (intelligence(b.model) ?? 0) - (intelligence(a.model) ?? 0) || last(price(a), price(b), 1);
     default: return last(price(a), price(b), 1);
   }
 }
@@ -117,6 +161,7 @@ function ModelCard({ m, top, left }: { m: Model; top: number; left: number }) {
   const caps = [m.tools && 'Tools', m.vision && 'Vision'].filter(Boolean).join(' · ');
   const on = [m.hosted && 'ScoutCode', m.openrouterId && 'OpenRouter', m.nvidiaId && 'NVIDIA NIM', m.opencodeId && 'OpenCode', m.kiloId && 'Kilo Code', m.hermesId && 'Hermes', m.additional && runsOn(m.additional[0])].filter(Boolean).join(' or ');
   const stats: [string, string | null | undefined][] = [
+    ['Smarts', intelligence(m) ? `${INTEL_NAMES[intelligence(m)!]} (${intelligence(m)} of 3)` : null],
     ['Context', m.context ? `${tokens(m.context)} tokens` : null], ['Cost', m.cost], ['Supports', caps], ['Runs on', on],
     ['Providers', m.providers.join(', ')], ['Tries', m.routesTo.join(' → ')],
   ];
@@ -194,6 +239,23 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const setSort = (s: Sort) => { setSortState(s); localStorage.setItem(SORT_KEY, s); };
   const setFreeOnly = (on: boolean) => { setFreeOnlyState(on); localStorage.setItem(FREE_KEY, on ? '1' : '0'); };
   const [adding, setAdding] = useState(false);
+  const [hidden, setHiddenState] = useState<Tab[]>(savedHidden);
+  const setHidden = (h: Tab[]) => { setHiddenState(h); localStorage.setItem(HIDDEN_KEY, JSON.stringify(h)); };
+  // A provider's right-click menu, or with tab 'starred' the list of hidden ones; placed inside the menu.
+  const [ctx, setCtx] = useState<{ tab: Tab; x: number; y: number } | null>(null);
+  const [tip, setTip] = useState(() => localStorage.getItem(TIP_KEY) !== '1');
+  const dismissTip = () => setTip(false);
+  // Shown the first time the menu opens, and not again.
+  useEffect(() => localStorage.setItem(TIP_KEY, '1'), []);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ctx) return;
+    const down = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.rail-menu')) setCtx(null); };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setCtx(null); } };
+    document.addEventListener('mousedown', down);
+    window.addEventListener('keydown', key, true);
+    return () => { document.removeEventListener('mousedown', down); window.removeEventListener('keydown', key, true); };
+  }, [ctx]);
   const [hover, setHover] = useState<{ m: Model; top: number; left: number } | null>(null);
   // A team's member sees what the team runs, and the providers on this PC it allows.
   const team = cfg.team;
@@ -205,30 +267,92 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
     const all = allRows(models);
     const pos = (r: ModelRow) => { const i = starred.indexOf(r.star); return i < 0 ? Infinity : i; };
     let list: ModelRow[];
-    if (q) list = all.filter((r) => [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q)));
+    const hiddenRow = (r: ModelRow) => hidden.includes(r.provider as Tab) || (hidden.includes('additional') && additionalProviders.some((a) => a.id === r.provider));
+    if (q) list = all.filter((r) => !hiddenRow(r) && [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q)));
     else if (tab === 'starred') list = all.filter((r) => starred.includes(r.star));
     else if (tab === 'additional') list = all.filter((r) => additionalProviders.some((a) => a.id === r.provider));
     else list = all.filter((r) => r.provider === tab && (tab !== 'scoutcode' || signedIn('scoutcode') || r.model.free));
     if (freeOnly) list = list.filter((r) => r.key === 'auto' || rowFree(r));
     // Starred first, in the order they were starred; then the sort picked. Ties keep their order.
     return [...list].sort((a, b) => (pos(a) !== pos(b) ? pos(a) - pos(b) : compare(sort, a, b)));
-  }, [models, q, tab, starred, additionalProviders, sort, freeOnly]);
+  }, [models, q, tab, starred, additionalProviders, sort, freeOnly, hidden]);
   // ScoutCode always lists its free models; signing in only adds the rest and a banner suggests it.
   const signIn = !q && tab !== 'scoutcode' && (!signedIn(tab) || (tab === 'additional' && adding));
   // Chatbots bring their own model, so the tab shows the link instead of a list.
   const chatbots = !q && tab === 'chatbots';
   const empty = loading > 0 ? 'Loading models…' : q ? 'No models match.' : tab === 'starred' ? 'Star a model to keep it here.' : 'No models here yet.';
   return (
-    <div className="model-menu">
+    <div className="model-menu" ref={menuRef}>
       <div className="rail">
-        {TABS.filter(([t]) => shownTab(t)).map(([t, tip]) => (
-          <button key={t} type="button" title={signedIn(t) ? tip : `${tip} (not connected)`} aria-label={signedIn(t) ? tip : `${tip} (not connected)`} className={`rail-tab ${tab === t && !q ? 'on' : ''} ${signedIn(t) ? '' : 'off'}`} onClick={() => { setTab(t); setSearch(''); setAdding(false); }}>
+        {TABS.filter(([t]) => shownTab(t) && !hidden.includes(t)).map(([t, name]) => (
+          <button
+            key={t}
+            type="button"
+            title={signedIn(t) ? name : `${name} (not connected)`}
+            aria-label={signedIn(t) ? name : `${name} (not connected)`}
+            className={`rail-tab ${tab === t && !q ? 'on' : ''} ${signedIn(t) ? '' : 'off'}`}
+            onClick={() => { setTab(t); setSearch(''); setAdding(false); }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              if (t === 'starred') return;
+              const box = menuRef.current!.getBoundingClientRect();
+              setCtx({ tab: t, x: e.clientX - box.left, y: e.clientY - box.top });
+              if (tip) dismissTip();
+            }}
+          >
             <RailIcon tab={t} />
           </button>
         ))}
+        {hidden.length > 0 && (
+          <button type="button" className="rail-tab" title={`Show hidden providers (${hidden.length})`} aria-label={`Show hidden providers (${hidden.length})`} onClick={(e) => {
+            const box = menuRef.current!.getBoundingClientRect();
+            const b = e.currentTarget.getBoundingClientRect();
+            setCtx({ tab: 'starred', x: b.right - box.left + 4, y: b.top - box.top });
+          }}>
+            <Icon name="more" />
+          </button>
+        )}
       </div>
+      {ctx && (
+        <div className="rail-menu" style={{ left: ctx.x, top: Math.max(0, Math.min(ctx.y, 470 - 48 - (ctx.tab === 'starred' ? hidden.length : 2) * 32)) }}>
+          {ctx.tab === 'starred' ? hidden.map((t) => (
+            <button key={t} type="button" className="menu-item" onClick={() => { setHidden(hidden.filter((h) => h !== t)); setCtx(null); }}>
+              <RailIcon tab={t} /><span className="grow ellipsis">Show {TABS.find(([id]) => id === t)![1]}</span>
+            </button>
+          )) : (() => {
+            const t = ctx.tab;
+            const name = TABS.find(([id]) => id === t)![1];
+            return (
+              <>
+                <div className="tiny dim rail-menu-head">{name}</div>
+                {!signedIn(t) && (
+                  <button type="button" className="menu-item" onClick={() => { setTab(t); setSearch(''); setAdding(false); setCtx(null); }}>
+                    <Icon name="user" /><span className="grow">{t === 'opencode' ? 'Set up OpenCode' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : `Sign in to ${name}`}</span>
+                  </button>
+                )}
+                <button type="button" className="menu-item" onClick={() => {
+                  setHidden([...hidden, t]);
+                  if (tab === t) setTab('starred');
+                  setCtx(null);
+                }}>
+                  <Icon name="close" /><span className="grow">Hide</span>
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      )}
       <div className="model-column">
         <input className="input" autoFocus placeholder="Search models" value={search} onChange={(e) => setSearch(e.target.value)} />
+        {tip && (
+          <div className="card-note menu-tip">
+            <div className="row">
+              <b className="strong grow small">Tip</b>
+              <IconButton icon="close" tip="Got it" size={22} onClick={dismissTip} />
+            </div>
+            <div className="small dim">Right-click a provider on the left to hide it, or to sign in if it needs an account. The bars by each model are its Intelligence Index: the more bars, the smarter.</div>
+          </div>
+        )}
         {!chatbots && !signIn && (
           <div className="model-sort">
             <select className="input select compact" aria-label="Sort models" title="Sort models" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
@@ -295,6 +419,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
               >
                 <button type="button" className={`star ${on ? 'on' : ''}`} title={on ? 'Unstar' : 'Star'} onClick={(e) => { e.stopPropagation(); act('toggleStar', { id: r.star }); }}><Star on={on} /></button>
                 <span className="grow ellipsis">{r.name}</span>
+                <IntelBars level={intelligence(m)} />
                 {free ? <span className="badge">Free</span> : tier ? <span className="tiny dim">{'$'.repeat(tier)}</span> : null}
                 {logo(r.provider) && <img className="logo row-logo" src={logo(r.provider)} width={13} height={13} alt="" />}
               </div>

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -284,6 +284,8 @@ pub struct ModelInfo {
     pub openrouter_tier: Option<u8>,
     /// Costs nothing on OpenRouter, for a model both serve. Kept apart from `free`, which is ScoutCode's own price.
     pub openrouter_free: bool,
+    /// The Intelligence Index an admin set on the server, from 1 (light) to 3 (frontier). None: the app guesses from the name.
+    pub intelligence: Option<u8>,
 }
 
 /// The price tier for USD per million tokens, on the server's scale: what 10k tokens in and 1k out cost. None when free or unknown.
@@ -341,6 +343,7 @@ impl ModelInfo {
             tier,
             openrouter_tier: None,
             openrouter_free: false,
+            intelligence: m.get("intelligence").and_then(Value::as_u64).filter(|n| (1..=3).contains(n)).map(|n| n as u8),
         })
     }
 
@@ -439,6 +442,57 @@ pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>, nvidia: V
     out
 }
 
+// ---------- the Intelligence Index admins set ----------
+
+/// Letters and digits only, lowercased: how admins' keys and model names are compared.
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+fn intelligence_file() -> std::path::PathBuf {
+    crate::config::home().join("model-intelligence.json")
+}
+
+/// The levels admins set on the server, by model id or name, kept on disk for starts without a connection.
+fn intelligence_levels() -> &'static Mutex<HashMap<String, u8>> {
+    static LEVELS: OnceLock<Mutex<HashMap<String, u8>>> = OnceLock::new();
+    LEVELS.get_or_init(|| {
+        let saved: HashMap<String, u8> = std::fs::read_to_string(intelligence_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        Mutex::new(saved)
+    })
+}
+
+fn set_intelligence(levels: HashMap<String, u8>) {
+    let levels: HashMap<String, u8> = levels.into_iter().map(|(k, v)| (squash(&k), v)).filter(|(k, _)| !k.is_empty()).collect();
+    let mut cur = intelligence_levels().lock().unwrap();
+    if *cur != levels {
+        let _ = std::fs::write(intelligence_file(), serde_json::to_string(&levels).unwrap_or_default());
+        *cur = levels;
+    }
+}
+
+/// Gives each model the level an admin set for it, matched by its id on any provider (with or without the vendor
+/// prefix) or by its name, so one setting covers the model wherever it runs.
+pub fn apply_intelligence(models: &mut [ModelInfo]) {
+    let levels = intelligence_levels().lock().unwrap();
+    if levels.is_empty() {
+        return;
+    }
+    for m in models.iter_mut() {
+        let mut ids: Vec<&str> = vec![&m.id];
+        ids.extend([&m.openrouter_id, &m.nvidia_id, &m.opencode_id, &m.kilo_id, &m.copilot_id, &m.devin_id, &m.kiro_id, &m.codex_id, &m.claude_id, &m.grok_id, &m.hermes_id].into_iter().flatten().map(String::as_str));
+        if let Some((_, id)) = &m.additional {
+            ids.push(id);
+        }
+        let mut keys: Vec<String> = ids.iter().flat_map(|id| [squash(id), squash(id.rsplit('/').next().unwrap_or(id))]).collect();
+        keys.push(match_key(m));
+        keys.push(squash(&m.label()));
+        if let Some(level) = keys.iter().find_map(|k| levels.get(k)) {
+            m.intelligence = Some(*level);
+        }
+    }
+}
+
 // ---------- the saved lists ----------
 
 impl ModelInfo {
@@ -450,7 +504,7 @@ impl ModelInfo {
             "openrouterId": self.openrouter_id, "nvidiaId": self.nvidia_id, "opencodeId": self.opencode_id, "kiloId": self.kilo_id,
             "kiloFree": self.kilo_free, "kiloTier": self.kilo_tier, "copilotId": self.copilot_id, "devinId": self.devin_id, "kiroId": self.kiro_id,
             "codexId": self.codex_id, "claudeId": self.claude_id, "grokId": self.grok_id, "hermesId": self.hermes_id, "additional": self.additional, "hosted": self.hosted, "free": self.free,
-            "tier": self.tier, "openrouterTier": self.openrouter_tier, "openrouterFree": self.openrouter_free,
+            "tier": self.tier, "openrouterTier": self.openrouter_tier, "openrouterFree": self.openrouter_free, "intelligence": self.intelligence,
         })
     }
 
@@ -498,6 +552,7 @@ impl ModelInfo {
             tier: n("tier").map(|t| t as u8),
             openrouter_tier: n("openrouterTier").map(|t| t as u8),
             openrouter_free: b("openrouterFree").unwrap_or(false),
+            intelligence: n("intelligence").map(|t| t as u8),
         })
     }
 }
@@ -679,6 +734,7 @@ mod tests {
             kilo_tier: Some(2),
             additional: Some(("ovh", "Qwen-32B".into())),
             hosted: true,
+            intelligence: Some(3),
             ..Default::default()
         };
         let back = ModelInfo::from_cache(&m.to_cache()).unwrap();
@@ -965,6 +1021,9 @@ pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), Api
     }
     let user = header(&res, "x-scoutcode-user").filter(|u| !u.is_empty());
     let body: Value = res.into_body().read_json().map_err(transport)?;
+    if let Some(Value::Object(levels)) = body.get("intelligence") {
+        set_intelligence(levels.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64().filter(|n| (1..=3).contains(n))? as u8))).collect());
+    }
     let models = body
         .get("data")
         .and_then(Value::as_array)

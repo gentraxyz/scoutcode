@@ -110,10 +110,10 @@ pub fn specs(only: Option<&[&str]>, edit: EditTool) -> Vec<Value> {
             json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","description":"Directory to search in, default the working directory"}},"required":["pattern"]})),
         ("grep", "Search file contents with a regular expression. output_mode \"files\" (default) lists matching files; \"content\" shows matching lines with line numbers; \"count\" shows counts per file. Filter files with glob (e.g. \"*.ts\").",
             json!({"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression"},"path":{"type":"string","description":"File or directory, default the working directory"},"glob":{"type":"string","description":"Only search files matching this glob"},"output_mode":{"type":"string","enum":["files","content","count"]},"ignore_case":{"type":"boolean"},"context":{"type":"number","description":"Lines of context around matches (content mode)"},"max_results":{"type":"number","description":"Default 200"}},"required":["pattern"]})),
-        ("bash", "Run a shell command in the working directory and return its output. Each call starts a fresh shell (cd does not carry over; chain with &&). Default timeout 2 minutes, max 10. Use run_in_background for servers and watchers, then read them with shell_output. Prefer the file tools over cat/sed/grep/find for reading and searching files.",
-            json!({"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string","description":"A few words on what the command does"},"timeout_ms":{"type":"number"},"run_in_background":{"type":"boolean"}},"required":["command"]})),
-        ("shell_output", "Read new output from a background shell started with bash run_in_background, and whether it is still running.",
-            json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
+        ("bash", "Run a shell command in the working directory and return its output. Each call starts a fresh shell (cd does not carry over; chain with &&). Set run_for_seconds to how long you expect it to take (default 30, max 600). If it is still running then, it is not killed: it keeps going in the background and you get its last 50 lines, so you can wait longer with shell_output wait_seconds, read more with shell_output lines, change course with kill_shell, or work on something else meanwhile. Use run_in_background for servers, watchers and long builds you don't need to wait for, then check them with shell_output. Prefer the file tools over cat/sed/grep/find for reading and searching files.",
+            json!({"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string","description":"A few words on what the command does"},"run_for_seconds":{"type":"number","description":"How long to wait for it before it moves to the background, default 30"},"run_in_background":{"type":"boolean","description":"Start it in the background and return at once"}},"required":["command"]})),
+        ("shell_output", "Read a background shell's output and whether it is still running. By default returns the output since the last read; lines returns the last N lines of all its output instead. wait_seconds waits up to that long (max 600) for it to finish first, to keep waiting on a command that ran past its time.",
+            json!({"type":"object","properties":{"id":{"type":"string"},"lines":{"type":"number","description":"Show the last N lines of all output"},"wait_seconds":{"type":"number","description":"Wait up to this long for it to finish before reading"}},"required":["id"]})),
         ("kill_shell", "Stop a background shell.", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
         ("web_fetch", "Fetch a URL (http/https) and return its text. HTML is converted to plain text. Use for docs, issues and API references.",
             json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})),
@@ -264,7 +264,7 @@ pub fn run(name: &str, a: &Value, ctx: &mut Ctx) -> R {
         "glob" => glob(a, ctx),
         "grep" => grep(a, ctx),
         "bash" => bash(a, ctx),
-        "shell_output" => shell_output(a),
+        "shell_output" => shell_output(a, ctx),
         "kill_shell" => kill_shell(a),
         "web_fetch" => web_fetch(a, ctx),
         "update_memory" => crate::memory::run(a, ctx),
@@ -997,6 +997,39 @@ struct Background {
     output: Arc<Mutex<String>>,
     read: usize,
     exit: Option<i32>,
+    /// The model has heard that it finished, from shell_output or a note on another tool's result.
+    told: bool,
+}
+
+fn next_shell_id() -> String {
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
+    format!("sh{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The last `n` lines of `s`, with a note on how many came before.
+fn last_lines(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.trim_end().lines().collect();
+    let skip = lines.len().saturating_sub(n);
+    let tail = truncate(&lines[skip..].join("\n"));
+    if skip > 0 { format!("[… {skip} earlier lines]\n{tail}") } else { tail }
+}
+
+/// A line for each background shell that finished since the model last looked, so it hears about it while working on
+/// something else. Each is told once.
+pub fn finished_shell_notes() -> String {
+    let mut notes = vec![];
+    for (id, b) in background().lock().unwrap().iter_mut() {
+        if b.exit.is_none() {
+            if let Ok(Some(st)) = b.child.try_wait() {
+                b.exit = Some(st.code().unwrap_or(-1));
+            }
+        }
+        if let (Some(code), false) = (b.exit, b.told) {
+            b.told = true;
+            notes.push(format!("[background shell {id} ({}) finished with exit code {code}; read it with shell_output]", b.command));
+        }
+    }
+    notes.join("\n")
 }
 
 fn background() -> &'static Mutex<HashMap<String, Background>> {
@@ -1021,17 +1054,18 @@ fn bash(a: &Value, ctx: &mut Ctx) -> R {
     let out = pump(&mut child);
 
     if a.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
-        static NEXT: AtomicUsize = AtomicUsize::new(1);
-        let id = format!("sh{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        let id = next_shell_id();
         let pid = child.id();
-        background().lock().unwrap().insert(id.clone(), Background { command, child, output: out, read: 0, exit: None });
+        background().lock().unwrap().insert(id.clone(), Background { command, child, output: out, read: 0, exit: None, told: false });
         return Ok(ToolResult::ok(
             format!("Started in the background as {id} (pid {pid}). Read its output with shell_output, stop it with kill_shell."),
             format!("background {id}"),
         ));
     }
 
-    let timeout = Duration::from_millis(a.get("timeout_ms").and_then(Value::as_f64).unwrap_or(120_000.0).clamp(1000.0, 600_000.0) as u64);
+    // How long the model expects it to run; timeout_ms is the older name, still sent by some callers.
+    let secs = a.get("run_for_seconds").and_then(Value::as_f64).or_else(|| a.get("timeout_ms").and_then(Value::as_f64).map(|ms| ms / 1000.0)).unwrap_or(30.0);
+    let timeout = Duration::from_millis((secs * 1000.0).clamp(1000.0, 600_000.0) as u64);
     let started = Instant::now();
     let mut last_len = 0;
     let (code, why) = loop {
@@ -1043,8 +1077,21 @@ fn bash(a: &Value, ctx: &mut Ctx) -> R {
             break (-1, Some("interrupted"));
         }
         if started.elapsed() > timeout {
-            kill_tree(&mut child);
-            break (-1, Some("timed out"));
+            // Past its time: keep it running in the background and hand the model its tail so it can decide what to do.
+            let id = next_shell_id();
+            let tail = last_lines(&strip_ansi(&out.lock().unwrap()), 50);
+            let read = out.lock().unwrap().len();
+            background().lock().unwrap().insert(id.clone(), Background { command, child, output: out, read, exit: None, told: false });
+            return Ok(ToolResult {
+                output: format!(
+                    "{}\n\n[still running after {}s, so it moved to the background as {id}. Above are its last 50 lines. Decide what to do: keep waiting with shell_output id={id} wait_seconds=N, read more with shell_output lines=N, stop it with kill_shell to change something, or work on something else and check it later.]",
+                    if tail.is_empty() { "(no output yet)" } else { &tail },
+                    timeout.as_secs()
+                ),
+                is_error: false,
+                summary: Some(format!("running in background as {id}")),
+                display: (!tail.is_empty()).then(|| Display::Text(tail)),
+            });
         }
         std::thread::sleep(Duration::from_millis(40));
         let g = out.lock().unwrap();
@@ -1061,8 +1108,7 @@ fn bash(a: &Value, ctx: &mut Ctx) -> R {
     let text = truncate(strip_ansi(&out.lock().unwrap()).trim_end());
     match why {
         Some("interrupted") => return Ok(ToolResult::err(format!("{text}\n\n[interrupted by the user]"), "interrupted")),
-        Some(_) => return Ok(ToolResult::err(format!("{text}\n\n[timed out after {}s and was killed]", timeout.as_secs()), "timed out")),
-        None => {}
+        _ => {}
     }
     let lines = if text.is_empty() { 0 } else { text.lines().count() };
     Ok(ToolResult {
@@ -1073,24 +1119,75 @@ fn bash(a: &Value, ctx: &mut Ctx) -> R {
     })
 }
 
-fn shell_output(a: &Value) -> R {
+fn shell_output(a: &Value, ctx: &mut Ctx) -> R {
+    let id = s(a, "id").to_string();
+    let missing = |bg: &HashMap<String, Background>| {
+        let keys: Vec<String> = bg.keys().cloned().collect();
+        format!("No background shell {id}. Running: {}", if keys.is_empty() { "none".into() } else { keys.join(", ") })
+    };
+    // Keep waiting on a command that ran past its time, without holding the lock so other shells stay readable.
+    let wait = a.get("wait_seconds").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 600.0);
+    if wait > 0.0 {
+        let until = Instant::now() + Duration::from_secs_f64(wait);
+        let mut last_len = 0;
+        loop {
+            let progress = {
+                let mut bg = background().lock().unwrap();
+                if !bg.contains_key(&id) {
+                    return Err(missing(&bg));
+                }
+                let b = bg.get_mut(&id).unwrap();
+                if b.exit.is_none() {
+                    if let Ok(Some(st)) = b.child.try_wait() {
+                        b.exit = Some(st.code().unwrap_or(-1));
+                    }
+                }
+                if b.exit.is_some() {
+                    break;
+                }
+                let g = b.output.lock().unwrap();
+                (g.len() != last_len).then(|| {
+                    last_len = g.len();
+                    let tail: Vec<&str> = g.lines().filter(|l| !l.trim().is_empty()).collect();
+                    strip_ansi(&tail[tail.len().saturating_sub(5)..].join("\n"))
+                })
+            };
+            if let Some(p) = progress {
+                (ctx.on_progress)(&p);
+            }
+            if ctx.cancel.load(Ordering::Relaxed) || Instant::now() >= until {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        // Let the reader threads take what is left in the pipes.
+        std::thread::sleep(Duration::from_millis(30));
+    }
     let mut bg = background().lock().unwrap();
-    let keys: Vec<String> = bg.keys().cloned().collect();
-    let b = bg.get_mut(s(a, "id")).ok_or_else(|| format!("No background shell {}. Running: {}", s(a, "id"), if keys.is_empty() { "none".into() } else { keys.join(", ") }))?;
+    if !bg.contains_key(&id) {
+                return Err(missing(&bg));
+            }
+            let b = bg.get_mut(&id).unwrap();
     if b.exit.is_none() {
         if let Ok(Some(st)) = b.child.try_wait() {
             b.exit = Some(st.code().unwrap_or(-1));
         }
     }
     let all = b.output.lock().unwrap().clone();
-    let fresh = strip_ansi(all.get(b.read.min(all.len())..).unwrap_or(""));
+    let body = match a.get("lines").and_then(Value::as_f64) {
+        Some(n) => last_lines(&strip_ansi(&all), n.clamp(1.0, 5000.0) as usize),
+        None => truncate(&strip_ansi(all.get(b.read.min(all.len())..).unwrap_or(""))),
+    };
     b.read = all.len();
     let status = match b.exit {
         None => "running".to_string(),
-        Some(c) => format!("exited with code {c}"),
+        Some(c) => {
+            b.told = true;
+            format!("exited with code {c}")
+        }
     };
-    let body = truncate(&fresh);
-    Ok(ToolResult::ok(format!("[{} ({}): {status}]\n{}", s(a, "id"), b.command, if body.is_empty() { "(no new output)" } else { &body }), status))
+    let more = if b.exit.is_none() && wait > 0.0 { format!(" after waiting {}s more; wait again, kill_shell to change something, or move on", wait.round()) } else { String::new() };
+    Ok(ToolResult::ok(format!("[{id} ({}): {status}{more}]\n{}", b.command, if body.is_empty() { "(no new output)" } else { &body }), status))
 }
 
 fn kill_shell(a: &Value) -> R {
@@ -1344,5 +1441,30 @@ mod tests {
         // Both count as read, so they can be edited next.
         assert_eq!(read.len(), 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_command_past_its_time_moves_to_the_background_with_its_tail() {
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let (cancel, mut read) = (AtomicBool::new(false), HashSet::new());
+        let mut noop = |_: &str| {};
+        let mut ctx = Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
+        let command = if shell().powershell {
+            "1..80 | % { \"line $_\" }; Start-Sleep -Seconds 3; 'done'"
+        } else {
+            "for i in $(seq 1 80); do echo line $i; done; sleep 3; echo done"
+        };
+        let r = run("bash", &json!({ "command": command, "run_for_seconds": 1 }), &mut ctx).unwrap();
+        assert!(!r.is_error);
+        assert!(r.output.contains("line 80") && !r.output.contains("line 30\n"), "{}", r.output);
+        assert!(r.output.contains("[… 30 earlier lines]"), "{}", r.output);
+        let id = r.summary.unwrap().rsplit(' ').next().unwrap().to_string();
+        // Keep waiting until it ends; then it reads as finished and isn't announced again.
+        let w = run("shell_output", &json!({ "id": id, "wait_seconds": 20 }), &mut ctx).unwrap();
+        assert!(w.output.contains("exited with code 0") && w.output.contains("done"), "{}", w.output);
+        let more = run("shell_output", &json!({ "id": id, "lines": 3 }), &mut ctx).unwrap();
+        assert!(more.output.contains("line 80") && !more.output.contains("line 77"), "{}", more.output);
+        assert!(!finished_shell_notes().contains(&id));
+        run("kill_shell", &json!({ "id": id }), &mut ctx).unwrap();
     }
 }

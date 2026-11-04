@@ -31,6 +31,8 @@ export type Model = {
   tier: number | null; openrouterTier: number | null;
   /** Free on OpenRouter, for a model ScoutCode serves too; `free` is ScoutCode's own price then. */
   openrouterFree: boolean;
+  /** The Intelligence Index an admin set on the server (1–3); null when the app guesses it from the name. */
+  intelligence: number | null;
 };
 
 export type Permission = { tool: string; label: string; preview: Display | null; prefix: string | null; reason: string | null };

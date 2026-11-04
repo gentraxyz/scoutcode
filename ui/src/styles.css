@@ -318,7 +318,15 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 
 /* model menu */
 .model-popover { padding: 6px; }
-.model-menu { display: flex; gap: 6px; height: 470px; }
+.model-menu { position: relative; display: flex; gap: 6px; height: 470px; }
+.rail-menu { position: absolute; z-index: 70; min-width: 190px; padding: 6px; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 12px; box-shadow: var(--shadow-pop); animation: fade-in var(--fast) var(--ease); }
+.rail-menu-head { padding: 2px 10px 4px; }
+.rail-menu .logo { width: 16px; height: 16px; }
+.menu-tip { gap: 4px; padding: 8px 10px; }
+.intel { display: inline-flex; align-items: flex-end; gap: 2px; height: 13px; flex: none; }
+.intel-bar { width: 3px; border-radius: 1px; background: color-mix(in srgb, var(--text) 18%, transparent); }
+.intel-bar.on { background: var(--muted); }
+.model-row.selected .intel-bar.on, .model-row:hover .intel-bar.on { background: var(--strong); }
 .rail { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px 2px 0; border-right: 1px solid var(--border); }
 .rail-tab { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--dim); }
 .rail-tab:hover { background: var(--menu-hover); color: var(--strong); }

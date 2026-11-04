@@ -841,14 +841,20 @@ impl Agent {
         let cwd = self.session.cwd.clone();
         let mut progress = |t: &str| h.send(Ev::ToolProgress { id: id.to_string(), text: t.to_string() });
         let mut ctx = Ctx { cwd: &cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut progress };
-        match tools::run(name, args, &mut ctx) {
+        let mut result = match tools::run(name, args, &mut ctx) {
             Ok(r) => r,
             Err(_) if self.cancelled() => ToolResult::err("Interrupted by the user.", "interrupted"),
             Err(e) => {
                 let first = e.lines().next().unwrap_or("").chars().take(100).collect::<String>();
                 ToolResult::err(e, first)
             }
+        };
+        // Commands left running in the background say when they finish, on whatever the model does next.
+        let notes = tools::finished_shell_notes();
+        if !notes.is_empty() {
+            result.output = format!("{}\n\n{notes}", result.output);
         }
+        result
     }
 
     /// A read-only agent with its own context. Its tool calls show as status lines.

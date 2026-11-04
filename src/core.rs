@@ -465,6 +465,7 @@ fn assemble(sources: &[&str], lists: &HashMap<String, Vec<ModelInfo>>) -> Vec<Mo
     for s in sources.iter().filter(|s| !["scoutcode", "openrouter", "nvidia", "kilo"].contains(s)) {
         models.extend(get(s));
     }
+    crate::api::apply_intelligence(&mut models);
     models
 }
 
@@ -534,6 +535,7 @@ fn model_json(m: &ModelInfo) -> Value {
         "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id, "opencodeId": m.opencode_id,
         "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "codexId": m.codex_id, "claudeId": m.claude_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
         "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier, "openrouterFree": m.openrouter_free,
+        "intelligence": m.intelligence,
     })
 }
 
@@ -2569,8 +2571,92 @@ impl Core {
                     self.set_mode(&m);
                 }
             }
+            // Only a model this PC lists for the website, so the site can't pick a provider that isn't set up here.
+            "model" => {
+                if let (Some(key), Some(provider)) = (s("key"), s("provider")) {
+                    if self.remote_models().iter().any(|r| r["key"] == key.as_str() && r["provider"] == provider.as_str()) {
+                        self.choose_model(&key, &provider);
+                    }
+                }
+            }
+            "star" => {
+                if let Some(id) = s("id").filter(|id| self.starred.contains(id) || self.remote_models().iter().any(|r| r["star"] == id.as_str())) {
+                    self.toggle_star(id);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Whether the model menu would list `provider`'s models here: it's signed in or set up, and a team allows it.
+    fn provider_ready(&self, provider: &str) -> bool {
+        let c = &self.cfg;
+        if let Some(t) = &c.team {
+            if t.providers.iter().any(|p| p.id == provider) {
+                return true;
+            }
+            if !t.acp.iter().any(|p| p == provider) {
+                return false;
+            }
+        }
+        match provider {
+            "scoutcode" => c.api_key.is_some() || c.is_guest(),
+            "openrouter" => !c.openrouter_keys.is_empty(),
+            "nvidia" => c.nvidia_key.is_some(),
+            "opencode" => c.opencode_enabled,
+            "copilot" => c.copilot_token.is_some(),
+            "devin" => c.devin_enabled,
+            "kiro" => c.kiro_enabled,
+            "codex" => c.codex_enabled,
+            "claude" => c.claude_enabled,
+            "grok" => c.grok_signed_in || c.grok_key.is_some(),
+            "hermes" => c.hermes_signed_in || c.hermes_key.is_some(),
+            "kilo" => true,
+            other => c.additional.iter().any(|l| l.id == other),
+        }
+    }
+
+    /// The models ScoutMote can pick, one row per model and place it runs, like the model menu's rows.
+    fn remote_models(&self) -> Vec<Value> {
+        let mut rows = vec![];
+        for m in &self.models {
+            let mut add = |provider: &str, star: &str, free: bool, tier: Option<u8>| {
+                if self.provider_ready(provider) || (provider == "scoutcode" && m.free) {
+                    rows.push(json!({ "key": m.id, "provider": provider, "label": m.label(), "star": star, "free": free, "tier": tier, "cost": m.cost, "context": m.context }));
+                }
+            };
+            if m.hosted {
+                add("scoutcode", &m.id, m.free, m.tier);
+            }
+            if m.claude_id.is_some() {
+                add("claude", &m.id, m.free, m.tier);
+            }
+            if m.codex_id.is_some() {
+                add("codex", &m.id, m.free, m.tier);
+            }
+            if let Some(id) = &m.openrouter_id {
+                let free = id.ends_with(":free") || if m.hosted { m.openrouter_free } else { m.free };
+                add("openrouter", id, free, if m.hosted { m.openrouter_tier } else { m.tier });
+            }
+            if let Some(id) = &m.nvidia_id {
+                add("nvidia", id, false, None);
+            }
+            if m.opencode_id.is_some() {
+                add("opencode", &m.id, m.free, m.tier);
+            }
+            if let Some(id) = &m.kilo_id {
+                add("kilo", id, m.kilo_free, m.kilo_tier);
+            }
+            for (p, on) in [("copilot", m.copilot_id.is_some()), ("devin", m.devin_id.is_some()), ("kiro", m.kiro_id.is_some()), ("grok", m.grok_id.is_some()), ("hermes", m.hermes_id.is_some())] {
+                if on {
+                    add(p, &m.id, m.free, m.tier);
+                }
+            }
+            if let Some((p, _)) = &m.additional {
+                add(p, &m.id, m.free, m.tier);
+            }
+        }
+        rows
     }
 
     /// What's on screen, for the website: the projects, the chats and the open chat's transcript, without secrets.
@@ -2601,6 +2687,9 @@ impl Core {
                 json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "updated": s.updated, "running": live.is_some_and(|c| c.running), "waiting": live.is_some_and(Chat::waiting) })
             }).collect::<Vec<_>>(),
             "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m) })).collect::<Vec<_>>(),
+            "models": self.remote_models(),
+            "starred": self.starred,
+            "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name })).collect::<Vec<_>>(),
             "chat": {
                 "id": self.chat.session_id,
                 "cwd": self.chat.cwd,
@@ -2610,6 +2699,8 @@ impl Core {
                 "status": self.chat.status,
                 "mode": self.chat.shared.mode(),
                 "model": crate::api::short_id(&self.chat.model),
+                "modelKey": self.current_key(),
+                "provider": self.chat.provider,
                 "queue": self.chat.queue.len(),
                 "permission": self.chat.permission.as_ref().map(|p| json!({ "tool": p.req.tool, "label": p.req.label, "reason": p.req.reason })),
                 "waiting": self.chat.plan.is_some() || self.chat.questions.is_some(),

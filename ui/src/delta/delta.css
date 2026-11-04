@@ -32,9 +32,10 @@
   -webkit-user-select: none;
 }
 .delta *, .delta *::before, .delta *::after { box-sizing: border-box; }
-.delta button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+/* :where keeps this reset at one class's weight, so the .d-* button classes below (padding, borders, backgrounds) win over it */
+.delta :where(button) { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
 .delta button:disabled { cursor: default; opacity: .5; }
-.delta input, .delta textarea, .delta select { font: inherit; color: var(--d-text); user-select: text; -webkit-user-select: text; }
+.delta :where(input, textarea, select) { font: inherit; color: var(--d-text); user-select: text; -webkit-user-select: text; }
 .delta h1 { font-size: 15px; font-weight: 600; color: var(--d-strong); margin: 0; letter-spacing: 0; }
 .delta h2 { font-size: 13.5px; font-weight: 600; color: var(--d-strong); margin: 0; }
 .delta hr { border: 0; border-top: 1px solid var(--d-border); margin: 4px 0; }

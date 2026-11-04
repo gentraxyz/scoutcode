@@ -6,7 +6,7 @@ import { message, type AgentTarget } from './sync';
 import { useDelta, IssueRow, byOrder } from './Delta';
 import { ago, Avatar, Icon, InlineText, LabelDot, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, RichText, shortDay, StateIcon, stateOptions } from './ui';
 
-export function IssueDetail({ id, onClose }: { id: string; onClose: () => void }) {
+export function IssueDetail({ id, onClose, closing }: { id: string; onClose: () => void; closing?: boolean }) {
   const c = useDelta();
   const { s } = c;
   const doc = s.doc;
@@ -23,7 +23,7 @@ export function IssueDetail({ id, onClose }: { id: string; onClose: () => void }
   const key = issueKey(doc, i);
 
   return (
-    <div className="d-drawer-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className={`d-drawer-back ${closing ? 'closing' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <aside className="d-drawer" role="dialog" aria-label={key}>
         <div className="d-drawer-head">
           <span className="d-team-key">{team?.key}</span>

@@ -266,7 +266,25 @@ export function labelOptions(doc: Doc) {
   return Object.values(doc.label).sort((a, b) => a.name.localeCompare(b.name)).map((l) => ({ value: l.id as string, label: l.name, icon: <LabelDot color={l.color} /> }));
 }
 
-export function Modal({ children, onClose, className = '' }: { children: ReactNode; onClose: () => void; className?: string }) {
+/**
+ * Keeps the last value on screen for a moment after it goes away, so a panel can play its closing animation.
+ * Returns what to show and whether it's on its way out.
+ */
+export function useLinger<T>(value: T | null | undefined | false, ms = 170): [T | null, boolean] {
+  const live = value || null;
+  const [kept, setKept] = useState<T | null>(live);
+  useEffect(() => {
+    if (live) {
+      setKept(live);
+      return;
+    }
+    const t = setTimeout(() => setKept(null), ms);
+    return () => clearTimeout(t);
+  }, [live, ms]);
+  return live ? [live, false] : [kept, kept != null];
+}
+
+export function Modal({ children, onClose, className = '', closing }: { children: ReactNode; onClose: () => void; className?: string; closing?: boolean }) {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !e.defaultPrevented) {
@@ -279,7 +297,7 @@ export function Modal({ children, onClose, className = '' }: { children: ReactNo
     return () => window.removeEventListener('keydown', key);
   }, [onClose]);
   return (
-    <div className="d-modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className={`d-modal-back ${closing ? 'closing' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className={`d-modal ${className}`} role="dialog">{children}</div>
     </div>
   );

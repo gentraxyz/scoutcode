@@ -7,10 +7,10 @@
  * IssueDetail.tsx is one issue, and views.tsx the projects, roadmap, cycles and settings pages. The host app passes a
  * Host (sync.ts) that says where workspaces can be kept and how to reach Scout.
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from 'react';
+import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from 'react';
 import { cycleName, cycleStatus, findByKey, isDone, issueKey, newId, PRIORITIES, PROJECT_STATUSES, SCOUT, STATE_TYPES, teamStates, type Issue, type StateType } from './model';
 import { createWorkspace, listWorkspaces, message, Session, type Host, type Storage, type WorkspaceInfo } from './sync';
-import { Avatar, Icon, LabelDot, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, shortDay, StateIcon, stateOptions } from './ui';
+import { Avatar, Icon, LabelDot, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, shortDay, StateIcon, stateOptions, useLinger } from './ui';
 import { IssueDetail } from './IssueDetail';
 import { CycleView, CyclesView, ProjectsView, ProjectView, RoadmapView, SettingsView } from './views';
 import './delta.css';
@@ -327,7 +327,7 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
         setPalette((p) => !p);
         return;
       }
-      if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.d-modal-back, .d-menu')) return;
+      if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.d-modal-back:not(.closing), .d-menu')) return;
       if (e.key === 'c') {
         e.preventDefault();
         setCreating(defaultsFor(ctx));
@@ -345,6 +345,12 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
     return () => window.removeEventListener('keydown', key);
   });
 
+  // Panels stay a moment after they close so they can animate out; pages remount (and fade in) when the route changes.
+  const [shownId, idLeaving] = useLinger(openId && s.doc.issue[openId] ? openId : null);
+  const [shownNew, newLeaving] = useLinger(creating);
+  const [shownPalette, paletteLeaving] = useLinger(palette);
+  const routeKey = `${route.view}:${'teamId' in route ? route.teamId : ''}:${'id' in route ? route.id : ''}`;
+
   return (
     <Ctx.Provider value={ctx}>
       <div className={`delta d-app ${navOpen ? 'nav-open' : ''}`}>
@@ -352,18 +358,20 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
         <div className="d-scrim" onClick={() => setNavOpen(false)} />
         <main className="d-main">
           <button type="button" className="d-icon-btn d-nav-toggle" onClick={() => setNavOpen(true)} aria-label="Show navigation"><Icon name="issues" /></button>
-          {route.view === 'my' && <IssuesPage title="My issues" source={(i) => i.assignee === s.me} storageKey="my" defaults={{ assignee: s.me }} />}
-          {route.view === 'team' && s.doc.team[route.teamId] && <TeamPage teamId={route.teamId} tab={route.tab ?? 'all'} />}
-          {route.view === 'cycles' && s.doc.team[route.teamId] && <CyclesView teamId={route.teamId} />}
-          {route.view === 'cycle' && s.doc.cycle[route.id] && <CycleView id={route.id} />}
-          {route.view === 'projects' && <ProjectsView />}
-          {route.view === 'project' && s.doc.project[route.id] && <ProjectView id={route.id} />}
-          {route.view === 'roadmap' && <RoadmapView />}
-          {route.view === 'settings' && <SettingsView onGone={onGone} onMade={onMade} />}
+          <Fragment key={routeKey}>
+            {route.view === 'my' && <IssuesPage title="My issues" source={(i) => i.assignee === s.me} storageKey="my" defaults={{ assignee: s.me }} />}
+            {route.view === 'team' && s.doc.team[route.teamId] && <TeamPage teamId={route.teamId} tab={route.tab ?? 'all'} />}
+            {route.view === 'cycles' && s.doc.team[route.teamId] && <CyclesView teamId={route.teamId} />}
+            {route.view === 'cycle' && s.doc.cycle[route.id] && <CycleView id={route.id} />}
+            {route.view === 'projects' && <ProjectsView />}
+            {route.view === 'project' && s.doc.project[route.id] && <ProjectView id={route.id} />}
+            {route.view === 'roadmap' && <RoadmapView />}
+            {route.view === 'settings' && <SettingsView onGone={onGone} onMade={onMade} />}
+          </Fragment>
         </main>
-        {openId && s.doc.issue[openId] && <IssueDetail id={openId} onClose={() => setOpenId(null)} />}
-        {creating && <NewIssue defaults={creating} onClose={() => setCreating(null)} />}
-        {palette && <Palette onClose={() => setPalette(false)} />}
+        {shownId && <IssueDetail id={shownId} closing={idLeaving} onClose={() => setOpenId(null)} />}
+        {shownNew && <NewIssue defaults={shownNew} closing={newLeaving} onClose={() => setCreating(null)} />}
+        {shownPalette && <Palette closing={paletteLeaving} onClose={() => setPalette(false)} />}
         {s.error && (
           <div className="d-toast" role="alert">
             <span className="d-grow">{s.error}</span>
@@ -710,12 +718,19 @@ export function Empty({ icon, title, text, action }: { icon: string; title: stri
 function ListGroup({ g, showHead, defaults }: { g: Group; showHead: boolean; defaults: Partial<Issue> }) {
   const c = useDelta();
   const [shut, setShut] = useState(false);
+  // While the group folds or unfolds its rows stay mounted and clipped; once it's shut they unmount.
+  const [moving, setMoving] = useState(false);
+  const toggle = () => {
+    setMoving(true);
+    setShut(!shut);
+    setTimeout(() => setMoving(false), 320);
+  };
   return (
-    <section className="d-group">
+    <section className={`d-group ${shut ? 'shut' : ''}`}>
       {showHead && (
         <div className="d-group-head">
-          <button type="button" className="d-group-toggle" onClick={() => setShut(!shut)}>
-            <Icon name={shut ? 'chevronRight' : 'chevronDown'} size={12} />
+          <button type="button" className="d-group-toggle" onClick={toggle}>
+            <Icon name="chevronDown" size={12} className="d-chev" />
             {g.icon}
             <b>{g.label}</b>
             <span className="d-dim">{g.issues.length}</span>
@@ -724,13 +739,15 @@ function ListGroup({ g, showHead, defaults }: { g: Group; showHead: boolean; def
           <button type="button" className="d-icon-btn" title="New issue here" onClick={() => c.create(defaults)}><Icon name="plus" size={14} /></button>
         </div>
       )}
-      {!shut && g.issues.map((i) => <IssueRow key={i.id} i={i} />)}
+      <div className={`d-group-body ${moving ? 'moving' : ''}`}>
+        <div>{(!shut || moving) && g.issues.map((i, n) => <IssueRow key={i.id} i={i} n={n} />)}</div>
+      </div>
     </section>
   );
 }
 
 /** One issue in a list: its priority, ID, state, title, labels and dates, and its assignee. Each opens a picker. */
-export function IssueRow({ i, compact }: { i: Issue; compact?: boolean }) {
+export function IssueRow({ i, compact, n = 0 }: { i: Issue; compact?: boolean; n?: number }) {
   const c = useDelta();
   const { s } = c;
   const doc = s.doc;
@@ -739,7 +756,7 @@ export function IssueRow({ i, compact }: { i: Issue; compact?: boolean }) {
   const subs = Object.values(doc.issue).filter((x) => x.parentId === i.id);
   const overdue = i.dueDate && !isDone(st) && i.dueDate < new Date().toISOString().slice(0, 10);
   return (
-    <div className="d-row-issue" role="button" tabIndex={0} onClick={() => c.open(i.id)} onKeyDown={(e) => e.key === 'Enter' && c.open(i.id)}>
+    <div className="d-row-issue" style={{ ['--n' as string]: Math.min(n, 14) }} role="button" tabIndex={0} onClick={() => c.open(i.id)} onKeyDown={(e) => e.key === 'Enter' && c.open(i.id)}>
       <span onClick={(e) => e.stopPropagation()}>
         <Picker options={priorityOptions()} value={i.priority} onPick={(p) => set({ priority: p })} width={190} trigger={(_, t) => <button type="button" className="d-icon-btn" title={PRIORITIES[i.priority]} onClick={t}><PriorityIcon p={i.priority} /></button>} />
       </span>
@@ -802,8 +819,8 @@ function Board({ groups, defaults }: { groups: Group[]; defaults: Partial<Issue>
             <button type="button" className="d-icon-btn" title="New issue here" onClick={() => c.create({ ...defaults, ...(g.patch((g.issues[0] ?? { teamId: defaults.teamId ?? '' }) as Issue) ?? {}) })}><Icon name="plus" size={14} /></button>
           </div>
           <div className="d-col-body">
-            {g.issues.map((i) => (
-              <div key={i.id}>
+            {g.issues.map((i, n) => (
+              <div key={i.id} className="d-card-slot" style={{ ['--n' as string]: Math.min(n, 10) }}>
                 {over?.col === g.key && over.before === i.id && <div className="d-drop-line" />}
                 <Card
                   i={i}
@@ -825,7 +842,7 @@ function Card({ i, onDragStart, onDragOver }: { i: Issue; onDragStart: () => voi
   const doc = c.s.doc;
   const st = doc.state[i.stateId];
   return (
-    <div className="d-card" draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.id); onDragStart(); }} onDragOver={onDragOver} onClick={() => c.open(i.id)}>
+    <div className="d-card" draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.id); const el = e.currentTarget; requestAnimationFrame(() => el.classList.add('dragging')); onDragStart(); }} onDragEnd={(e) => e.currentTarget.classList.remove('dragging')} onDragOver={onDragOver} onClick={() => c.open(i.id)}>
       <div className="d-row">
         <span className="d-key">{issueKey(doc, i)}</span>
         <span className="d-grow" />
@@ -849,7 +866,7 @@ function Card({ i, onDragStart, onDragOver }: { i: Issue; onDragStart: () => voi
 
 // ---------- a new issue ----------
 
-function NewIssue({ defaults, onClose }: { defaults: Partial<Issue>; onClose: () => void }) {
+function NewIssue({ defaults, onClose, closing }: { defaults: Partial<Issue>; onClose: () => void; closing?: boolean }) {
   const { s, open } = useDelta();
   const doc = s.doc;
   const teams = Object.values(doc.team).sort((a, b) => a.createdAt - b.createdAt);
@@ -882,7 +899,7 @@ function NewIssue({ defaults, onClose }: { defaults: Partial<Issue>; onClose: ()
   };
   const st = doc.state[stateId ?? ''];
   return (
-    <Modal onClose={onClose} className="d-new-issue">
+    <Modal onClose={onClose} closing={closing} className="d-new-issue">
       <div className="d-row">
         <Picker options={teams.map((t) => ({ value: t.id, label: t.name, icon: <span className="d-team-key">{t.key}</span> }))} value={teamId} onPick={(v) => setTeamId(v)} trigger={(_, t) => <button type="button" className="d-chip-btn" onClick={t}><span className="d-team-key">{doc.team[teamId]?.key}</span><Icon name="chevronDown" size={12} /></button>} />
         <span className="d-dim">New issue{d.parentId && doc.issue[d.parentId] ? ` under ${issueKey(doc, doc.issue[d.parentId])}` : ''}</span>
@@ -919,7 +936,7 @@ function NewIssue({ defaults, onClose }: { defaults: Partial<Issue>; onClose: ()
 
 // ---------- the command palette ----------
 
-function Palette({ onClose }: { onClose: () => void }) {
+function Palette({ onClose, closing }: { onClose: () => void; closing?: boolean }) {
   const c = useDelta();
   const { s } = c;
   const doc = s.doc;
@@ -956,7 +973,7 @@ function Palette({ onClose }: { onClose: () => void }) {
     r.run();
   };
   return (
-    <Modal onClose={onClose} className="d-palette">
+    <Modal onClose={onClose} closing={closing} className="d-palette">
       <input
         className="d-palette-input"
         autoFocus

@@ -21,6 +21,8 @@
   --d-red: var(--red, var(--err, #eb5757));
   --d-mono: var(--mono, ui-monospace, monospace);
   --d-shadow: 0 10px 30px rgb(0 0 0 / 28%), 0 1px 3px rgb(0 0 0 / 20%);
+  --d-ease: cubic-bezier(.2, .8, .2, 1);
+  --d-spring: cubic-bezier(.34, 1.4, .64, 1);
   color: var(--d-text);
   background: var(--d-bg);
   font-size: 13px;
@@ -212,8 +214,7 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
 
 /* the issue panel */
 .d-drawer-back { position: absolute; inset: 0; z-index: 40; background: rgb(0 0 0 / 22%); display: flex; justify-content: flex-end; }
-.d-drawer { width: min(920px, 100%); height: 100%; background: var(--d-bg); border-left: 1px solid var(--d-border-hi); box-shadow: var(--d-shadow); display: flex; flex-direction: column; min-width: 0; animation: d-slide .14s ease-out; }
-@keyframes d-slide { from { transform: translateX(24px); opacity: .6; } }
+.d-drawer { width: min(920px, 100%); height: 100%; background: var(--d-bg); border-left: 1px solid var(--d-border-hi); box-shadow: var(--d-shadow); display: flex; flex-direction: column; min-width: 0; }
 .d-drawer-head { display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 14px 0 20px; border-bottom: 1px solid var(--d-border); flex: none; }
 .d-drawer-body { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 250px; min-height: 0; }
 .d-detail-main { overflow: auto; padding: 24px 32px 60px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
@@ -378,9 +379,10 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
 }
 @media (max-width: 720px) {
   .d-app { grid-template-columns: minmax(0, 1fr); }
-  .d-nav { position: absolute; inset: 0 auto 0 0; width: 260px; z-index: 50; transform: translateX(-100%); transition: transform .15s; }
-  .d-app.nav-open .d-nav { transform: none; }
-  .d-app.nav-open .d-scrim { display: block; position: absolute; inset: 0; z-index: 45; background: rgb(0 0 0 / 40%); }
+  .d-nav { position: absolute; inset: 0 auto 0 0; width: 260px; z-index: 50; transform: translateX(-100%); transition: transform .28s var(--d-ease), box-shadow .28s; }
+  .d-app.nav-open .d-nav { transform: none; box-shadow: var(--d-shadow); }
+  .d-scrim { display: block; position: absolute; inset: 0; z-index: 45; background: rgb(0 0 0 / 40%); opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .d-app.nav-open .d-scrim { opacity: 1; pointer-events: auto; }
   .d-nav-toggle { display: inline-flex; }
   .d-head { padding-left: 44px; }
   .d-toolbar { padding: 8px 12px; }
@@ -390,4 +392,114 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
   .d-anim-card .d-anim-id { display: none; }
   .d-roadmap-names { width: 140px; }
   .w-date2 { display: none; }
+}
+
+/* ---------- motion ----------
+   Everything you can point at eases between states; things that appear rise or fade in, and panels animate out too
+   (useLinger keeps them mounted for their closing animation). Reduced motion turns it all off at the bottom. */
+.delta :where(button, a, input, textarea, select, .d-row-issue, .d-card, .d-col, .d-chip, .d-desc, .d-inline-text, .d-target, .d-table-row, .d-roadmap-name, .d-prop-btn) {
+  transition: background-color .15s, color .15s, border-color .15s, box-shadow .18s, transform .18s var(--d-ease), opacity .15s;
+}
+.delta :where(.d-menu-item) { transition: background-color .08s, color .08s; }
+.delta :where(.d-btn, .d-icon-btn, .d-new, .d-chip-btn, .d-tab, .d-seg button, .d-swatch):active:not(:disabled) { transform: scale(.96); transition-duration: .06s; }
+.d-input:focus, .d-desc-edit:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--d-accent) 22%, transparent); }
+.d-btn.primary:hover:not(:disabled) { box-shadow: 0 4px 14px color-mix(in srgb, var(--d-accent) 35%, transparent); }
+.d-swatch:hover { transform: scale(1.15); }
+.d-box.on { animation: d-pop-in .22s var(--d-spring); }
+.d-nav-item .d-icon, .d-nav-team .d-icon { transition: transform .2s var(--d-ease); }
+.d-nav-item:hover .d-icon { transform: translateX(1px); }
+.d-nav-sub { animation: d-rise .22s var(--d-ease) both; }
+
+@keyframes d-fade { from { opacity: 0; } }
+@keyframes d-fade-out { to { opacity: 0; } }
+@keyframes d-rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes d-pop-in { from { transform: scale(.6); } }
+@keyframes d-menu-in { from { opacity: 0; transform: translateY(-4px) scale(.97); } }
+@keyframes d-menu-in-up { from { opacity: 0; transform: translateY(4px) scale(.97); } }
+@keyframes d-modal-in { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+@keyframes d-modal-out { to { opacity: 0; transform: translateY(6px) scale(.98); } }
+@keyframes d-drawer-in { from { opacity: 0; transform: translateX(48px); } }
+@keyframes d-drawer-out { to { opacity: 0; transform: translateX(48px); } }
+@keyframes d-toast-in { from { opacity: 0; transform: translate(-50%, 14px) scale(.96); } }
+@keyframes d-grow-x { from { width: 0; } }
+@keyframes d-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes d-line-in { from { transform: scaleX(0); opacity: 0; } }
+@keyframes d-float { 50% { transform: translateY(-4px); } }
+
+/* menus pop from the edge they hang off */
+.d-menu { transform-origin: top left; animation: d-menu-in .16s var(--d-ease); }
+.d-menu.end { transform-origin: top right; }
+.d-menu.up { transform-origin: bottom left; animation-name: d-menu-in-up; }
+.d-menu.up.end { transform-origin: bottom right; }
+
+/* modals and the palette */
+.d-modal-back { animation: d-fade .18s ease-out; }
+.d-modal { animation: d-modal-in .24s var(--d-ease); }
+.d-modal-back.closing { animation: d-fade-out .17s ease-in forwards; pointer-events: none; }
+.d-modal-back.closing .d-modal { animation: d-modal-out .17s ease-in forwards; }
+
+/* the issue panel slides in from the right and back out */
+.d-drawer-back { animation: d-fade .2s ease-out; }
+.d-drawer { animation: d-drawer-in .3s var(--d-ease); }
+.d-drawer-back.closing { animation: d-fade-out .17s ease-in forwards; pointer-events: none; }
+.d-drawer-back.closing .d-drawer { animation: d-drawer-out .17s ease-in forwards; }
+.d-detail-main > *, .d-props > * { animation: d-rise .32s var(--d-ease) both; }
+.d-detail-main > :nth-child(2), .d-props > :nth-child(2) { animation-delay: 30ms; }
+.d-detail-main > :nth-child(3), .d-props > :nth-child(3) { animation-delay: 60ms; }
+.d-detail-main > :nth-child(n + 4), .d-props > :nth-child(n + 4) { animation-delay: 90ms; }
+.d-timeline > * { animation: d-rise .25s var(--d-ease) both; }
+.d-agent { animation: d-rise .3s var(--d-ease) both; }
+
+/* pages fade up when you move between them */
+.d-main > .d-page { animation: d-rise .26s var(--d-ease); }
+.d-empty { animation: d-fade .4s ease-out; }
+.d-empty > .d-icon { animation: d-float 3.2s ease-in-out infinite; }
+.d-toast { animation: d-toast-in .32s var(--d-spring); }
+
+/* list rows ripple in; groups fold open and shut */
+.d-row-issue { animation: d-rise .28s var(--d-ease) both; animation-delay: calc(var(--n, 0) * 14ms); }
+.d-subs .d-row-issue { animation-delay: 0s; }
+.d-group-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .26s var(--d-ease), opacity .2s; }
+.d-group.shut .d-group-body { grid-template-rows: 0fr; opacity: 0; }
+.d-group-body > div { min-height: 0; }
+.d-group-body.moving > div, .d-group.shut .d-group-body > div { overflow: hidden; }
+.d-chev { transition: transform .22s var(--d-ease); }
+.d-group.shut .d-chev { transform: rotate(-90deg); }
+
+/* the board: cards rise in, lift on hover, and fade where they were while you drag them */
+.d-card-slot { animation: d-rise .3s var(--d-ease) both; animation-delay: calc(var(--n, 0) * 20ms); }
+.d-card:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgb(0 0 0 / 18%); }
+.d-card:active { transform: scale(.99); }
+.d-card.dragging { opacity: .35; transform: scale(.97); box-shadow: none; }
+.d-col { transition: background-color .18s, box-shadow .18s; }
+.d-col.over { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--d-accent) 45%, transparent); }
+.d-drop-line { animation: d-line-in .14s var(--d-ease); }
+
+/* progress, the roadmap and the burndown draw themselves in */
+.d-progress-started, .d-progress-done { transition: width .5s var(--d-ease); animation: d-grow-x .7s var(--d-ease) both; }
+.d-progress-done { animation-delay: 80ms; }
+.d-roadmap-bar { animation: d-reveal .6s var(--d-ease) both; }
+.d-roadmap-bar:hover { box-shadow: 0 3px 10px rgb(0 0 0 / 22%); transform: translateY(-1px); }
+.d-roadmap-row:nth-child(2) .d-roadmap-bar { animation-delay: 40ms; }
+.d-roadmap-row:nth-child(3) .d-roadmap-bar { animation-delay: 80ms; }
+.d-roadmap-row:nth-child(n + 4) .d-roadmap-bar { animation-delay: 120ms; }
+.d-roadmap-today { animation: d-fade .6s .3s ease-out both; }
+.d-burndown path { animation: d-reveal .9s var(--d-ease) both; }
+.d-burndown .d-bd-left { animation-delay: .15s; }
+.d-table-row { animation: d-rise .26s var(--d-ease) both; }
+.d-card-section { animation: d-rise .3s var(--d-ease) both; }
+.d-card-section:nth-child(2) { animation-delay: 40ms; }
+.d-card-section:nth-child(n + 3) { animation-delay: 80ms; }
+
+/* welcome: the heading, form and cards arrive in turn */
+.d-welcome > * { animation: d-rise .45s var(--d-ease) both; }
+.d-welcome > :nth-child(2) { animation-delay: 70ms; }
+.d-welcome > :nth-child(3) { animation-delay: 140ms; }
+.d-welcome > :nth-child(n + 4) { animation-delay: 210ms; }
+.delta .d-choice:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 18px rgb(0 0 0 / 16%); }
+.delta .d-choice.on:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--d-accent), 0 6px 18px rgb(0 0 0 / 16%); }
+.delta .d-choice { transition: border-color .15s, box-shadow .2s, transform .2s var(--d-ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  .delta *, .delta *::before, .delta *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

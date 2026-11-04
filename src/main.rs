@@ -27,6 +27,7 @@ mod oauth;
 mod opencode;
 mod patch;
 mod prompt;
+mod remote;
 mod session;
 mod skills;
 mod tools;
@@ -89,6 +90,10 @@ fn main() {
                 .center()
                 // The UI draws its own title bar and window buttons.
                 .decorations(false)
+                // So that Settings > Appearance can let Windows draw Mica or Acrylic behind the UI. Without the
+                // system frame, the shadow is asked for on its own.
+                .transparent(true)
+                .shadow(true)
                 // The UI's background, so that it doesn't flash white while it loads.
                 .background_color(tauri::webview::Color(0x0e, 0x10, 0x14, 0xff))
                 // Links open in the browser (see openExternal in the UI), so the window itself never leaves the app.

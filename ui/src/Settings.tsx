@@ -4,7 +4,8 @@ import { closeGame } from './Games';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
-import { BACKGROUNDS, ELEMENTS, setTheme, useTheme } from './theme';
+import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
+import { LOGOS, ScoutLogo, logoSvg } from './logo';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
 
 const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[] = [
@@ -20,6 +21,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
+  { id: 'scoutmote', title: 'ScoutMote', icon: 'terminal', keywords: 'scoutmote remote control browser web phone away online computer pc' },
   { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 play puzzle fun waiting' },
   { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
 ];
@@ -177,7 +179,34 @@ function Appearance() {
           </button>
         ))}
       </div>
-      <div className="row"><button type="button" className="button ghost compact" onClick={() => setTheme({ background: 'graphite', elements: 'gray' })}>Reset to default</button></div>
+      <SectionLabel>Window material</SectionLabel>
+      <div className="swatches" role="radiogroup" aria-label="Window material">
+        {MATERIALS.map((m) => (
+          <button key={m.id} type="button" role="radio" aria-checked={m.id === theme.material} title={m.note} className={`swatch ${m.id === theme.material ? 'selected' : ''}`} onClick={() => setTheme({ material: m.id })}>
+            <span className={`swatch-preview material-preview ${m.id}`}>
+              <i style={{ width: '30%' }} />
+              <i style={{ flex: 1, padding: 7 }}>
+                <i style={{ height: 8, width: '70%', borderRadius: 3 }} />
+                <i style={{ height: 8, width: '40%', marginTop: 5, marginLeft: 'auto', borderRadius: 3, background: elements.primary }} />
+              </i>
+            </span>
+            {m.name}
+          </button>
+        ))}
+      </div>
+      <p className="small dim">{MATERIALS.find((m) => m.id === theme.material)!.note}</p>
+      {getMaterialError() && <p className="small red">{getMaterialError()}</p>}
+      <SectionLabel>Logo</SectionLabel>
+      <div className="swatches logos" role="radiogroup" aria-label="Logo">
+        {LOGOS.map((l) => (
+          <button key={l.id} type="button" role="radio" aria-checked={l.id === theme.logo} className={`swatch logo-swatch ${l.id === theme.logo ? 'selected' : ''}`} onClick={() => setTheme({ logo: l.id })}>
+            {l.id === 'classic' ? <ScoutLogo size={40} /> : <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoSvg(l))}`} width={40} height={40} alt="" />}
+            {l.name}
+          </button>
+        ))}
+      </div>
+      <p className="small dim">Shows in the sidebar, on the start screen and on the taskbar.</p>
+      <div className="row"><button type="button" className="button ghost compact" onClick={() => setTheme({ background: 'graphite', elements: 'gray', material: 'solid', logo: 'classic' })}>Reset to default</button></div>
     </>
   );
 }
@@ -899,6 +928,24 @@ function Chatbots() {
   );
 }
 
+function ScoutMote() {
+  const sm = useView('scoutMote');
+  const cfg = useView('cfg');
+  const site = cfg.baseUrl.replace(/\/v1\/?$/, '');
+  const status = !cfg.hasKey ? 'ScoutMote goes through your ScoutCode account, so sign in first.' : sm.status || (sm.on ? 'Connecting…' : 'Off.');
+  return (
+    <>
+      <Heading title="ScoutMote" sub="Use Scout on this computer from any browser: start chats, watch them work, answer what it asks and stop it. It works while Scout is open here and this PC is online." />
+      <SettingRow title="Control this PC from the web" sub={status}>
+        <Toggle label="Control this PC from the web" on={sm.on} onChange={(on) => act('setScoutMote', { on })} />
+      </SettingRow>
+      <SettingRow title="Shows up as" sub={sm.name} />
+      {sm.on && cfg.hasKey && <SettingRow title="Open ScoutMote" sub={`Sign in at ${site} with the same account.`}><button type="button" className="button" onClick={() => openExternal(site)}>Open</button></SettingRow>}
+      <p className="small dim">Prompts from the web run in this chat's permission mode, like ones typed here. What the mode doesn't allow waits for an OK, which you can give here or in the browser. Only your projects can be opened, and nothing else on your account can reach this PC.</p>
+    </>
+  );
+}
+
 // ---------- updates ----------
 
 export function restartBlocker(running: boolean, dirty: boolean): string | null {
@@ -993,6 +1040,7 @@ export function Settings() {
           {tab === 'skills' && <Skills />}
           {tab === 'mcp' && <Mcp />}
           {tab === 'chatbots' && <Chatbots />}
+          {tab === 'scoutmote' && <ScoutMote />}
           {tab === 'experimental' && <Experimental />}
           {tab === 'updates' && <Updates />}
         </div>

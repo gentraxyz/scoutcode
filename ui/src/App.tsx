@@ -8,10 +8,10 @@ import { closeGame, FloatingGame, gameShowing, openGame, useGameAutomation } fro
 import { Onboarding } from './Onboarding';
 import { Settings, restartBlocker } from './Settings';
 import { addProject, Sidebar } from './Sidebar';
-import { core, focusComposer, ui, useUi, useView, type DockTab } from './store';
+import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Transcript } from './Transcript';
 import { Icon, IconButton, Modal } from './widgets';
-import logo from '../../assets/icon.png';
+import { ScoutLogo } from './logo';
 
 const appWindow = getCurrentWindow();
 
@@ -149,7 +149,7 @@ function Login({ onDone }: { onDone: () => void }) {
       <header className="login-bar" data-tauri-drag-region><WindowButtons /></header>
       <div className="login-scroll">
         <div className="login-column">
-          <img src={logo} width={52} height={52} alt="" />
+          <ScoutLogo size={52} />
           <h1>Welcome to Scout</h1>
           <p className="dim">A coding agent for your projects, powered by ScoutCode.</p>
           <Onboarding onDone={onDone} />
@@ -196,6 +196,8 @@ export function App() {
   const { loginNeeded, team } = useView('cfg');
   const sidebar = useUi((u) => u.sidebar);
   const dropping = useUi((u) => u.dropping);
+  // With no chat open yet, the box sits in the middle under the greeting; it moves down once there's a transcript.
+  const fresh = useCore((s) => s.items.length === 0);
   useShortcuts();
   useGameAutomation();
   useEffect(() => {
@@ -242,7 +244,7 @@ export function App() {
       <div className="main">
         <TopBar />
         <div className="main-body">
-          <div className="chat">
+          <div className={`chat ${fresh ? 'fresh' : ''}`}>
             <Transcript />
             <Composer />
           </div>

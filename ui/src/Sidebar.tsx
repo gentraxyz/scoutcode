@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { act, invoke, openExternal, type View } from './api';
 import { ui, useCore, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
-import logo from '../../assets/icon.png';
+import { ScoutLogo } from './logo';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const sameDir = (a: string, b: string) => norm(a) === norm(b);
@@ -175,7 +175,7 @@ export function Sidebar() {
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="side-head" data-tauri-drag-region>
-        <img src={logo} width={24} height={24} alt="" data-tauri-drag-region />
+        <ScoutLogo size={24} drag />
         <b className="brand" data-tauri-drag-region>Scout</b>
         <span className="grow" data-tauri-drag-region />
         <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />

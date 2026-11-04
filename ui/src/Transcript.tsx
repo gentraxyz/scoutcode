@@ -5,7 +5,7 @@ import { act, openExternal, type Item, type ModelRef } from './api';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { core, focusComposer, ui, useCore, useUi, useView } from './store';
 import { CodeBlock, Icon, IconButton, MenuItem, Popover, SectionLabel, ShowDisplay, Spinner } from './widgets';
-import logo from '../../assets/icon.png';
+import { ScoutLogo } from './logo';
 
 type ToolItem = Extract<Item, { kind: 'tool' }>;
 
@@ -20,13 +20,74 @@ export function toolTitle(name: string): string {
 /** Whether a tool's output starts open: the ones that change files, whose diffs are the point. */
 const OPEN_BY_DEFAULT = new Set(['write_file', 'edit_file', 'multi_edit', 'apply_patch', 'todo_write', 'generate_image']);
 
+/** A web address, which opens in the browser; anything else in a link is a file. */
+const WEB = /^(https?:|mailto:)/i;
+const EXTENSIONS = 'rs|ts|tsx|js|jsx|mjs|cjs|py|go|java|kt|cs|cpp|c|h|hpp|rb|php|swift|json|jsonc|toml|yaml|yml|md|mdx|txt|css|scss|html|astro|vue|svelte|sql|sh|ps1|bat|cfg|ini|lock|xml|gradle';
+/** A path as models write them in backticks: with a folder (src/a.rs) or a known extension (main.rs), and :line or :line:col. */
+const PATH_LIKE = new RegExp(String.raw`^(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?(?:(?:[\w@.+-]+[\\/])+[\w@.+-]+\.\w+|[\w@+-]+\.(?:${EXTENSIONS}))(?::\d+(?::\d+)?)?$`);
+
+/** The file and line a link or path points to, resolved against the chat's folder; null for anything else. */
+export function fileTarget(raw: string, cwd: string): { path: string; line: number | null } | null {
+  let t = raw.trim().replace(/^file:\/\/\/?/i, '');
+  try {
+    t = decodeURIComponent(t);
+  } catch {
+    // Kept as written.
+  }
+  if (!t || t.startsWith('#') || WEB.test(t) || /^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return null;
+  let line: number | null = null;
+  const hash = /#L(\d+)(?:-L?\d+)?$/.exec(t);
+  const colon = /:(\d+)(?::\d+)?(?:-\d+)?$/.exec(t);
+  if (hash) {
+    line = Number(hash[1]);
+    t = t.slice(0, hash.index);
+  } else if (colon) {
+    line = Number(colon[1]);
+    t = t.slice(0, colon.index);
+  }
+  t = t.replace(/^\.[\\/]/, '');
+  if (!t || /^[A-Za-z]:$/.test(t)) return null;
+  const absolute = /^[A-Za-z]:[\\/]/.test(t) || t.startsWith('\\\\') || (t.startsWith('/') && !cwd);
+  const path = absolute ? t : `${cwd.replace(/[\\/]+$/, '')}\\${t.replace(/^[\\/]+/, '')}`;
+  return { path: path.replaceAll('/', '\\'), line };
+}
+
+/** Opens a file in the Files tab, at a line when there is one. */
+export function openFileAt(target: { path: string; line: number | null }) {
+  ui.set({ dockOpen: true, dockTab: 'files', openFile: target.path, openLine: target.line });
+}
+
+function FileLink({ target, title, children }: { target: { path: string; line: number | null }; title: string; children: ReactNode }) {
+  return (
+    <a className="link file-link" href="#" title={`Open ${title}`} onClick={(e) => { e.preventDefault(); openFileAt(target); }}>
+      {children}
+    </a>
+  );
+}
+
+/** Keeps file paths in links (react-markdown would drop "main.rs:42" as an unknown protocol), but never script URLs. */
+const keepUrl = (url: string) => (/^\s*(javascript|vbscript|data):/i.test(url) ? '' : url);
+
 export function Markdown({ text }: { text: string }) {
+  const cwd = useView('chat').cwd;
   return (
     <div className="markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={keepUrl}
         components={{
-          a: ({ href, children }) => <a className="link" href={href} onClick={(e) => { e.preventDefault(); if (href) openExternal(href); }}>{children}</a>,
+          a: ({ href, children }) => {
+            const target = href ? fileTarget(href, cwd) : null;
+            if (target) return <FileLink target={target} title={href!}>{children}</FileLink>;
+            return <a className="link" href={href} onClick={(e) => { e.preventDefault(); if (href && WEB.test(href)) openExternal(href); }}>{children}</a>;
+          },
+          // A path in backticks opens too. Code blocks have a language class, or go through `pre` below.
+          code: ({ className, children }) => {
+            const t = typeof children === 'string' ? children.trim() : null;
+            const target = !className && t && PATH_LIKE.test(t) ? fileTarget(t, cwd) : null;
+            if (target) return <FileLink target={target} title={t!}><code>{children}</code></FileLink>;
+            return <code className={className}>{children}</code>;
+          },
           // Replies don't get to fetch things: an image shows as the link it is.
           img: ({ src, alt }) => (typeof src === 'string' ? <a className="link" href={src} onClick={(e) => { e.preventDefault(); openExternal(src); }}>{alt || src}</a> : <>{alt}</>),
           pre: ({ children }) => {
@@ -348,7 +409,7 @@ function EmptyState() {
   let left = shown;
   return (
     <div className="empty">
-      <img src={logo} width={48} height={48} alt="" />
+      <ScoutLogo size={48} />
       <div className={`splash ${shown >= total ? 'typed' : ''}`}>
         {/* The full line holds the space, so that nothing moves while it types. */}
         <span className="splash-size" aria-hidden>{parts.map(([t]) => t).join('')}</span>

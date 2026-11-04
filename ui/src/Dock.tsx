@@ -21,7 +21,8 @@ import { DiffBody, Icon, IconButton, Modal, Spinner } from './widgets';
 
 /** xterm can't read CSS variables, so it takes the theme's colors when it opens and again when the theme changes. */
 function terminalTheme() {
-  return { background: themeColor('sidebar'), foreground: themeColor('text'), cursor: themeColor('text'), selectionBackground: '#ffffff30', black: themeColor('surface'), brightBlack: themeColor('dim'), red: '#e86464', green: '#4fbf7f', yellow: '#e5c07b', blue: '#5b9cf5', magenta: '#c586c0', cyan: '#56b6c2', white: themeColor('text'), brightWhite: themeColor('strong') };
+  const glass = document.documentElement.dataset.material === 'glass';
+  return { background: glass ? 'rgba(0, 0, 0, 0)' : themeColor('sidebar'), foreground: themeColor('text'), cursor: themeColor('text'), selectionBackground: '#ffffff30', black: themeColor('surface'), brightBlack: themeColor('dim'), red: '#e86464', green: '#4fbf7f', yellow: '#e5c07b', blue: '#5b9cf5', magenta: '#c586c0', cyan: '#56b6c2', white: themeColor('text'), brightWhite: themeColor('strong') };
 }
 
 /** Stays mounted while the panel is open, so the shell's screen survives switching tabs. */
@@ -33,7 +34,7 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
   const [run, setRun] = useState(0);
 
   useEffect(() => {
-    const xterm = new XTerm({ theme: terminalTheme(), fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize: 13, scrollback: 5000, cursorBlink: true, allowProposedApi: true });
+    const xterm = new XTerm({ theme: terminalTheme(), allowTransparency: true, fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize: 13, scrollback: 5000, cursorBlink: true, allowProposedApi: true });
     const fit = new FitAddon();
     xterm.loadAddon(fit);
     xterm.open(host.current!);
@@ -256,6 +257,18 @@ function FilesTab({ cwd }: { cwd: string }) {
     if (!r.blocked) setEditor(path, r.text);
   };
 
+  /** The line a file link asked for, shown once the file is in the editor. */
+  const wantLine = useRef<number | null>(null);
+  const jump = () => {
+    const v = view.current;
+    const n = wantLine.current;
+    if (!v || !n) return;
+    wantLine.current = null;
+    const line = v.state.doc.line(Math.min(Math.max(1, n), v.state.doc.lines));
+    v.dispatch({ selection: { anchor: line.from, head: line.to }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) });
+    v.focus();
+  };
+
   const language = useRef(new Compartment());
   const setEditor = (path: string, text: string) => {
     view.current?.destroy();
@@ -279,6 +292,7 @@ function FilesTab({ cwd }: { cwd: string }) {
           ],
         }),
       });
+      jump();
       const desc = LanguageDescription.matchFilename(languages, path.split(/[\\/]/).pop() ?? '');
       const support = await desc?.load();
       if (support) view.current?.dispatch({ effects: language.current.reconfigure(support) });
@@ -287,7 +301,7 @@ function FilesTab({ cwd }: { cwd: string }) {
 
   const open = (path: string) => {
     setShowTree(false);
-    if (file?.path === path) return;
+    if (file?.path.toLowerCase() === path.toLowerCase()) return jump();
     if (dirty) setPending({ open: path });
     else load(path);
   };
@@ -306,7 +320,8 @@ function FilesTab({ cwd }: { cwd: string }) {
 
   useEffect(() => {
     if (request) {
-      ui.set({ openFile: null });
+      wantLine.current = ui.get().openLine;
+      ui.set({ openFile: null, openLine: null });
       open(request);
     }
   }, [request]); // eslint-disable-line

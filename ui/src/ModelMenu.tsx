@@ -37,6 +37,68 @@ function allRows(models: Model[]): ModelRow[] {
   return rows;
 }
 
+/**
+ * Whether a row's own provider charges nothing. A model ScoutCode serves can be free there and paid on OpenRouter, or
+ * the other way round, so OpenRouter's row only looks at OpenRouter. NIM's list has no prices.
+ */
+function rowFree(r: ModelRow): boolean {
+  const m = r.model;
+  if (r.provider === 'kilo') return m.kiloFree;
+  if (r.provider === 'nvidia') return false;
+  if (r.provider === 'openrouter') return r.star.endsWith(':free') || (m.hosted ? m.openrouterFree : m.free);
+  return m.free;
+}
+
+/** Rough USD for a typical coding request (10k tokens in, 1k out), the scale the price tiers use, so lists can go cheapest first. */
+const TIER_USD = [0, 0.005, 0.03, 0.1, 0.5];
+
+export function price(r: ModelRow): number {
+  const m = r.model;
+  if (r.key === 'auto') return -1;
+  // NIM's list has no prices, like the row shows.
+  if (r.provider === 'nvidia') return Infinity;
+  if (r.provider === 'kilo') return m.kiloFree ? 0 : m.kiloTier ? TIER_USD[m.kiloTier] : Infinity;
+  // A ScoutCode model's own price says nothing about what OpenRouter charges for it: only its OpenRouter tier does.
+  const viaOpenrouter = r.provider === 'openrouter' && m.hosted;
+  if (!viaOpenrouter) {
+    const cost = m.cost ?? '';
+    if (m.free || /^free$/i.test(cost)) return 0;
+    const perRequest = /\$([\d.]+) \/ request/.exec(cost);
+    const tokens = /\$([\d.]+) in · \$([\d.]+) out/.exec(cost);
+    if (perRequest || tokens) return (perRequest ? Number(perRequest[1]) : 0) + (tokens ? (Number(tokens[1]) * 10_000 + Number(tokens[2]) * 1_000) / 1e6 : 0);
+  } else if (rowFree(r)) return 0;
+  const tier = viaOpenrouter ? m.openrouterTier : m.tier;
+  // Unknown prices go last.
+  return tier ? TIER_USD[tier] : Infinity;
+}
+
+/** How the model list is ordered, picked in the menu and kept for next time. Starred models always come first. */
+const SORTS = [
+  ['cheap', 'Cheapest first'],
+  ['pricey', 'Most expensive first'],
+  ['name', 'Name (A–Z)'],
+  ['context', 'Largest context'],
+] as const;
+type Sort = (typeof SORTS)[number][0];
+const SORT_KEY = 'scout.modelSort';
+const FREE_KEY = 'scout.modelFreeOnly';
+
+function savedSort(): Sort {
+  const s = localStorage.getItem(SORT_KEY);
+  return SORTS.some(([id]) => id === s) ? (s as Sort) : 'cheap';
+}
+
+/** Orders two rows by `sort`. Models with no known price or context stay at the end either way. */
+function compare(sort: Sort, a: ModelRow, b: ModelRow): number {
+  const last = (x: number, y: number, dir: 1 | -1) => (x === y ? 0 : !Number.isFinite(x) ? 1 : !Number.isFinite(y) ? -1 : (x - y) * dir);
+  switch (sort) {
+    case 'pricey': return a.key === 'auto' ? -1 : b.key === 'auto' ? 1 : last(price(a), price(b), -1);
+    case 'name': return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+    case 'context': return last(a.model.context ?? Infinity, b.model.context ?? Infinity, -1);
+    default: return last(price(a), price(b), 1);
+  }
+}
+
 function runsOn(id: string): string {
   const a = core.get().statics.additionalProviders.find((p) => p.id === id);
   return a?.name ?? TABS.find(([t]) => t === id)?.[1] ?? id;
@@ -127,6 +189,10 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const { kiloWarning, additionalProviders } = useCore((s) => s.statics);
   const [tab, setTab] = useState<Tab>(startTab);
   const [search, setSearch] = useState('');
+  const [sort, setSortState] = useState<Sort>(savedSort);
+  const [freeOnly, setFreeOnlyState] = useState(() => localStorage.getItem(FREE_KEY) === '1');
+  const setSort = (s: Sort) => { setSortState(s); localStorage.setItem(SORT_KEY, s); };
+  const setFreeOnly = (on: boolean) => { setFreeOnlyState(on); localStorage.setItem(FREE_KEY, on ? '1' : '0'); };
   const [adding, setAdding] = useState(false);
   const [hover, setHover] = useState<{ m: Model; top: number; left: number } | null>(null);
   // A team's member sees what the team runs, and the providers on this PC it allows.
@@ -143,9 +209,10 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
     else if (tab === 'starred') list = all.filter((r) => starred.includes(r.star));
     else if (tab === 'additional') list = all.filter((r) => additionalProviders.some((a) => a.id === r.provider));
     else list = all.filter((r) => r.provider === tab && (tab !== 'scoutcode' || signedIn('scoutcode') || r.model.free));
-    // Starred first, in the order they were starred. The sort keeps the rest as they came.
-    return [...list].sort((a, b) => (pos(a) === pos(b) ? 0 : pos(a) - pos(b)));
-  }, [models, q, tab, starred, additionalProviders]);
+    if (freeOnly) list = list.filter((r) => r.key === 'auto' || rowFree(r));
+    // Starred first, in the order they were starred; then the sort picked. Ties keep their order.
+    return [...list].sort((a, b) => (pos(a) !== pos(b) ? pos(a) - pos(b) : compare(sort, a, b)));
+  }, [models, q, tab, starred, additionalProviders, sort, freeOnly]);
   // ScoutCode always lists its free models; signing in only adds the rest and a banner suggests it.
   const signIn = !q && tab !== 'scoutcode' && (!signedIn(tab) || (tab === 'additional' && adding));
   // Chatbots bring their own model, so the tab shows the link instead of a list.
@@ -162,6 +229,14 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
       </div>
       <div className="model-column">
         <input className="input" autoFocus placeholder="Search models" value={search} onChange={(e) => setSearch(e.target.value)} />
+        {!chatbots && !signIn && (
+          <div className="model-sort">
+            <select className="input select compact" aria-label="Sort models" title="Sort models" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+              {SORTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+            <button type="button" className={`chip ${freeOnly ? 'on' : ''}`} aria-pressed={freeOnly} title="Show only models that cost nothing here" onClick={() => setFreeOnly(!freeOnly)}>Free only</button>
+          </div>
+        )}
         {tab === 'kilo' && <div className="tiny dim">{kiloWarning}</div>}
         {tab === 'scoutcode' && !q && !signedIn('scoutcode') && (
           <div className="card-note">
@@ -202,7 +277,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
           {chatbots ? <ChatbotsPanel close={close} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
             const m = r.model;
             // NIM's list has no prices, and what another provider charges says nothing about it.
-            const free = r.provider === 'kilo' ? m.kiloFree : r.provider !== 'nvidia' && (m.free || r.star.endsWith(':free'));
+            const free = rowFree(r);
             const tier = r.provider === 'nvidia' ? null : r.provider === 'kilo' ? m.kiloTier : r.provider === 'openrouter' && m.hosted ? m.openrouterTier : m.tier;
             const selected = current.key === r.key && current.provider === r.provider;
             const on = starred.includes(r.star);

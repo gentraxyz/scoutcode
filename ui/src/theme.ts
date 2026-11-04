@@ -2,6 +2,7 @@
 // purpose, so every combination stays readable. The choice is about this window only, so it lives in localStorage and
 // is applied before the first render.
 import { useSyncExternalStore } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 
 type Vars = Record<string, string>;
 
@@ -25,10 +26,24 @@ export const ELEMENTS: { id: string; name: string; vars: Vars }[] = [
   { id: 'violet', name: 'Violet', vars: { primary: '#a68cf5', 'primary-hi': '#bba6fa', 'primary-ink': '#150d2b' } },
 ];
 
-export type Theme = { background: string; elements: string };
+/**
+ * What's behind the window. Solid is the background color; the rest let Windows draw the desktop through it, blurred,
+ * while the theme's colors stay solid where text is (styles.css says which parts open up). `alpha` is null for Solid.
+ */
+export const MATERIALS: { id: string; name: string; note: string; alpha: Record<string, number> | null }[] = [
+  { id: 'solid', name: 'Solid', note: 'The background color, nothing behind it.', alpha: null },
+  { id: 'mica', name: 'Mica', note: 'The sidebar and title bar take on your wallpaper\'s color, like Windows 11 apps. Needs Windows 11.', alpha: {} },
+  { id: 'acrylic', name: 'Acrylic', note: 'The sidebar and title bar are frosted glass over what\'s behind the window.', alpha: {} },
+  { id: 'glass', name: 'Liquid Glass', note: 'The sidebar, message box, dock and menus float over your work as panes of glass.', alpha: {} },
+];
+
+export type Theme = { background: string; elements: string; material: string; logo: string };
 
 const KEY = 'scout.theme';
-const DEFAULT: Theme = { background: 'graphite', elements: 'gray' };
+const DEFAULT: Theme = { background: 'graphite', elements: 'gray', material: 'solid', logo: 'classic' };
+/** Why the material couldn't be applied (an older Windows), shown in Settings. */
+let materialError: string | null = null;
+let appliedMaterial = '';
 const subs = new Set<() => void>();
 
 function load(): Theme {
@@ -38,6 +53,8 @@ function load(): Theme {
     return {
       background: BACKGROUNDS.some((b) => b.id === saved?.background) ? saved!.background! : DEFAULT.background,
       elements: ELEMENTS.some((e) => e.id === saved?.elements) ? saved!.elements! : DEFAULT.elements,
+      material: MATERIALS.some((m) => m.id === saved?.material) ? saved!.material! : DEFAULT.material,
+      logo: typeof saved?.logo === 'string' ? saved.logo : DEFAULT.logo,
     };
   } catch {
     return DEFAULT;
@@ -46,10 +63,33 @@ function load(): Theme {
 
 let theme = load();
 
+/** "#1f1f1f" at `alpha` as rgb(31 31 31 / 62%). */
+function translucent(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255} ${(n >> 8) & 255} ${n & 255} / ${Math.round(alpha * 100)}%)`;
+}
+
 function apply() {
-  const style = document.documentElement.style;
-  const vars = { ...BACKGROUNDS.find((b) => b.id === theme.background)!.vars, ...ELEMENTS.find((e) => e.id === theme.elements)!.vars };
-  for (const [name, value] of Object.entries(vars)) style.setProperty(`--${name}`, value);
+  const root = document.documentElement;
+  const material = MATERIALS.find((m) => m.id === theme.material)!;
+  const vars: Record<string, string> = { ...BACKGROUNDS.find((b) => b.id === theme.background)!.vars, ...ELEMENTS.find((e) => e.id === theme.elements)!.vars };
+  for (const [name, alpha] of Object.entries(material.alpha ?? {})) vars[name] = translucent(vars[name], alpha);
+  for (const [name, value] of Object.entries(vars)) root.style.setProperty(`--${name}`, value);
+  if (material.alpha) root.dataset.material = material.id;
+  else delete root.dataset.material;
+  if (appliedMaterial !== material.id) {
+    appliedMaterial = material.id;
+    invoke('set_material', { material: material.id })
+      .then(() => { materialError = null; })
+      .catch((e) => {
+        // Without the effect, translucent colors would show black: back to solid, and say why.
+        materialError = `${material.name} isn't available on this version of Windows. ${String(e)}`.trim();
+        theme = { ...theme, material: 'solid' };
+        appliedMaterial = '';
+        apply();
+      })
+      .finally(() => subs.forEach((f) => f()));
+  }
 }
 apply();
 
@@ -59,6 +99,9 @@ export function setTheme(patch: Partial<Theme>) {
   apply();
   subs.forEach((f) => f());
 }
+
+export const getTheme = () => theme;
+export const getMaterialError = () => materialError;
 
 export function subscribeTheme(f: () => void) {
   subs.add(f);

@@ -29,6 +29,8 @@ export type Model = {
   providers: string[]; routesTo: string[]; available: boolean | null; openrouterId: string | null; nvidiaId: string | null; opencodeId: string | null; kiloId: string | null; kiloFree: boolean;
   kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; codexId: string | null; claudeId: string | null; grokId: string | null; hermesId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
   tier: number | null; openrouterTier: number | null;
+  /** Free on OpenRouter, for a model ScoutCode serves too; `free` is ScoutCode's own price then. */
+  openrouterFree: boolean;
 };
 
 export type Permission = { tool: string; label: string; preview: Display | null; prefix: string | null; reason: string | null };
@@ -104,6 +106,7 @@ export type View = {
     on: boolean; online: boolean; cwd: string; status: string; mode: string | null; since: number | null; running: string | null;
     log: LinkCall[]; edits: LinkEdit[]; chatbots: { name: string; seen: number | null }[]; permission: Permission | null;
   };
+  scoutMote: { on: boolean; running: boolean; status: string; online: boolean; name: string };
   usage: { info: UsageInfo | null; busy: boolean; message: [boolean, string] | null };
   voice: { state: 'idle' } | { state: 'recording'; level: number } | { state: 'busy'; label: string };
   updater: { enabled: boolean; version: string; status: UpdateStatus };

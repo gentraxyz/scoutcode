@@ -282,6 +282,8 @@ pub struct ModelInfo {
     pub tier: Option<u8>,
     /// The same on OpenRouter, for a model both serve.
     pub openrouter_tier: Option<u8>,
+    /// Costs nothing on OpenRouter, for a model both serve. Kept apart from `free`, which is ScoutCode's own price.
+    pub openrouter_free: bool,
 }
 
 /// The price tier for USD per million tokens, on the server's scale: what 10k tokens in and 1k out cost. None when free or unknown.
@@ -338,6 +340,7 @@ impl ModelInfo {
             free,
             tier,
             openrouter_tier: None,
+            openrouter_free: false,
         })
     }
 
@@ -401,7 +404,8 @@ pub fn merge_models(scout: Vec<ModelInfo>, openrouter: Vec<ModelInfo>, nvidia: V
         let same = out.iter().position(|m| m.hosted && m.openrouter_id.is_none() && (m.id == o.id || (!key.is_empty() && match_key(m) == key)));
         match same {
             Some(i) => {
-                out[i].free |= o.free;
+                // Free on one says nothing about the other: each row shows its own provider's price.
+                out[i].openrouter_free = o.free;
                 out[i].openrouter_id = o.openrouter_id;
                 out[i].openrouter_tier = o.tier;
             }
@@ -446,7 +450,7 @@ impl ModelInfo {
             "openrouterId": self.openrouter_id, "nvidiaId": self.nvidia_id, "opencodeId": self.opencode_id, "kiloId": self.kilo_id,
             "kiloFree": self.kilo_free, "kiloTier": self.kilo_tier, "copilotId": self.copilot_id, "devinId": self.devin_id, "kiroId": self.kiro_id,
             "codexId": self.codex_id, "claudeId": self.claude_id, "grokId": self.grok_id, "hermesId": self.hermes_id, "additional": self.additional, "hosted": self.hosted, "free": self.free,
-            "tier": self.tier, "openrouterTier": self.openrouter_tier,
+            "tier": self.tier, "openrouterTier": self.openrouter_tier, "openrouterFree": self.openrouter_free,
         })
     }
 
@@ -493,6 +497,7 @@ impl ModelInfo {
             free: b("free").unwrap_or(false),
             tier: n("tier").map(|t| t as u8),
             openrouter_tier: n("openrouterTier").map(|t| t as u8),
+            openrouter_free: b("openrouterFree").unwrap_or(false),
         })
     }
 }
@@ -682,6 +687,17 @@ mod tests {
         let mut gone = m.to_cache();
         gone["additional"] = json!(["nowhere", "x"]);
         assert!(ModelInfo::from_cache(&gone).is_none());
+    }
+
+    #[test]
+    fn free_on_one_provider_stays_on_that_provider() {
+        let model = |id: &str, free: bool| ModelInfo { id: id.into(), name: Some("Qwen 3".into()), free, ..Default::default() };
+        let hosted = |free| ModelInfo { hosted: true, ..model("qwen3", free) };
+        let or = |free| ModelInfo { openrouter_id: Some("qwen/qwen3".into()), ..model("qwen/qwen3", free) };
+        let a = merge_models(vec![hosted(true)], vec![or(false)], vec![], vec![]);
+        assert!(a[0].free && !a[0].openrouter_free, "free on ScoutCode, paid on OpenRouter");
+        let b = merge_models(vec![hosted(false)], vec![or(true)], vec![], vec![]);
+        assert!(!b[0].free && b[0].openrouter_free, "paid on ScoutCode, free on OpenRouter");
     }
 
     #[test]

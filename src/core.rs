@@ -280,6 +280,12 @@ pub struct Core {
     sent: HashMap<&'static str, String>,
     /// Counts the sends, so that a window starting up can tell which came after its snapshot.
     seq: u64,
+    /// ScoutMote, while it's on.
+    remote: Option<crate::remote::Remote>,
+    remote_status: String,
+    remote_online: bool,
+    /// When what's on screen was last handed to ScoutMote.
+    remote_published: Option<std::time::Instant>,
 }
 
 fn project_name(cwd: &str) -> String {
@@ -527,7 +533,7 @@ fn model_json(m: &ModelInfo) -> Value {
         "id": m.id, "label": m.label(), "description": m.description, "context": m.context, "tools": m.tools, "vision": m.vision, "cost": m.cost,
         "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id, "opencodeId": m.opencode_id,
         "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "codexId": m.codex_id, "claudeId": m.claude_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
-        "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier,
+        "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier, "openrouterFree": m.openrouter_free,
     })
 }
 
@@ -654,6 +660,10 @@ impl Core {
             whats_new: vec![],
             sent: HashMap::new(),
             seq: 0,
+            remote: None,
+            remote_status: String::new(),
+            remote_online: false,
+            remote_published: None,
         };
         core.enter_project(&cwd);
         core.update_discord();
@@ -664,6 +674,7 @@ impl Core {
         }
         core.fetch_models();
         core.check_updated();
+        core.start_remote();
         // `scout-desktop [folder] --resume <id>` reopens a saved conversation.
         let args: Vec<String> = std::env::args().collect();
         if let Some(s) = args.iter().position(|a| a == "--resume").and_then(|i| args.get(i + 1)).and_then(|id| session::load_session(id)) {
@@ -1027,6 +1038,12 @@ impl Core {
                 }
             }
             Ev::Link(crate::mcp::LinkEvent::Chatbots(b)) => self.link_chatbots = b,
+            Ev::Remote(crate::remote::RemoteEvent::Status(s, online)) => {
+                self.remote_status = s;
+                self.remote_online = online;
+            }
+            Ev::Remote(crate::remote::RemoteEvent::Command(c)) => self.remote_command(&c),
+            Ev::Remote(crate::remote::RemoteEvent::Ended(s)) => self.stop_remote(&s),
             Ev::Link(crate::mcp::LinkEvent::Ask(req, reply)) => {
                 self.alert("A chatbot wants to use Scout", req.label.lines().next().unwrap_or(""));
                 self.link_permission = Some(PendingPermission { req, reply });
@@ -1111,6 +1128,9 @@ impl Core {
         }
         self.usage = Default::default();
         self.cfg.api_key = key;
+        // ScoutMote goes with the account, so it starts again on the new one.
+        self.stop_remote("");
+        self.start_remote();
         if self.cfg.only_kilo() && self.chat.provider == "scoutcode" {
             self.choose_model(config::KILO_DEFAULT_MODEL, "kilo");
         }
@@ -1147,6 +1167,7 @@ impl Core {
 
     pub fn sign_out(&mut self) {
         self.stop_link("Off.");
+        self.stop_remote("Off until you sign in.");
         config::save_one("apiKey", Value::Null);
         // Back to the first-run choice, not on to using it without an account.
         config::save_one("desktopGuest", Value::Null);
@@ -2461,6 +2482,156 @@ impl Core {
         self.link = Some(crate::mcp::start_link(&self.cfg, &self.chat.cwd, mode, move |e| h.send(Ev::Link(e))));
     }
 
+    // ---------- ScoutMote: the website drives this Scout ----------
+
+    /// Turns ScoutMote on or off, and remembers it for the next launch.
+    pub fn set_scout_mote(&mut self, on: bool) {
+        config::save_one("scoutMote", json!(on));
+        self.cfg.scout_mote = on;
+        if on {
+            self.start_remote();
+        } else {
+            self.stop_remote("Off.");
+        }
+    }
+
+    /// Starts ScoutMote when it's turned on and there's an account to connect it to.
+    fn start_remote(&mut self) {
+        if self.remote.is_some() || !self.cfg.scout_mote {
+            return;
+        }
+        if self.cfg.api_key.is_none() {
+            self.remote_status = "Sign in to ScoutCode to use ScoutMote.".into();
+            return;
+        }
+        let id = match &self.cfg.scout_mote_id {
+            Some(id) => id.clone(),
+            None => {
+                let id = format!("pc-{:x}{:x}", session::now_ms(), std::process::id());
+                config::save_one("scoutMoteId", json!(id));
+                self.cfg.scout_mote_id = Some(id.clone());
+                id
+            }
+        };
+        let h = self.hooks.clone();
+        self.remote_status = "Connecting…".into();
+        self.remote_online = false;
+        self.remote_published = None;
+        self.remote = Some(crate::remote::start(&self.cfg, &id, move |e| h.send(Ev::Remote(e))));
+    }
+
+    fn stop_remote(&mut self, status: &str) {
+        if let Some(r) = self.remote.take() {
+            r.stop();
+        }
+        self.remote_online = false;
+        self.remote_status = status.to_string();
+    }
+
+    /// Runs a command from the website, as if it had been done in this window.
+    fn remote_command(&mut self, c: &Value) {
+        if self.remote.is_none() {
+            return;
+        }
+        let s = |k: &str| c[k].as_str().map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+        // Only folders that are already projects here: the site can't send Scout anywhere else.
+        let dir = s("cwd").and_then(|d| self.project_index(&d)).map(|i| self.projects[i].path.clone()).unwrap_or_else(|| self.chat.cwd.clone());
+        match c["type"].as_str().unwrap_or("") {
+            "prompt" => {
+                let Some(text) = s("text") else { return };
+                if let Some(id) = s("chatId") {
+                    if id != self.chat.session_id {
+                        self.open_chat(&id);
+                    }
+                } else if c["newChat"] == true && (!self.chat.items.is_empty() || !session::same_dir(&dir, &self.chat.cwd)) {
+                    // A chat that's working carries on behind the new one.
+                    self.change_project(dir);
+                }
+                self.send(text, vec![], false);
+            }
+            "stop" => self.stop(),
+            "open" => {
+                if let Some(id) = s("chatId") {
+                    self.open_chat(&id);
+                }
+            }
+            "new" => self.change_project(dir),
+            "permission" => {
+                let a = match c["answer"].as_str() {
+                    Some("allow") => PermissionAnswer::Allow,
+                    Some("always") => PermissionAnswer::Always,
+                    _ => PermissionAnswer::Deny("Denied from ScoutMote.".into()),
+                };
+                self.answer_permission(a);
+            }
+            "mode" => {
+                if let Some(m) = s("mode").filter(|m| MODES.contains(&m.as_str())) {
+                    self.set_mode(&m);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// What's on screen, for the website: the projects, the chats and the open chat's transcript, without secrets.
+    fn remote_state(&self) -> Value {
+        const ITEMS: usize = 80;
+        const TEXT: usize = 24_000;
+        let cut = |t: &str| if t.len() > TEXT { format!("{}…", &t[..t.floor_char_boundary(TEXT)]) } else { t.to_string() };
+        let start = self.chat.items.len().saturating_sub(ITEMS);
+        let items: Vec<Value> = self.chat.items[start..]
+            .iter()
+            .map(|i| match &i.kind {
+                ItemKind::User { text, files } => json!({ "id": i.id, "kind": "user", "text": cut(text), "files": files.len() }),
+                ItemKind::Assistant { text, .. } => json!({ "id": i.id, "kind": "assistant", "text": cut(text) }),
+                ItemKind::Tool { name, label, result, .. } => json!({
+                    "id": i.id, "kind": "tool", "name": name, "label": label, "done": result.is_some(),
+                    "error": result.as_ref().is_some_and(|r| r.is_error), "summary": result.as_ref().and_then(|r| r.summary.clone()),
+                }),
+                ItemKind::Notice(t) => json!({ "id": i.id, "kind": "notice", "text": cut(t) }),
+                ItemKind::Error(t) | ItemKind::OutOfCredit(t) | ItemKind::FallbackSetup(t, _) => json!({ "id": i.id, "kind": "error", "text": cut(t) }),
+            })
+            .collect();
+        json!({
+            "app": crate::update::VERSION,
+            "user": self.cfg.username,
+            "projects": self.projects.iter().map(|p| json!({ "name": p.name, "path": p.path })).collect::<Vec<_>>(),
+            "sessions": self.sessions.iter().take(60).map(|s| {
+                let live = std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == s.id);
+                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "updated": s.updated, "running": live.is_some_and(|c| c.running), "waiting": live.is_some_and(Chat::waiting) })
+            }).collect::<Vec<_>>(),
+            "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m) })).collect::<Vec<_>>(),
+            "chat": {
+                "id": self.chat.session_id,
+                "cwd": self.chat.cwd,
+                "project": self.project_label(),
+                "title": self.chat_title(),
+                "running": self.chat.running,
+                "status": self.chat.status,
+                "mode": self.chat.shared.mode(),
+                "model": crate::api::short_id(&self.chat.model),
+                "queue": self.chat.queue.len(),
+                "permission": self.chat.permission.as_ref().map(|p| json!({ "tool": p.req.tool, "label": p.req.label, "reason": p.req.reason })),
+                "waiting": self.chat.plan.is_some() || self.chat.questions.is_some(),
+                "todos": todos_json(&self.chat.todos),
+                "items": items,
+                "more": start,
+            },
+        })
+    }
+
+    /// Hands ScoutMote what's on screen, at most about four times a second.
+    fn publish_remote(&mut self) {
+        if self.remote.is_none() || self.remote_published.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(250)) {
+            return;
+        }
+        self.remote_published = Some(std::time::Instant::now());
+        let state = self.remote_state();
+        if let Some(r) = &self.remote {
+            r.publish(state);
+        }
+    }
+
     pub fn set_status(&mut self, s: String) {
         self.chat.status = s;
     }
@@ -2594,6 +2765,7 @@ impl Core {
                 "chatbots": self.link_chatbots.iter().map(|b| json!({ "name": b.name, "seen": b.seen })).collect::<Vec<_>>(),
                 "permission": self.link_permission.as_ref().map(permission_json),
             })),
+            ("scoutMote", json!({ "on": self.cfg.scout_mote, "running": self.remote.is_some(), "status": self.remote_status, "online": self.remote.is_some() && self.remote_online, "name": crate::remote::computer_name() })),
             ("usage", json!({ "info": self.usage.info, "busy": self.usage.busy, "message": self.usage.message })),
             ("voice", voice),
             ("updater", json!({ "enabled": self.updater.enabled(), "version": crate::update::VERSION, "status": status_json(&self.updater.status()) })),
@@ -2604,6 +2776,7 @@ impl Core {
 
     /// Sends the window what changed: keys of the view, then models, then transcript items.
     pub fn flush(&mut self) {
+        self.publish_remote();
         self.seq += 1;
         let seq = self.seq;
         let mut patch = serde_json::Map::new();

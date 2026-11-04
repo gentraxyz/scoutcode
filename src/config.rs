@@ -193,6 +193,10 @@ pub struct Config {
     pub games: Games,
     /// The Scout Enterprise team the account is in. While there is one, its providers replace the user's own.
     pub team: Option<Team>,
+    /// Desktop app only: ScoutMote, so the account's website can drive this Scout. Off until turned on.
+    pub scout_mote: bool,
+    /// Desktop app only: what ScoutMote calls this computer on the site, kept so it stays the same PC.
+    pub scout_mote_id: Option<String>,
 }
 
 /// A model in the picker: its list key and where it runs.
@@ -361,6 +365,8 @@ pub fn load_config() -> Config {
         image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
         games: s.get("games").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         team: s.get("team").and_then(|v| serde_json::from_value(v.clone()).ok()),
+        scout_mote: s.get("scoutMote").and_then(Value::as_bool).unwrap_or(false),
+        scout_mote_id: s.get("scoutMoteId").and_then(Value::as_str).filter(|v| !v.is_empty()).map(String::from),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {

@@ -28,6 +28,8 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         search_chats,
         mention_search,
         open_url,
+        set_material,
+        set_app_icon,
         reveal,
         usage_log,
         image_models,
@@ -112,6 +114,7 @@ enum Action {
     UsageRefresh,
     UsageChange { body: Value, said: String },
     ToggleLink { mode: String },
+    SetScoutMote { on: bool },
     McpSetEnabled { name: String, on: bool },
     McpRemove { name: String },
     McpReconnect,
@@ -218,6 +221,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::UsageRefresh => c.usage_request(None),
         Action::UsageChange { body, said } => c.usage_request(Some((body, said))),
         Action::ToggleLink { mode } => c.toggle_link(&mode),
+        Action::SetScoutMote { on } => c.set_scout_mote(on),
         Action::McpSetEnabled { name, on } => {
             let found = mcp_client::hub().views().into_iter().find(|s| s.name == name);
             if let Some(mut cfg) = found.map(|s| s.cfg) {
@@ -336,6 +340,40 @@ fn mention_search(cwd: String, query: String) -> Value {
     let files = &index.as_ref().unwrap().1;
     rows.extend(attach::matches(files, &query, 8 - rows.len()).into_iter().map(|f| json!({ "skill": false, "name": f })));
     Value::Array(rows)
+}
+
+/// The window's backdrop, from Settings > Appearance: "solid", or "mica", "acrylic" or "glass", which let Windows draw
+/// the desktop through the window (blurred) while the UI's colors turn translucent. Liquid Glass is acrylic with a
+/// lighter tint; the UI adds its glass highlights. Fails on Windows versions without the effect (Mica needs 11).
+#[tauri::command]
+fn set_material<R: Runtime>(window: tauri::WebviewWindow<R>, material: String) -> Result<(), String> {
+    use tauri::window::{Effect, EffectsBuilder};
+    use tauri::webview::Color;
+    let effects = match material.as_str() {
+        "mica" => Some(EffectsBuilder::new().effect(Effect::MicaDark).build()),
+        "acrylic" => Some(EffectsBuilder::new().effect(Effect::Acrylic).color(Color(18, 18, 20, 120)).build()),
+        "glass" => Some(EffectsBuilder::new().effect(Effect::Acrylic).color(Color(40, 44, 56, 60)).build()),
+        _ => None,
+    };
+    match effects {
+        Some(e) => {
+            window.set_effects(e).map_err(|e| e.to_string())?;
+            window.set_background_color(Some(Color(0, 0, 0, 0))).map_err(|e| e.to_string())
+        }
+        None => {
+            window.set_effects(None).map_err(|e| e.to_string())?;
+            window.set_background_color(Some(Color(0x1f, 0x1f, 0x1f, 0xff))).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// The taskbar and title icon, drawn by the UI from the logo picked in Settings > Appearance: `size`×`size` RGBA.
+#[tauri::command]
+fn set_app_icon<R: Runtime>(window: tauri::WebviewWindow<R>, rgba: Vec<u8>, size: u32) -> Result<(), String> {
+    if size == 0 || size > 512 || rgba.len() != (size * size * 4) as usize {
+        return Err("The icon must be square RGBA.".into());
+    }
+    window.set_icon(tauri::image::Image::new_owned(rgba, size, size)).map_err(|e| e.to_string())
 }
 
 /// Opens web pages in the browser. Anything else a page might link to stays closed.

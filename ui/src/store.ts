@@ -23,14 +23,16 @@ export type CoreState = { view: View; models: Model[]; items: Item[]; statics: S
 export const core = createStore<CoreState>(null as unknown as CoreState);
 
 export type DockTab = 'terminal' | 'changes' | 'files' | 'games';
-export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'notifications' | 'discord' | 'fallbacks' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'experimental' | 'updates';
+export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'notifications' | 'discord' | 'fallbacks' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'scoutmote' | 'experimental' | 'updates';
 
 export const ui = createStore({
   sidebar: true,
   dockOpen: false,
   dockTab: 'terminal' as DockTab,
-  /** A file the Files tab should open, from a double click in Changes. */
+  /** A file the Files tab should open, from a double click in Changes or a file link in a reply. */
   openFile: null as string | null,
+  /** The line to show in it, from a link like src/main.rs:42. */
+  openLine: null as number | null,
   editorDirty: false,
   settings: null as SettingsTab | null,
   deleting: null as { id: string; title: string } | null,

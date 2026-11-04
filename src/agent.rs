@@ -123,6 +123,8 @@ pub enum Ev {
     Voice(crate::voice::Update),
     /// From the link that lets web chatbots use Scout.
     Link(crate::mcp::LinkEvent),
+    /// From ScoutMote, which lets the website drive this Scout.
+    Remote(crate::remote::RemoteEvent),
     /// An event from the worker of one chat, which may not be the one on screen.
     ForChat(u64, Box<Ev>),
 }

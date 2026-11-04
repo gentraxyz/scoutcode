@@ -10,6 +10,7 @@ import { Settings, restartBlocker } from './Settings';
 import { addProject, Sidebar } from './Sidebar';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Transcript } from './Transcript';
+import { DeltaPage } from './DeltaPage';
 import { Icon, IconButton, Modal } from './widgets';
 import { ScoutLogo } from './logo';
 
@@ -83,6 +84,19 @@ function TopBar() {
   const dockOpen = useUi((u) => u.dockOpen);
   const dockTab = useUi((u) => u.dockTab);
   const chat = useView('chat');
+  const page = useUi((u) => u.page);
+  if (page === 'delta') {
+    return (
+      <header className="top-bar" data-tauri-drag-region>
+        {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
+        <b className="chat-title ellipsis" data-tauri-drag-region>Delta</b>
+        <span className="grow" data-tauri-drag-region />
+        <UpdatePill />
+        <IconButton icon="chat" tip="Back to the chat" onClick={() => ui.set({ page: 'chat' })} />
+        <WindowButtons />
+      </header>
+    );
+  }
   return (
     <header className="top-bar" data-tauri-drag-region>
       {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
@@ -163,6 +177,15 @@ function Login({ onDone }: { onDone: () => void }) {
 function useShortcuts() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      // Delta has its own keys; Ctrl+N still makes a chat.
+      if (ui.get().page === 'delta') {
+        if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
+          e.preventDefault();
+          ui.set({ page: 'chat' });
+          act('newChat');
+        }
+        return;
+      }
       if (e.ctrlKey && e.key === '`') {
         e.preventDefault();
         return toggleDock('terminal');
@@ -195,6 +218,7 @@ function useShortcuts() {
 export function App() {
   const { loginNeeded, team } = useView('cfg');
   const sidebar = useUi((u) => u.sidebar);
+  const page = useUi((u) => u.page);
   const dropping = useUi((u) => u.dropping);
   // With no chat open yet, the box sits in the middle under the greeting; it moves down once there's a transcript.
   const fresh = useCore((s) => s.items.length === 0);
@@ -243,13 +267,15 @@ export function App() {
       {sidebar && <Sidebar />}
       <div className="main">
         <TopBar />
-        <div className="main-body">
-          <div className={`chat ${fresh ? 'fresh' : ''}`}>
-            <Transcript />
-            <Composer />
+        {page === 'delta' ? <DeltaPage /> : (
+          <div className="main-body">
+            <div className={`chat ${fresh ? 'fresh' : ''}`}>
+              <Transcript />
+              <Composer />
+            </div>
+            <Dock />
           </div>
-          <Dock />
-        </div>
+        )}
       </div>
       <FloatingGame />
       <Settings />

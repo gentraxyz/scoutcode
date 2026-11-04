@@ -27,6 +27,8 @@ export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'notificati
 
 export const ui = createStore({
   sidebar: true,
+  /** The chat, or ScoutCode Delta (the issue tracker) in its place. */
+  page: 'chat' as 'chat' | 'delta',
   dockOpen: false,
   dockTab: 'terminal' as DockTab,
   /** A file the Files tab should open, from a double click in Changes or a file link in a reply. */

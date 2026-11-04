@@ -3,6 +3,7 @@ import { act, invoke, openExternal, type View } from './api';
 import { ui, useCore, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
 import { ScoutLogo } from './logo';
+import { DeltaMark } from './delta/Delta';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const sameDir = (a: string, b: string) => norm(a) === norm(b);
@@ -23,7 +24,7 @@ function SessionState({ s }: { s: View['sessions'][number] }) {
 function SessionRow({ s, current, tip }: { s: View['sessions'][number]; current: boolean; tip?: string }) {
   return (
     <div className={`session-row ${current ? 'selected' : ''}`} title={tip}>
-      <button type="button" className="session-open" onClick={() => act('openChat', { id: s.id })}>
+      <button type="button" className="session-open" onClick={() => { ui.set({ page: 'chat' }); act('openChat', { id: s.id }); }}>
         <SessionState s={s} />
         <span className="ellipsis grow">{s.title}</span>
         <span className="tiny dim when">{s.ago}</span>
@@ -81,11 +82,11 @@ function Projects() {
                   <Icon name="folder" size={15} />
                   <span className="ellipsis">{p.name}</span>
                 </button>
-                <IconButton icon="plus" tip="New chat here" size={24} className="row-more" onClick={() => act('changeProject', { dir: p.path })} />
+                <IconButton icon="plus" tip="New chat here" size={24} className="row-more" onClick={() => { ui.set({ page: 'chat' }); act('changeProject', { dir: p.path }); }} />
                 <Popover width={170} trigger={(_, toggle) => <IconButton icon="more" tip="More" size={24} className="row-more" onClick={toggle} />}>
                   {(close) => (
                     <>
-                      <MenuItem onClick={() => { close(); act('changeProject', { dir: p.path }); }}>New chat</MenuItem>
+                      <MenuItem onClick={() => { close(); ui.set({ page: 'chat' }); act('changeProject', { dir: p.path }); }}>New chat</MenuItem>
                       <MenuItem onClick={() => { close(); ui.set({ renaming: p.path }); }}>Rename</MenuItem>
                       {/* The open project stays, so the chat on screen always has one. */}
                       {!here && <MenuItem onClick={() => { close(); act('removeProject', { path: p.path }); }}>Remove from list</MenuItem>}
@@ -169,6 +170,16 @@ function Profile() {
   );
 }
 
+/** ScoutCode Delta, the issue tracker, which opens in place of the chat. */
+function DeltaTab() {
+  const page = useUi((u) => u.page);
+  return (
+    <button type="button" className={`new-chat side-tab ${page === 'delta' ? 'selected' : ''}`} onClick={() => ui.set({ page: page === 'delta' ? 'chat' : 'delta' })} title="Issues, projects and cycles">
+      <DeltaMark size={16} /><span className="grow">Delta</span><span className="tiny dim">Issues</span>
+    </button>
+  );
+}
+
 export function Sidebar() {
   const [search, setSearch] = useState('');
   const [width, setWidth] = useState(264);
@@ -180,9 +191,10 @@ export function Sidebar() {
         <span className="grow" data-tauri-drag-region />
         <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />
       </div>
-      <button type="button" className="new-chat" onClick={() => act('newChat')}>
+      <button type="button" className="new-chat" onClick={() => { ui.set({ page: 'chat' }); act('newChat'); }}>
         <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
       </button>
+      <DeltaTab />
       <div className="side-search">
         <Icon name="search" />
         <input placeholder="Search chats" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape' && search) { e.preventDefault(); e.stopPropagation(); setSearch(''); } }} />

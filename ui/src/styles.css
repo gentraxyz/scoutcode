@@ -145,6 +145,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .new-chat { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 11px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); font-size: 13px; color: var(--strong); flex: none; margin-top: 4px; }
 .new-chat .icon { color: var(--muted); }
 .new-chat:hover:not(:disabled) { background: var(--hover); }
+.side-tab { background: transparent; border-color: transparent; color: var(--text); margin-top: 8px; }
+.side-tab .d-mark { color: var(--accent); }
+.side-tab.selected { background: var(--surface); border-color: var(--border-hi); color: var(--strong); }
+.delta-host { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.delta-host > .delta { flex: 1 1 0; }
 .side-search { display: flex; align-items: center; gap: 7px; height: 34px; margin-top: 8px; padding: 0 4px 0 11px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--dim); flex: none; }
 .side-search input { flex: 1 1 0; min-width: 0; background: none; border: 0; outline: 0; font-size: 13px; user-select: text; }
 .side-label { height: 22px; margin: 12px 2px 2px 8px; flex: none; }

@@ -10,6 +10,7 @@ mod bridge;
 mod config;
 mod copilot;
 mod core;
+mod delta;
 mod devin;
 mod discord;
 mod kiro;

@@ -53,6 +53,11 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         terminal_write,
         terminal_resize,
         terminal_stop,
+        delta_local_list,
+        delta_local_read,
+        delta_local_write,
+        delta_local_delete,
+        delta_cloud,
     ]
 }
 
@@ -408,6 +413,35 @@ fn reveal_path(path: &Path) {
         c
     };
     let _ = c.spawn();
+}
+
+// ---------- Delta ----------
+
+#[tauri::command(async)]
+fn delta_local_list() -> Vec<Value> {
+    crate::delta::list()
+}
+
+#[tauri::command(async)]
+fn delta_local_read(id: String) -> Result<Option<String>, String> {
+    crate::delta::read(&id)
+}
+
+#[tauri::command(async)]
+fn delta_local_write(id: String, text: String) -> Result<(), String> {
+    crate::delta::write(&id, &text)
+}
+
+#[tauri::command(async)]
+fn delta_local_delete(id: String) -> Result<(), String> {
+    crate::delta::delete(&id)
+}
+
+/// The lock is let go before the request, which can take a while.
+#[tauri::command(async)]
+fn delta_cloud(core: Shared<'_>, method: String, path: String, body: Option<Value>) -> Result<Value, String> {
+    let cfg = core.lock().unwrap().scout_cfg();
+    crate::delta::cloud(&cfg, &method, &path, body)
 }
 
 // ---------- settings ----------

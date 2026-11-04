@@ -4,6 +4,16 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.13
+ScoutMote, file links in replies, glass window looks and new logos.
+
+- ScoutMote: turn it on in Settings > ScoutMote, then use Scout on this PC from the ScoutCode website in any browser. Start chats, watch them work, answer what Scout asks and stop it.
+- Files Scout mentions in its replies are links. Click one to open the file in the Files tab, at the line it points to.
+- The model menu can sort by cheapest, most expensive, name or context, and show only free models. Cheapest comes first.
+- OpenRouter's models no longer show as Free just because ScoutCode's copy of the same model is free, or the other way round.
+- Settings > Appearance has window materials (Mica, Acrylic and Liquid Glass) and nine versions of the Scout logo, which the taskbar icon follows.
+- With no chat open, the message box sits in the middle of the window.
+
 ## 0.1.12
 Sign-in pages in the dark look, ScoutCode in Providers, and free models without an account.
 

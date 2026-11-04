@@ -4,6 +4,14 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.14
+An Intelligence Index in the model menu, hiding providers, and long commands that keep running.
+
+- The model menu shows one to three bars by each model: the more bars, the smarter it is. Sort by "Smartest first" to put the strongest models on top.
+- Right-click a provider in the model menu to hide it, or to sign in if it needs an account. Show hidden ones again from the "…" button under the providers.
+- A command that takes longer than Scout expected keeps running in the background. Scout sees its last lines and decides whether to wait longer, change something, or get on with other work, and it hears when the command finishes.
+- ScoutMote can switch the model and star models on this PC.
+
 ## 0.1.13
 ScoutMote, file links in replies, glass window looks and new logos.
 

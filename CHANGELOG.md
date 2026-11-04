@@ -4,6 +4,12 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.15
+Delta, an issue tracker built into Scout, with smooth animations throughout.
+
+- Delta is in the sidebar: teams, issues, projects, cycles and a roadmap, in a list or on a board. Keep a workspace on this computer or in ScoutCode Cloud, and hand an issue to Scout to work on.
+- Delta moves smoothly: menus, dialogs and the issue panel ease in and out, pages fade between views, groups fold open and shut, and cards lift as you drag them. With reduced motion on in Windows, it stays still.
+
 ## 0.1.14
 An Intelligence Index in the model menu, hiding providers, and long commands that keep running.
 

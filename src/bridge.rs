@@ -25,6 +25,9 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         paste_image,
         display_path,
         add_project,
+        folder_places,
+        folder_list,
+        folder_create,
         search_chats,
         mention_search,
         open_url,
@@ -308,15 +311,32 @@ fn display_path(cwd: String, path: String) -> String {
     attach::display_path(&cwd, Path::new(&path))
 }
 
-/// Picks a folder and starts a chat there. Returns the folder when it's a new project, which the user then names.
-#[tauri::command(async)]
-fn add_project(core: Shared<'_>) -> Option<String> {
-    let cwd = core.lock().unwrap().cwd();
-    let dir = rfd::FileDialog::new().set_directory(cwd).pick_folder()?.to_string_lossy().to_string();
+/// Starts a chat in the folder the user picked in the window's folder picker. Returns the folder when it's a new
+/// project, which the user then names.
+#[tauri::command]
+fn add_project(core: Shared<'_>, dir: String) -> Result<Option<String>, String> {
+    if !Path::new(&dir).is_dir() {
+        return Err("That folder doesn't exist.".into());
+    }
     let mut c = core.lock().unwrap();
     let is_new = c.add_project(dir.clone());
     c.wake();
-    is_new.then_some(dir)
+    Ok(is_new.then_some(dir))
+}
+
+#[tauri::command(async)]
+fn folder_places() -> crate::folders::Places {
+    crate::folders::places()
+}
+
+#[tauri::command(async)]
+fn folder_list(dir: String) -> crate::folders::Listing {
+    crate::folders::list(&dir)
+}
+
+#[tauri::command]
+fn folder_create(parent: String, name: String) -> Result<String, String> {
+    crate::folders::create(&parent, &name)
 }
 
 #[tauri::command(async)]

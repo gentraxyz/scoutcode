@@ -555,6 +555,59 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
   .spinner { animation-duration: 2.4s !important; animation-iteration-count: infinite !important; }
 }
 
+/* the folder picker, for adding a project */
+.modal.folder-picker { padding: 0; gap: 0; width: min(860px, calc(100vw - 80px)); height: min(560px, calc(100vh - 80px)); min-width: 560px; overflow: hidden; background: var(--bg); }
+.fp { display: flex; height: 100%; min-height: 0; }
+.fp-side { width: 200px; flex: none; padding: 14px 8px; background: var(--sidebar); border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+.fp-title { font-size: 13.5px; font-weight: 600; color: var(--strong); padding: 2px 10px 0; }
+.fp-group { display: flex; flex-direction: column; gap: 1px; }
+.fp-label { font-size: 11px; font-weight: 500; color: var(--dim); padding: 0 10px 4px; }
+.fp-place { display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 10px; border-radius: 8px; font-size: 13px; color: var(--muted); text-align: left; flex: none; }
+.fp-place .icon { color: var(--dim); flex: none; }
+.fp-place:hover { background: var(--hover); color: var(--strong); }
+.fp-place.on { background: var(--surface-hi); color: var(--strong); }
+.fp-place.on .icon { color: var(--text); }
+.fp-main { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+.fp-bar { display: flex; align-items: center; gap: 2px; height: 50px; padding: 0 10px; border-bottom: 1px solid var(--border); flex: none; }
+.fp-path { flex: 1 1 0; min-width: 0; height: 30px; margin: 0 6px; display: flex; align-items: center; overflow-x: auto; scrollbar-width: none; border-radius: 8px; padding: 0 4px; cursor: text; }
+.fp-path::-webkit-scrollbar { display: none; }
+.fp-path:hover { background: var(--hover); }
+.fp-path-edit { background: var(--code-bg); border: 1px solid var(--edge, var(--border-hi)); outline: 0; padding: 0 10px; font-size: 12.5px; user-select: text; cursor: text; }
+.fp-crumb-wrap { display: inline-flex; align-items: center; flex: none; }
+.fp-sep { color: var(--faint); display: inline-flex; margin: 0 1px; }
+.fp-crumb { height: 24px; padding: 0 6px; border-radius: 6px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.fp-crumb:hover { background: var(--menu-hover); color: var(--strong); }
+.fp-crumb.last { color: var(--strong); font-weight: 500; }
+.fp-path-fill { flex: 1 0 24px; align-self: stretch; cursor: text; }
+.fp-tools { display: flex; align-items: center; gap: 6px; padding: 10px 12px 6px; flex: none; }
+.fp-filter { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; color: var(--dim); }
+.fp-filter:focus-within { border-color: rgb(255 255 255 / 18%); }
+.fp-filter input { flex: 1 1 0; min-width: 0; background: none; border: 0; outline: 0; font-size: 13px; user-select: text; color: var(--text); }
+.fp-tool { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 9px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.fp-tool:hover:not(:disabled) { background: var(--hover); color: var(--strong); }
+.fp-tool.on { background: var(--surface-hi); color: var(--strong); }
+.fp-list { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; display: flex; flex-direction: column; }
+.fp-row { display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 6px 0 10px; border-radius: 8px; font-size: 13px; color: var(--text); text-align: left; flex: none; }
+.fp-row .icon { color: var(--dim); flex: none; }
+.fp-row:hover { background: var(--hover); }
+.fp-row.selected { background: var(--surface-hi); color: var(--strong); box-shadow: inset 0 0 0 1px var(--border-hi); }
+.fp-row.selected > .icon { color: var(--text); }
+.fp-row.hidden { opacity: 0.55; }
+.fp-badge { font-size: 10.5px; font-family: var(--mono); color: var(--dim); padding: 1px 6px; border-radius: 5px; background: var(--hover); border: 1px solid var(--border); flex: none; }
+.fp-enter { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: var(--faint); flex: none; opacity: 0; }
+.fp-row:hover .fp-enter, .fp-row.selected .fp-enter { opacity: 1; }
+.fp-enter:hover { background: var(--menu-hover); color: var(--strong); }
+.fp-new { background: var(--surface); box-shadow: inset 0 0 0 1px var(--border-hi); }
+.fp-new input { background: none; border: 0; outline: 0; font-size: 13px; user-select: text; color: var(--strong); }
+.fp-empty { margin: auto; padding: 24px; text-align: center; color: var(--dim); font-size: 13px; max-width: 320px; }
+.fp-foot { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border); flex: none; }
+.fp-choice { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.fp-error { color: var(--red); font-size: 12.5px; }
+.fp-row, .fp-place, .fp-crumb, .fp-tool, .fp-enter, .fp-path, .fp-filter { transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease), border-color var(--fast) var(--ease), opacity var(--fast) var(--ease); }
+.fp-list > .fp-row { animation: fade-in var(--fast) var(--ease); }
+html[data-material="glass"] .modal.folder-picker { --glass-tint: color-mix(in srgb, var(--bg) 78%, transparent); }
+html[data-material="glass"] .fp-side { background: transparent; border-right-color: rgb(255 255 255 / 8%); }
+
 /* experimental games: 2048, in a card dragged over the window or in the panel's Games tab */
 :root { --spring: cubic-bezier(0.34, 1.5, 0.64, 1); --slide: 0.12s; }
 .game-float { position: fixed; z-index: 30; width: 304px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 14px; box-shadow: var(--shadow-pop); transform-origin: 50% 100%; transition: transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease); animation: card-in 0.3s var(--spring); }

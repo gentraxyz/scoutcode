@@ -16,6 +16,7 @@ mod discord;
 mod kiro;
 mod diff;
 mod dock;
+mod folders;
 mod grok;
 mod hermes;
 mod instructions;

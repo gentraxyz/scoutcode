@@ -39,6 +39,8 @@ export const ui = createStore({
   settings: null as SettingsTab | null,
   deleting: null as { id: string; title: string } | null,
   renaming: null as string | null,
+  /** The folder picker is up, to add a project. */
+  pickingFolder: false,
   input: '',
   attachments: [] as string[],
   focusEpoch: 0,

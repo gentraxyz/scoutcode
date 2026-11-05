@@ -697,10 +697,6 @@ impl Core {
         matches!(self.voice, Voice::Recording(_))
     }
 
-    pub fn cwd(&self) -> String {
-        self.chat.cwd.clone()
-    }
-
     fn push(&mut self, kind: ItemKind) {
         self.next_item += 1;
         self.chat.changed.insert(self.chat.items.len());

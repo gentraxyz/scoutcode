@@ -11,6 +11,7 @@ import { addProject, Sidebar } from './Sidebar';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Transcript } from './Transcript';
 import { DeltaPage } from './DeltaPage';
+import { FolderPicker } from './FolderPicker';
 import { Icon, IconButton, Modal } from './widgets';
 import { ScoutLogo } from './logo';
 
@@ -208,7 +209,7 @@ function useShortcuts() {
         return act('cycleMode');
       }
       // Esc closes whatever is open on top before it stops Scout.
-      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting) act('stop');
+      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder) act('stop');
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
@@ -280,6 +281,7 @@ export function App() {
       <FloatingGame />
       <Settings />
       <DeleteDialog />
+      <FolderPicker />
       <LinkPermission />
       <WhatsNew />
       {dropping && <div className="drop-overlay"><div><Icon name="paperclip" /> Drop files to attach them</div></div>}

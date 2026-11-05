@@ -8,9 +8,9 @@ import { DeltaMark } from './delta/Delta';
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const sameDir = (a: string, b: string) => norm(a) === norm(b);
 
-export async function addProject() {
-  const dir = await invoke<string | null>('add_project');
-  if (dir) ui.set({ renaming: dir });
+/** Opens Scout's folder picker; choosing a folder there adds it (see FolderPicker). */
+export function addProject() {
+  ui.set({ pickingFolder: true });
 }
 
 /** How a chat is doing, for one that isn't on screen as well as the one that is. */

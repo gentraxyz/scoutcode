@@ -145,6 +145,7 @@ export function Menu({ trigger, children, width = 220, align = 'start', classNam
   const wrap = useRef<HTMLSpanElement>(null);
   const pop = useRef<HTMLDivElement>(null);
   const [up, setUp] = useState(false);
+  const [end, setEnd] = useState(align === 'end');
   useEffect(() => {
     if (!open) return;
     const down = (e: MouseEvent) => {
@@ -167,13 +168,15 @@ export function Menu({ trigger, children, width = 220, align = 'start', classNam
     if (!open || !wrap.current || !pop.current) return;
     const r = wrap.current.getBoundingClientRect();
     const h = pop.current.offsetHeight;
+    const w = pop.current.offsetWidth;
     setUp(r.bottom + h + 8 > window.innerHeight && r.top > window.innerHeight - r.bottom);
+    setEnd(align === 'end' || (r.left + w + 8 > window.innerWidth && r.right >= w));
   }, [open]);
   return (
     <span className={`d-menu-wrap ${className}`} ref={wrap}>
       {trigger(open, () => setOpen((o) => !o))}
       {open && (
-        <div ref={pop} className={`d-menu ${up ? 'up' : ''} ${align}`} style={{ width }}>
+        <div ref={pop} className={`d-menu ${up ? 'up' : ''} ${end ? 'end' : 'start'}`} style={{ width }}>
           {children(() => setOpen(false))}
         </div>
       )}

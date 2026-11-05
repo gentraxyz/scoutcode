@@ -315,7 +315,7 @@ export function CycleView({ id }: { id: string }) {
   const issues = Object.values(doc.issue).filter((i) => i.cycleId === id);
   const pr = progress(doc, issues);
   const status = cycleStatus(c);
-  const left = Math.max(0, Math.round((new Date(`${c.endsAt}T23:59:59`).getTime() - Date.now()) / 86_400_000));
+  const left = Math.max(0, Math.round((new Date(`${c.endsAt}T12:00:00`).getTime() - new Date(`${today()}T12:00:00`).getTime()) / 86_400_000));
   const unfinished = issues.filter((i) => !isDone(doc.state[i.stateId]));
   const next = Object.values(doc.cycle).filter((x) => x.teamId === c.teamId && x.startsAt > c.endsAt).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0];
   const header = (

@@ -107,6 +107,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 
 /* menus and dialogs */
 .popover-anchor { display: inline-flex; min-width: 0; }
+.hideable { display: contents; }
+.hide-menu { position: fixed; z-index: 60; }
+.hide-menu-note { padding: 4px 8px 2px; }
 .popover { position: fixed; z-index: 50; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 12px; padding: 6px; max-height: calc(100vh - 16px); overflow: auto; }
 .menu-item { display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 10px; font-size: 13px; border-radius: 7px; color: var(--text); }
 .menu-item .icon { color: var(--muted); }
@@ -172,6 +175,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .session-row:hover .when { display: none; }
 .no-chats { padding: 4px 12px; }
 .rename { padding: 3px 8px; }
+.daily-reward-bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-top: 6px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); }
+.daily-reward-info { text-align: left; line-height: 1.3; }
 .profile { flex: none; padding: 6px 0 8px; border-top: 1px solid var(--border); margin-top: 4px; }
 .profile .popover-anchor { display: flex; }
 .profile-row { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 9px; height: 36px; padding: 0 8px; border-radius: 10px; font-size: 13px; }
@@ -318,6 +323,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .ring-track { stroke: var(--faint); }
 .usage-ring:hover .ring-track { stroke: var(--muted); }
 .ring-fill { stroke: var(--usage); }
+.ring-fill.low { stroke: var(--red); }
 .stat-row { display: grid; grid-template-columns: 66px 1fr; gap: 8px; align-items: baseline; }
 .stat-row.wide-key { grid-template-columns: 110px 1fr; }
 
@@ -423,6 +429,14 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .tile { background: var(--surface); border: 1px solid var(--border-hi); border-radius: 12px; padding: 12px 14px; min-width: 0; }
 .tile-value { font-size: 15px; color: var(--strong); font-weight: 600; margin: 2px 0; overflow-wrap: anywhere; }
 .usage-log { margin-top: 22px; }
+.quota-providers { margin-top: 22px; }
+.quota-provider { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; gap: 8px; }
+.quota-meter { display: flex; flex-direction: column; gap: 4px; }
+.quota-bar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.quota-bar span { display: block; height: 100%; background: var(--usage); border-radius: 2px; transition: width 0.4s var(--ease-out); }
+.quota-bar span.low { background: var(--red); }
+.quota-all { align-self: flex-start; background: none; border: 0; padding: 0; cursor: pointer; }
+.chip.red { color: var(--red); }
 .usage-chart { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding-top: 6px; border-bottom: 1px solid var(--border); }
 .usage-bar { flex: 1 1 0; height: 100%; display: flex; align-items: flex-end; }
 .usage-bar span { display: block; width: 100%; background: var(--usage); border-radius: 2px 2px 0 0; }
@@ -549,6 +563,44 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .login-column > :nth-child(3) { animation-delay: 0.08s; }
 .login-column > :nth-child(4) { animation-delay: 0.12s; }
 .login-column > :nth-child(n+5) { animation-delay: 0.16s; }
+
+/* level sliders: reasoning and security. Notched pill track, left for less, right for more; the last notch lights up in the tone. */
+.level-chip, .level-panel { --level: color-mix(in srgb, var(--strong) 78%, transparent); --level-glow: transparent; }
+.level-chip.max.reason, .level-panel.max.reason { --level: var(--accent); --level-glow: color-mix(in srgb, var(--accent) 45%, transparent); }
+.level-chip.max.free, .level-panel.max.free { --level: #f28b82; --level-glow: transparent; }
+.level-chip { min-width: 0; }
+.level-chip.max, .level-chip.max:hover:not(:disabled), .level-chip.max.open { color: var(--level); }
+.level-bars { display: inline-flex; align-items: flex-end; gap: 2.5px; height: 13px; flex: none; }
+.level-bars span { width: 3.5px; border-radius: 1.5px; background: currentColor; opacity: 0.26; transition: opacity var(--fast) var(--ease), background-color var(--med) var(--ease); }
+.level-bars span.on { opacity: 1; }
+.level-chip.max .level-bars span { background: var(--level); }
+.level-chip.max.reason .level-bars span { filter: drop-shadow(0 0 3px var(--level-glow)); }
+.level-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+.level-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.level-title { font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.level-name { font-size: 13.5px; font-weight: 600; color: var(--strong); animation: fade-in var(--fast) var(--ease); transition: color var(--med) var(--ease), text-shadow var(--med) var(--ease); }
+.level-panel.max .level-name { color: var(--level); }
+.level-panel.max.reason .level-name { text-shadow: 0 0 12px var(--level-glow); }
+.level-track { position: relative; height: 32px; margin: 2px 0 0; }
+.level-rail { position: absolute; inset: 0; border-radius: 999px; background: color-mix(in srgb, var(--code-bg) 72%, var(--surface)); border: 1px solid var(--border-hi); pointer-events: none; }
+.level-fill { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(26px + (100% - 32px) * var(--f)); border-radius: 999px; background: color-mix(in srgb, var(--strong) 22%, var(--surface-hi)); opacity: 0; pointer-events: none; transition: width var(--med) var(--ease-out), opacity var(--fast) var(--ease), background-color var(--med) var(--ease); }
+.level-fill.on { opacity: 1; }
+.level-panel.max .level-fill { background: var(--level); }
+.level-tick { position: absolute; top: 50%; left: calc(16px + (100% - 32px) * var(--t)); width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: color-mix(in srgb, var(--strong) 28%, transparent); pointer-events: none; transition: background-color var(--med) var(--ease), opacity var(--fast) var(--ease), transform var(--fast) var(--ease); }
+.level-tick.on { background: color-mix(in srgb, var(--strong) 55%, transparent); }
+.level-panel.max .level-tick.on { background: color-mix(in srgb, #000 35%, transparent); }
+.level-tick.here { opacity: 0; transform: scale(0.5); }
+.level-thumb { position: absolute; top: 50%; left: calc(16px + (100% - 32px) * var(--f)); width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: #fff; pointer-events: none; box-shadow: 0 2px 6px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 18%); transition: left var(--med) var(--ease-out), box-shadow var(--med) var(--ease), transform var(--fast) var(--ease); }
+.level-panel.max.reason .level-thumb { box-shadow: 0 2px 6px rgb(0 0 0 / 50%), 0 0 0 3px var(--level-glow), 0 0 16px var(--level-glow); animation: level-max 0.5s var(--ease-out); }
+.level-panel.max.free .level-thumb { animation: level-max 0.5s var(--ease-out); }
+.level-track:has(.level-range:focus-visible) .level-thumb { box-shadow: 0 2px 6px rgb(0 0 0 / 50%), 0 0 0 3px var(--focus); }
+.level-panel.max.reason .level-track:has(.level-range:focus-visible) .level-thumb { box-shadow: 0 2px 6px rgb(0 0 0 / 50%), 0 0 0 3px var(--level-glow), 0 0 16px var(--level-glow); }
+.level-track:has(.level-range:active) .level-thumb { transform: scale(1.06); }
+/* The real input sits on top, invisible, so dragging, clicking and the arrow keys all work natively. */
+.level-range { position: absolute; inset: 0 3px; width: calc(100% - 6px); height: 100%; margin: 0; opacity: 0; cursor: pointer; -webkit-appearance: none; appearance: none; background: transparent; }
+.level-range::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 26px; }
+.level-ends { display: flex; justify-content: space-between; margin-top: -3px; padding: 0 2px; }
+@keyframes level-max { 0% { transform: scale(1); } 35% { transform: scale(1.16); } 100% { transform: scale(1); } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }

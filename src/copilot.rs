@@ -245,7 +245,8 @@ pub enum Msg {
     Reasoning(String),
     RequestStart,
     RequestEnd,
-    Usage { prompt: u64, completion: u64, cached: u64, resets: Option<String> },
+    /// `quota` is its quota snapshots, keyed by kind, when it sent them.
+    Usage { prompt: u64, completion: u64, cached: u64, resets: Option<String>, quota: Option<Value> },
     Tool { id: String, name: String, arguments: String, reply: oneshot::Sender<String> },
     Idle,
     Failed { message: String, kind: String },
@@ -403,7 +404,7 @@ fn message_of(kind: &str, d: &Value) -> Option<Msg> {
         "assistant.reasoning_delta" => Msg::Reasoning(text("deltaContent")),
         "assistant.turn_start" => Msg::RequestStart,
         "assistant.turn_end" => Msg::RequestEnd,
-        "assistant.usage" => Msg::Usage { prompt: num("inputTokens"), completion: num("outputTokens"), cached: num("cacheReadTokens"), resets: d.pointer("/quotaSnapshots/chat/resetDate").and_then(Value::as_str).map(String::from) },
+        "assistant.usage" => Msg::Usage { prompt: num("inputTokens"), completion: num("outputTokens"), cached: num("cacheReadTokens"), resets: d.pointer("/quotaSnapshots/chat/resetDate").and_then(Value::as_str).map(String::from), quota: d.get("quotaSnapshots").cloned() },
         "session.idle" => Msg::Idle,
         "session.error" => Msg::Failed { message: text("message"), kind: text("errorType") },
         _ => return None,

@@ -94,6 +94,26 @@ pub fn sign_in(cancel: Arc<AtomicBool>, send: impl Fn(Update) + Clone + Send + '
     crate::node::sign_in("Claude Code", ensure_runtime, signed_in, || cli(&["auth", "login", "--claudeai"]), cancel, send);
 }
 
+// ---------- limits ----------
+
+/// What's left of the plan's limits: Claude Code's own usage call, the one behind its `/usage`. It asks Anthropic and uses
+/// none of the plan up. The answer goes to `quota`.
+pub fn fetch_limits() -> Result<(), String> {
+    if !installed() {
+        return Ok(());
+    }
+    let mut c = cli(&["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"]);
+    // That variable turns the usage call off along with the rest it stops.
+    c.env_remove("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC");
+    c.current_dir(crate::node::folder("claude-work")?);
+    let ask = |id: &str, request: Value| json!({"type": "control_request", "request_id": id, "request": request});
+    let lines = [ask("1", json!({"subtype": "initialize"})), ask("2", json!({"subtype": "get_usage", "skip_behaviors": true}))];
+    let answer = crate::acp::exchange(c, "Claude Code", &lines, |v| v.pointer("/response/request_id").and_then(Value::as_str) == Some("2"), Duration::from_secs(30))?;
+    let usage = answer.pointer("/response/response").ok_or_else(|| answer.pointer("/response/error").and_then(Value::as_str).unwrap_or("Claude Code didn't say its limits.").to_string())?;
+    crate::quota::record_claude_usage(usage);
+    Ok(())
+}
+
 // ---------- the protocol ----------
 
 /// What every session is made with: no settings, hooks, plugins or MCP servers from the project or anywhere else, so a

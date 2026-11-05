@@ -32,7 +32,7 @@ export function IssueDetail({ id, onClose, closing }: { id: string; onClose: () 
           <span className="d-key">{key}</span>
           <button type="button" className="d-icon-btn" title="Copy ID" onClick={() => navigator.clipboard?.writeText(key)}><Icon name="copy" size={13} /></button>
           <span className="d-grow" />
-          {c.host.agent && <button type="button" className="d-btn small scout" onClick={() => setHanding(true)}><Icon name="sparkle" size={13} />Hand to Scout</button>}
+          {c.host.kind === 'desktop' && c.host.agent && <button type="button" className="d-btn small scout" onClick={() => setHanding(true)}><Icon name="sparkle" size={13} />Hand to Scout</button>}
           <Menu width={200} align="end" trigger={(_, t) => <button type="button" className="d-icon-btn" onClick={t} aria-label="More"><Icon name="more" /></button>}>
             {(close) => (
               <>

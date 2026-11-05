@@ -56,9 +56,13 @@ fn is_outside_setting(name: &str) -> bool {
 
 /// The adapter, with its settings written first, so it never runs on anything else.
 fn command() -> Command {
+    own_env(AGENT.command())
+}
+
+/// `c` with Codex's own settings and folder, and nothing from another copy.
+fn own_env(mut c: Command) -> Command {
     let home = own_home();
     let _ = std::fs::create_dir_all(&home).and_then(|_| std::fs::write(home.join("config.toml"), SETTINGS));
-    let mut c = AGENT.command();
     for (k, _) in std::env::vars_os() {
         if is_outside_setting(&k.to_string_lossy()) {
             c.env_remove(k);
@@ -97,6 +101,25 @@ pub fn sign_in(cancel: Arc<AtomicBool>, send: impl Fn(Update) + Clone + Send + '
         cancel,
         send,
     );
+}
+
+// ---------- limits ----------
+
+/// What's left of the plan's limits: Codex's own app server, asked directly, as the adapter does for its `/status`. It
+/// uses none of the plan up. The answer goes to `quota`.
+pub fn fetch_limits() -> Result<(), String> {
+    if !installed() || !signed_in() {
+        return Ok(());
+    }
+    let mut c = own_env(crate::node::command());
+    c.arg(AGENT.dir().join("node_modules/@openai/codex/bin/codex.js")).arg("app-server");
+    c.current_dir(crate::node::folder("codex-work")?);
+    let hello = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "scout-desktop", "version": env!("CARGO_PKG_VERSION")}}});
+    let lines = [hello, json!({"jsonrpc": "2.0", "method": "initialized"}), json!({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"})];
+    let answer = crate::acp::exchange(c, "Codex", &lines, |v| v.get("id").and_then(Value::as_u64) == Some(2), Duration::from_secs(30))?;
+    let result = answer.get("result").ok_or_else(|| answer.pointer("/error/message").and_then(Value::as_str).unwrap_or("Codex didn't say its limits.").to_string())?;
+    crate::quota::record_codex(result);
+    Ok(())
 }
 
 // ---------- the protocol ----------

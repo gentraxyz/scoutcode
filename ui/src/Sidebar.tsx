@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { act, invoke, openExternal, type View } from './api';
+import { act, invoke, openExternal, usd, type View } from './api';
 import { ui, useCore, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
 import { ScoutLogo } from './logo';
 import { DeltaMark } from './delta/Delta';
+import { Hideable, useHidden } from './Hideable';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const sameDir = (a: string, b: string) => norm(a) === norm(b);
@@ -133,6 +134,30 @@ function SearchResults({ query }: { query: string }) {
   );
 }
 
+/** Shown in the sidebar when today's daily login reward can be claimed. */
+function DailyRewardBanner() {
+  const { hasKey } = useView('cfg');
+  const { info, busy } = useView('usage');
+  const dr = info?.dailyReward;
+  if (!hasKey || !dr?.canClaim) return null;
+  return (
+    <div className="daily-reward-bar">
+      <button type="button" className="daily-reward-info grow min0" onClick={() => ui.set({ settings: 'usage' })} title="Open Usage & rewards">
+        <div className="strong small ellipsis">Daily reward · Day {dr.nextDay}</div>
+        <div className="tiny dim ellipsis">+{usd(dr.amount)} to your balance</div>
+      </button>
+      <button
+        type="button"
+        className="button primary compact"
+        disabled={busy}
+        onClick={() => act('usageChange', { body: { action: 'claim-daily-reward' }, said: `Claimed ${usd(dr.amount)} daily login reward (day ${dr.nextDay}).` })}
+      >
+        Claim {usd(dr.amount)}
+      </button>
+    </div>
+  );
+}
+
 function Profile() {
   const cfg = useView('cfg');
   const { additionalProviders } = useCore((s) => s.statics);
@@ -183,6 +208,7 @@ function DeltaTab() {
 export function Sidebar() {
   const [search, setSearch] = useState('');
   const [width, setWidth] = useState(264);
+  const searching = !!search.trim() && !useHidden().includes('side.search');
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="side-head" data-tauri-drag-region>
@@ -191,16 +217,18 @@ export function Sidebar() {
         <span className="grow" data-tauri-drag-region />
         <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />
       </div>
-      <button type="button" className="new-chat" onClick={() => { ui.set({ page: 'chat' }); act('newChat'); }}>
+      <Hideable id="side.newChat"><button type="button" className="new-chat" onClick={() => { ui.set({ page: 'chat' }); act('newChat'); }}>
         <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
-      </button>
-      <DeltaTab />
+      </button></Hideable>
+      <Hideable id="side.delta"><DeltaTab /></Hideable>
+      <Hideable id="side.search">
       <div className="side-search">
         <Icon name="search" />
         <input placeholder="Search chats" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape' && search) { e.preventDefault(); e.stopPropagation(); setSearch(''); } }} />
         {search && <IconButton icon="close" tip="Clear" size={24} onClick={() => setSearch('')} />}
       </div>
-      {search.trim() ? <SearchResults query={search} /> : (
+      </Hideable>
+      {searching ? <SearchResults query={search} /> : (
         <>
           <div className="row side-label">
             <SectionLabel>Projects</SectionLabel>
@@ -210,6 +238,7 @@ export function Sidebar() {
           <Projects />
         </>
       )}
+      <DailyRewardBanner />
       <Profile />
       <Resizer side="right" width={width} min={200} max={420} onChange={setWidth} />
     </aside>

@@ -2,10 +2,12 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type Fallbacks, type Games, type McpServer, type ModelRef, type UsageInfo } from './api';
 import { closeGame } from './Games';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
+import { ProviderQuotas } from './Quota';
 import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
+import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
 
 const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[] = [
@@ -15,8 +17,8 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
   { id: 'discord', title: 'Discord', icon: 'chat', keywords: 'discord rich presence profile status privacy share activity' },
   { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
-  { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily monthly limits balance banked reset chart history' },
-  { id: 'account', title: 'Account', icon: 'user', keywords: 'account scoutcode sign in sign out login key username billing' },
+  { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily weekly monthly 5-hour limits balance banked reset chart history quota free requests rate limit providers rewards login streak claim referral referrals invite code bonus credit' },
+  { id: 'account', title: 'Account', icon: 'user', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
   { id: 'providers', title: 'Providers', icon: 'user', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro kilo models' },
   { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
@@ -141,7 +143,7 @@ function Discord() {
   const project = cfg.discordProject;
   return (
     <>
-      <Heading title="Discord" sub="Shows on your Discord profile that you're using Scout. Off unless you turn it on." />
+      <Heading title="Discord" sub="Shows on your Discord profile that you're using Scout." />
       <SettingRow title="Show Scout on Discord" sub="Your profile shows \“Using Scout\” while the app is open. Nothing else is sent."><Toggle label="Show Scout on Discord" on={presence} onChange={(on) => act('setDiscord', { presence: on, project: on && project })} /></SettingRow>
       <SettingRow title="Show the folder's name" sub="Adds \“Working on <folder>\”, using only the folder's name, never its path, chats or files. Needs the setting above."><Toggle label="Show the folder's name" on={project} onChange={(on) => act('setDiscord', { presence, project: on })} /></SettingRow>
     </>
@@ -206,7 +208,26 @@ function Appearance() {
         ))}
       </div>
       <p className="small dim">Shows in the sidebar, on the start screen and on the taskbar.</p>
+      <HiddenItems />
       <div className="row"><button type="button" className="button ghost compact" onClick={() => setTheme({ background: 'graphite', elements: 'gray', material: 'solid', logo: 'classic' })}>Reset to default</button></div>
+    </>
+  );
+}
+
+/** What was hidden with a right-click on the top bar or the sidebar, to bring back. */
+function HiddenItems() {
+  const hidden = useHidden();
+  return (
+    <>
+      <SectionLabel>Hidden items</SectionLabel>
+      {hidden.length === 0 ? <p className="small dim">Right-click a button in the top bar, or New chat, Delta or Search chats in the sidebar, to hide it.</p> : (
+        <>
+          {HIDEABLE.filter(([id]) => hidden.includes(id)).map(([id, name, where]) => (
+            <SettingRow key={id} title={name} sub={where}><button type="button" className="button" onClick={() => showUi(id)}>Show</button></SettingRow>
+          ))}
+          {hidden.length > 1 && <div className="row"><button type="button" className="button ghost compact" onClick={showAllUi}>Show all</button></div>}
+        </>
+      )}
     </>
   );
 }
@@ -424,6 +445,81 @@ function UsageAdmin({ info, busy }: { info: UsageInfo; busy: boolean }) {
   );
 }
 
+function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
+  const { baseUrl } = useView('cfg');
+  const [code, setCode] = useState('');
+  const dr = info.dailyReward;
+  const ref = info.referrals;
+  if (!dr && !ref) return null;
+  const site = baseUrl.replace(/\/v1\/?$/, '');
+  const redeem = () => {
+    const trimmed = code.trim();
+    if (!trimmed || busy) return;
+    act('usageChange', {
+      body: { action: 'redeem-referral', code: trimmed },
+      said: `Redeemed referral code: added ${usd(ref?.credit ?? 5)} of credit for ${ref?.expiryDays ?? 3} days.`,
+    });
+    setCode('');
+  };
+  return (
+    <>
+      {dr && (
+        <SettingRow
+          title={dr.streak > 0 ? `Daily login reward · ${dr.streak}-day streak` : 'Daily login reward'}
+          sub={
+            dr.canClaim
+              ? `Day ${dr.nextDay}: claim ${usd(dr.amount)} to your balance. Days 1–3 earn $0.10/day, days 4–7 earn $0.20/day, and day 8+ earns $0.30/day. Missing a UTC day resets the streak.`
+              : `Claimed ${usd(dr.claimedToday ?? dr.amount)} today. Day ${dr.nextDay} (${usd(dr.amount)}) unlocks at 00:00 UTC. Days 1–3: $0.10/day · Days 4–7: $0.20/day · Day 8+: $0.30/day.`
+          }
+        >
+          <button
+            type="button"
+            className="button primary"
+            disabled={busy || !dr.canClaim}
+            onClick={() => act('usageChange', { body: { action: 'claim-daily-reward' }, said: `Claimed ${usd(dr.amount)} daily login reward (day ${dr.nextDay}).` })}
+          >
+            {dr.canClaim ? `Claim ${usd(dr.amount)}` : 'Claimed today'}
+          </button>
+        </SettingRow>
+      )}
+      {ref && (
+        <>
+          <SettingRow
+            title={`Referrals (${ref.referred.length} / ${ref.max}${ref.earned > 0 ? ` · ${usd(ref.earned)} earned` : ''})`}
+            sub={`Your referral code is "${ref.code}". Friends you refer get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days, and you get ${usd(ref.bonus)} in balance once they sign in to Scout and send their first prompt.`}
+          >
+            <CopyButton text={ref.code} label="Copy code" />
+            <CopyButton text={`${site}/signup?ref=${encodeURIComponent(ref.code)}`} label="Copy link" />
+          </SettingRow>
+          {ref.referred.map((r) => (
+            <SettingRow
+              key={r.username}
+              title={`Referred ${r.username}`}
+              sub={`${shortDate(r.createdAt.slice(0, 10))} · ${r.rewardedAt ? `+${usd(ref.bonus)} added to your balance` : 'Waiting for their first prompt in Scout'}`}
+            />
+          ))}
+          {ref.referredBy ? (
+            <SettingRow title={`Referred by ${ref.referredBy}`} sub={`You received ${usd(ref.credit)} in ScoutCode credit for ${ref.expiryDays} days.`} />
+          ) : (
+            <SettingRow title="Redeem a referral code" sub={`Enter a friend's username or referral link to get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days.`}>
+              <input
+                className="input field-180"
+                placeholder="Friend's username"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && redeem()}
+              />
+              <button type="button" className="button primary" disabled={busy || !code.trim()} onClick={redeem}>
+                Redeem +{usd(ref.credit)}
+              </button>
+            </SettingRow>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 function UsageLimits() {
   const { hasKey } = useView('cfg');
   const { info, busy, message } = useView('usage');
@@ -458,6 +554,7 @@ function UsageLimits() {
               {i === 0 && <button type="button" className="button primary" disabled={busy} onClick={() => act('usageChange', { body: { action: 'use-banked-reset' }, said: 'Your usage this month is back to zero.' })}>Use</button>}
             </SettingRow>
           ))}
+          <RewardsSection info={info} busy={busy} />
           {info.admin && <UsageAdmin info={info} busy={busy} />}
         </>
       ) : busy && <Spinner size={16} />}
@@ -474,8 +571,9 @@ function Usage() {
   const max = Math.max(1, ...(log?.days ?? []).map((d) => d.tokens));
   return (
     <>
-      <Heading title="Usage" sub="What you have left this month, and the tokens Scout used each day on this PC. Days and months are UTC." />
+      <Heading title="Usage" sub="What you have left this month, each provider's limits, and the tokens Scout used each day on this PC. Days and months are UTC." />
       <UsageLimits />
+      <ProviderQuotas />
       {log && (
         <div className="stack usage-log">
           <div className="tiles three">
@@ -500,6 +598,8 @@ function Usage() {
 
 function Account() {
   const cfg = useView('cfg');
+  const { info, busy, message } = useView('usage');
+  useEffect(() => { if (cfg.hasKey) act('usageRefresh'); }, [cfg.hasKey]);
   const name = cfg.username ?? (cfg.hasKey ? 'Unknown until the model list loads' : 'Not signed in');
   const account = () => openExternal(`${cfg.baseUrl.replace(/\/v1$/, '')}/account`);
   return (
@@ -518,8 +618,10 @@ function Account() {
         <>
           <SettingRow title="Signed in as" sub={name} />
           {cfg.team && <SettingRow title="Team" sub={`${cfg.team.name}, Scout Enterprise (${cfg.team.role === 'admin' ? 'admin' : 'member'}). Code review is free.`} />}
-          <SettingRow title={cfg.browserSignIn ? 'Browser sign-in' : 'API key'} sub={cfg.browserSignIn ? 'Uses your monthly desktop credit, then any banked money and balance.' : "Pays from your account's money."} />
+          <SettingRow title={cfg.browserSignIn ? 'Browser sign-in' : 'API key'} sub={cfg.browserSignIn ? 'Uses your weekly desktop credit, then any banked money and balance.' : "Pays from your account's money."} />
           <SettingRow title="Account page" sub="Keys, balance and billing on scoutcode.dev."><button type="button" className="button" onClick={account}>Open</button></SettingRow>
+          {info && <RewardsSection info={info} busy={busy} />}
+          {message && <div className={`small ${message[0] ? 'green' : 'red'}`}>{message[1]}</div>}
           <SettingRow title="Sign out" sub="Forgets the login on this PC."><button type="button" className="button" onClick={() => { act('signOut'); ui.set({ settings: null }); }}>Sign out</button></SettingRow>
         </>
       )}

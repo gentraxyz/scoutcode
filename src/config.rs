@@ -105,9 +105,9 @@ pub fn kilo_url() -> String {
 pub fn mode_label(mode: &str) -> &'static str {
     match mode {
         "acceptEdits" => "Accept edits",
-        "auto" => "Auto (Jev reviews)",
-        "plan" => "Plan (read-only)",
-        "yolo" => "Yolo (never ask)",
+        "auto" => "Auto",
+        "plan" => "Read Only",
+        "yolo" => "Accept All",
         _ => "Ask first",
     }
 }
@@ -175,7 +175,7 @@ pub struct Config {
     /// background. None until they choose, which the first run asks.
     pub notify_flash: Option<bool>,
     pub notify_toast: Option<bool>,
-    /// Desktop app only: show "Using Scout" on the user's Discord profile. Off until they turn it on.
+    /// Desktop app only: show "Using Scout" on the user's Discord profile. On unless they turn it off.
     pub discord_presence: bool,
     /// Desktop app only: include the open folder's name in that presence. Off until they turn it on.
     pub discord_project: bool,
@@ -356,7 +356,7 @@ pub fn load_config() -> Config {
         projects: s.get("desktopProjects").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         notify_flash: s.get("desktopFlash").and_then(Value::as_bool),
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
-        discord_presence: s.get("discordPresence").and_then(Value::as_bool).unwrap_or(false),
+        discord_presence: s.get("discordPresence").and_then(Value::as_bool).unwrap_or(true),
         discord_project: s.get("discordProject").and_then(Value::as_bool).unwrap_or(false),
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
         last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),

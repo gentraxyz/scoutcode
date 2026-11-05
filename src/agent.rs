@@ -942,8 +942,11 @@ impl Agent {
                 CopilotMsg::RequestStart if main => h.send(Ev::RequestStart),
                 CopilotMsg::RequestStart => {}
                 CopilotMsg::RequestEnd => {}
-                CopilotMsg::Usage { prompt, completion, cached, resets: r } => {
+                CopilotMsg::Usage { prompt, completion, cached, resets: r, quota } => {
                     resets = r.or(resets);
+                    if let Some(q) = &quota {
+                        crate::quota::record_copilot(q);
+                    }
                     self.add_usage(&StreamResult { usage: Some(api::Usage { prompt, completion, cached }), ..Default::default() }, main, h);
                     if main {
                         self.last_request_at = Some(Instant::now());

@@ -1125,6 +1125,7 @@ impl Core {
             self.cfg.team = None;
         }
         self.usage = Default::default();
+        crate::quota::forget("scoutcode");
         self.cfg.api_key = key;
         // ScoutMote goes with the account, so it starts again on the new one.
         self.stop_remote("");
@@ -2449,6 +2450,57 @@ impl Core {
         std::thread::spawn(move || h.send(Ev::UsagePolled(crate::api::usage_info(&cfg).map_err(|e| e.message))));
     }
 
+    /// Asks ScoutCode where this app stands on free models, signed in or not, for the timer. Only while a ScoutCode
+    /// model is picked: otherwise nothing shows it until Settings > Usage asks.
+    pub fn quota_poll(&mut self) {
+        if self.chat.provider == "scoutcode" {
+            self.scoutcode_free();
+        }
+    }
+
+    fn scoutcode_free(&self) {
+        if self.cfg.api_key.is_none() && !self.cfg.is_guest() {
+            return;
+        }
+        let cfg = self.cfg.for_provider("scoutcode");
+        std::thread::spawn(move || {
+            if let Ok(v) = crate::api::free_status(&cfg) {
+                crate::quota::record_scoutcode_free(&v);
+            }
+        });
+    }
+
+    /// Asks every provider that can say what's left of its limits: ScoutCode's free models, Claude Code, Codex, Grok
+    /// Build and each OpenRouter key. The rest only say so in their answers.
+    pub fn quota_refresh(&mut self) {
+        self.scoutcode_free();
+        let mut ask: Vec<fn() -> Result<(), String>> = vec![];
+        if self.cfg.claude_enabled {
+            ask.push(crate::claude::fetch_limits);
+        }
+        if self.cfg.codex_enabled {
+            ask.push(crate::codex::fetch_limits);
+        }
+        if self.cfg.grok_signed_in {
+            ask.push(crate::grok::fetch_limits);
+        }
+        for f in ask {
+            std::thread::spawn(move || {
+                let _ = f();
+            });
+        }
+        if self.cfg.team.as_ref().is_some_and(|t| t.runs("openrouter")) {
+            return;
+        }
+        for k in self.cfg.openrouter_keys.clone() {
+            std::thread::spawn(move || {
+                if let Ok(v) = crate::api::openrouter_key(&k.key) {
+                    crate::quota::record_openrouter_key(&k.name, &v);
+                }
+            });
+        }
+    }
+
     pub fn refresh_skills(&mut self) {
         self.skills = crate::skills::list();
     }
@@ -2854,6 +2906,7 @@ impl Core {
             })),
             ("scoutMote", json!({ "on": self.cfg.scout_mote, "running": self.remote.is_some(), "status": self.remote_status, "online": self.remote.is_some() && self.remote_online, "name": crate::remote::computer_name() })),
             ("usage", json!({ "info": self.usage.info, "busy": self.usage.busy, "message": self.usage.message })),
+            ("quotas", json!(crate::quota::all())),
             ("voice", voice),
             ("updater", json!({ "enabled": self.updater.enabled(), "version": crate::update::VERSION, "status": status_json(&self.updater.status()) })),
             ("whatsNew", json!(self.whats_new)),
@@ -2928,7 +2981,9 @@ pub fn pump(core: Arc<Mutex<Core>>, rx: Receiver<Ev>, wake: Receiver<()>) {
     loop {
         if polled.is_none_or(|t| t.elapsed() >= POLL_EVERY) {
             polled = Some(Instant::now());
-            core.lock().unwrap().usage_poll();
+            let mut core = core.lock().unwrap();
+            core.usage_poll();
+            core.quota_poll();
         }
         // The mic's level has no event of its own.
         let wait = if core.lock().unwrap().is_recording() { Duration::from_millis(50) } else { Duration::from_secs(1) };

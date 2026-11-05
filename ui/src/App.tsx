@@ -8,6 +8,7 @@ import { closeGame, FloatingGame, gameShowing, openGame, useGameAutomation } fro
 import { Onboarding } from './Onboarding';
 import { Settings, restartBlocker } from './Settings';
 import { addProject, Sidebar } from './Sidebar';
+import { Hideable, HideMenu } from './Hideable';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Transcript } from './Transcript';
 import { DeltaPage } from './DeltaPage';
@@ -104,13 +105,13 @@ function TopBar() {
       <b className="chat-title ellipsis" data-tauri-drag-region>{chat.title}</b>
       <span className="grow" data-tauri-drag-region />
       {/* The sidebar shows the folder; without it, the bar does. */}
-      {!sidebar && <button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button>}
+      {!sidebar && <Hideable id="top.project"><button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button></Hideable>}
       <UpdatePill />
-      <GameButton />
-      <IconButton icon="panel" tip={dockOpen ? 'Hide panel' : 'Show panel'} active={dockOpen} onClick={() => ui.set({ dockOpen: !dockOpen })} />
-      <IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} />
-      <IconButton icon="changes" tip="Changes" active={dockOpen && dockTab === 'changes'} onClick={() => toggleDock('changes')} />
-      <IconButton icon="files" tip="Files" active={dockOpen && dockTab === 'files'} onClick={() => toggleDock('files')} />
+      <Hideable id="top.game"><GameButton /></Hideable>
+      <Hideable id="top.panel"><IconButton icon="panel" tip={dockOpen ? 'Hide panel' : 'Show panel'} active={dockOpen} onClick={() => ui.set({ dockOpen: !dockOpen })} /></Hideable>
+      <Hideable id="top.terminal"><IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} /></Hideable>
+      <Hideable id="top.changes"><IconButton icon="changes" tip="Changes" active={dockOpen && dockTab === 'changes'} onClick={() => toggleDock('changes')} /></Hideable>
+      <Hideable id="top.files"><IconButton icon="files" tip="Files" active={dockOpen && dockTab === 'files'} onClick={() => toggleDock('files')} /></Hideable>
       <WindowButtons />
     </header>
   );
@@ -281,6 +282,7 @@ export function App() {
       <FloatingGame />
       <Settings />
       <DeleteDialog />
+      <HideMenu />
       <FolderPicker />
       <LinkPermission />
       <WhatsNew />

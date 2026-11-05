@@ -29,13 +29,13 @@ function readAsDataUrl(file: Blob): Promise<string> {
 /** A file as a picture Delta can keep: GIFs as they are when they fit (so they still move), the rest redrawn smaller. */
 export async function shrink(file: File): Promise<{ data: string; width: number; height: number }> {
   if (!file.type.startsWith('image/')) throw new Error(`${file.name || 'That file'} isn't a picture.`);
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await loadImage(url);
+  // Decoded from a data: URL, not a blob: URL, because the window's CSP allows images from data: only.
+  const raw = await readAsDataUrl(file);
+  {
+    const img = await loadImage(raw);
     const w0 = img.naturalWidth || 800;
     const h0 = img.naturalHeight || 600;
     if (file.type === 'image/gif' || (/^image\/(png|jpeg|webp)$/.test(file.type) && Math.max(w0, h0) <= LONGEST)) {
-      const raw = await readAsDataUrl(file);
       if (raw.length <= MAX_IMAGE_CHARS && (file.type !== 'image/png' || raw.length < 400_000)) return { data: raw, width: w0, height: h0 };
     }
     let scale = Math.min(1, LONGEST / Math.max(w0, h0));
@@ -52,8 +52,6 @@ export async function shrink(file: File): Promise<{ data: string; width: number;
       if (data.length <= MAX_IMAGE_CHARS) return { data, width: w, height: h };
     }
     throw new Error('That picture is too big.');
-  } finally {
-    URL.revokeObjectURL(url);
   }
 }
 

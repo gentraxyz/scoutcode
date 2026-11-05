@@ -1,9 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { act, invoke, type Permission } from './api';
+import { LevelPicker, type Level } from './Levels';
 import { ModelChip } from './ModelMenu';
+import { FreeQuotaChip, meterText, PlanLimits, usePlanLimit, usedShare } from './Quota';
 import { Markdown } from './Transcript';
 import { focusComposer, ui, useCore, useUi, useView } from './store';
-import { CodeBlock, Icon, IconButton, MenuItem, Popover, ShowDisplay, Spinner, TodoList } from './widgets';
+import { CodeBlock, Icon, IconButton, Popover, ShowDisplay, Spinner, TodoList } from './widgets';
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -439,9 +441,12 @@ function InputBox() {
 function UsageRing() {
   const { totals, context } = useView('totals');
   const { autoCompactTokens } = useView('cfg');
-  // Share of the funds this session has spent. Stays grey until the server reports a balance.
+  // A plan with limits (Claude, Codex, Grok): how much of the window closest to running out is used. Otherwise the
+  // share of the funds this session has spent, grey until the server reports a balance.
+  const plan = usePlanLimit();
   const b = totals.balance;
-  const frac = b !== undefined && b >= 0 && totals.cost + b > 0 ? Math.min(1, totals.cost / (totals.cost + b)) : 0;
+  const frac = plan ? usedShare(plan.top) : b !== undefined && b >= 0 && totals.cost + b > 0 ? Math.min(1, totals.cost / (totals.cost + b)) : 0;
+  const low = plan !== null && frac >= 0.9;
   const c = 2 * Math.PI * 6;
   const limit = Math.max(1, autoCompactTokens);
   const rows: [string, string][] = [
@@ -450,21 +455,30 @@ function UsageRing() {
   ];
   return (
     <Popover align="end" side="top" width={280} trigger={(_, toggle) => (
-      <button type="button" className="usage-ring" title="Usage this session" onClick={toggle}>
+      <button type="button" className="usage-ring" title={plan ? `${plan.top.label}: ${meterText(plan.top)}` : 'Usage this session'} onClick={() => { if (plan) act('quotaRefresh'); toggle(); }}>
         <svg width={16} height={16} viewBox="0 0 16 16">
           <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className="ring-track" />
-          {frac > 0 && <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className="ring-fill" strokeDasharray={`${frac * c} ${c}`} transform="rotate(-90 8 8)" />}
+          {frac > 0 && <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className={`ring-fill ${low ? 'low' : ''}`} strokeDasharray={`${frac * c} ${c}`} transform="rotate(-90 8 8)" />}
         </svg>
       </button>
     )}>
       {() => (
         <div className="stack pad">
+          {plan && <PlanLimits snapshots={plan.snapshots} />}
           <b className="strong">Usage this session</b>
           {rows.map(([k, v]) => <div key={k} className="stat-row wide-key"><span className="small dim">{k}</span><span className="small">{v}</span></div>)}
         </div>
       )}
     </Popover>
   );
+}
+
+/** Permission modes from the most caution to the most freedom, so right on the slider is freer. */
+const SECURITY_ORDER = ['plan', 'default', 'acceptEdits', 'auto', 'yolo'];
+
+function securityLevels(modes: { id: string; label: string }[]): Level[] {
+  const rank = (id: string) => { const i = SECURITY_ORDER.indexOf(id); return i < 0 ? SECURITY_ORDER.length : i; };
+  return [...modes].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ id: m.id, label: m.label }));
 }
 
 function Footer() {
@@ -480,9 +494,16 @@ function Footer() {
   const waiting = permission || plan !== null || questions;
   return (
     <div className="footer">
-      <Popover side="top" width={200} trigger={(_, toggle) => <button type="button" className="chip" title="Permission mode (Shift+Tab)" onClick={toggle}>{modes.find((m) => m.id === mode)?.label ?? mode}<Icon name="chevronDown" size={12} /></button>}>
-        {(close) => modes.map((m) => <MenuItem key={m.id} selected={m.id === mode} onClick={() => { act('setMode', { mode: m.id }); close(); }}>{m.label}</MenuItem>)}
-      </Popover>
+      <LevelPicker
+        title="Permissions"
+        tip="Permission mode (Shift+Tab)"
+        tone="free"
+        less="Safer"
+        more="Freer"
+        levels={securityLevels(modes)}
+        value={mode}
+        onChange={(id) => act('setMode', { mode: id })}
+      />
       {running ? (
         <>
           <Spinner size={11} />
@@ -492,9 +513,18 @@ function Footer() {
       ) : status && <span className="tiny dim ellipsis">{status}</span>}
       <span className="grow" />
       <ModelChip />
-      <Popover align="end" side="top" width={200} trigger={(_, toggle) => <button type="button" className="chip" title="Reasoning effort" onClick={toggle}>{capital(effort)}<Icon name="chevronDown" size={12} /></button>}>
-        {(close) => efforts.map((e) => <MenuItem key={e} selected={e === effort} onClick={() => { act('setEffort', { effort: e }); close(); }}>{capital(e)}</MenuItem>)}
-      </Popover>
+      <LevelPicker
+        title="Reasoning Effort"
+        tip="Reasoning effort"
+        tone="reason"
+        less="Faster"
+        more="Smarter"
+        align="end"
+        levels={efforts.map((e) => ({ id: e, label: capital(e) }))}
+        value={effort}
+        onChange={(id) => act('setEffort', { effort: id })}
+      />
+      <FreeQuotaChip />
       {totals.balance !== undefined && <span className="tiny dim nowrap">balance ${totals.balance.toFixed(2)}</span>}
       <UsageRing />
     </div>

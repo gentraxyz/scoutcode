@@ -34,6 +34,7 @@ mod session;
 mod skills;
 mod tools;
 mod update;
+mod quota;
 mod usage;
 mod voice;
 mod waker;

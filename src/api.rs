@@ -202,6 +202,13 @@ fn header(res: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> 
     res.headers().get(name).and_then(|v| v.to_str().ok()).map(String::from)
 }
 
+/// Tells `quota` what the response's headers say about the provider's limits.
+fn observe_quota(cfg: &Config, res: &ureq::http::Response<ureq::Body>) {
+    // Which of the user's OpenRouter keys this was, when they have more than one.
+    let account = (cfg.openrouter_keys.len() > 1).then(|| cfg.openrouter_keys.iter().find(|k| Some(&k.key) == cfg.api_key.as_ref()).map(|k| k.name.as_str())).flatten();
+    crate::quota::observe(&cfg.base_url, account, res.status().as_u16(), &|h| header(res, h));
+}
+
 fn error_from(mut res: ureq::http::Response<ureq::Body>) -> ApiError {
     let status = res.status().as_u16();
     let retry = header(&res, "retry-after").and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0);
@@ -937,6 +944,39 @@ pub struct BankedReset {
     pub expires_at: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyReward {
+    pub streak: u32,
+    pub can_claim: bool,
+    pub next_day: u32,
+    pub amount: f64,
+    pub claimed_today: Option<f64>,
+    pub resets_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferralEntry {
+    pub username: String,
+    pub created_at: String,
+    pub rewarded_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Referrals {
+    pub code: String,
+    pub max: u32,
+    pub bonus: f64,
+    pub credit: f64,
+    pub expiry_days: u32,
+    pub earned: f64,
+    pub referred_by: Option<String>,
+    #[serde(default)]
+    pub referred: Vec<ReferralEntry>,
+}
+
 /// An amount of money per month saved for a user.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Monthly {
@@ -982,6 +1022,10 @@ pub struct UsageInfo {
     pub banked_money: Vec<BankedMoney>,
     pub banked_resets: Vec<BankedReset>,
     #[serde(default)]
+    pub daily_reward: Option<DailyReward>,
+    #[serde(default)]
+    pub referrals: Option<Referrals>,
+    #[serde(default)]
     pub users: Vec<ManagedUser>,
 }
 
@@ -1026,6 +1070,32 @@ pub fn usage_action(cfg: &Config, body: &Value) -> Result<UsageInfo, ApiError> {
         .send_json(body)
         .map_err(transport)?;
     usage_reply(res)
+}
+
+/// Where the account (or, without one, this address) stands on ScoutCode's free models: `GET /v1/free`. Isn't counted.
+pub fn free_status(cfg: &Config) -> Result<Value, ApiError> {
+    let req = http().get(&format!("{}/free", cfg.base_url)).config().timeout_global(Some(Duration::from_secs(20))).build();
+    let res = auth(req, cfg)?.call().map_err(transport)?;
+    match res.status().as_u16() {
+        200 => res.into_body().read_json().map_err(transport),
+        _ => Err(error_from(res)),
+    }
+}
+
+/// What OpenRouter says about one of the user's keys: `GET /key`, its credit limit and spending.
+pub fn openrouter_key(key: &str) -> Result<Value, ApiError> {
+    let res = http()
+        .get(&format!("{}/key", crate::config::OPENROUTER_URL))
+        .header("Authorization", &format!("Bearer {key}"))
+        .config()
+        .timeout_global(Some(Duration::from_secs(20)))
+        .build()
+        .call()
+        .map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    res.into_body().read_json().map_err(transport)
 }
 
 /// The models the key can use, and the username it belongs to when the server says.
@@ -1161,6 +1231,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         .header("Content-Type", "application/json")
         .send(serde_json::to_vec(&body).unwrap_or_default())
         .map_err(transport)?;
+    observe_quota(cfg, &res);
     if !res.status().is_success() {
         let mut e = error_from(res);
         if is_kilo(cfg) {

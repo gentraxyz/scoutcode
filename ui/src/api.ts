@@ -43,12 +43,28 @@ export type ManagedUser = {
   username: string; mode: string; limits: { monthly: number | null } | null; cliMonthly: number; cliLimit: number | null;
   balance: number; banked: number; spentThisMonth: number; harnessSpentThisMonth: number;
 };
+export type DailyReward = {
+  streak: number; canClaim: boolean; nextDay: number; amount: number; claimedToday: number | null; resetsAt: string;
+};
+export type ReferralEntry = {
+  username: string; createdAt: string; rewardedAt: string | null;
+};
+export type Referrals = {
+  code: string; max: number; bonus: number; credit: number; expiryDays: number; earned: number;
+  referredBy: string | null; referred: ReferralEntry[];
+};
 export type UsageInfo = {
   username: string; admin: boolean; resetsAt: string; money: Plan | null; cli: Plan | null; balance: number;
   /** The week's desktop credit: when it resets, and its 5-hour window (resetsAt null when none is running). Missing from older servers. */
   cliResetsAt: string | null; cliWindow: (Plan & { resetsAt: string | null }) | null;
-  bankedMoney: { amount: number; expiresAt: string }[]; bankedResets: { expiresAt: string }[]; users: ManagedUser[];
+  bankedMoney: { amount: number; expiresAt: string }[]; bankedResets: { expiresAt: string }[];
+  dailyReward?: DailyReward | null; referrals?: Referrals | null;
+  users: ManagedUser[];
 };
+/** One of a provider's limits, as it last said: what's left of how much, and when it resets (ms since 1970). */
+export type QuotaMeter = { label: string; left: number | null; limit: number | null; unit: 'requests' | 'tokens' | 'credits' | 'USD' | '%'; resetsAt: number | null; note: string | null };
+/** What a provider (or one of its keys) last said about its limits, heard at `at` (ms since 1970). */
+export type QuotaSnapshot = { provider: string; account: string | null; tier: string | null; meters: QuotaMeter[]; at: number };
 /** A file a linked chatbot changed, with the lines added and removed. */
 export type LinkEdit = { path: string; added: number; removed: number; created: boolean };
 /** One tool call a linked chatbot made, finished at `at` (ms since 1970). */
@@ -112,6 +128,7 @@ export type View = {
   };
   scoutMote: { on: boolean; running: boolean; status: string; online: boolean; name: string };
   usage: { info: UsageInfo | null; busy: boolean; message: [boolean, string] | null };
+  quotas: QuotaSnapshot[];
   voice: { state: 'idle' } | { state: 'recording'; level: number } | { state: 'busy'; label: string };
   updater: { enabled: boolean; version: string; status: UpdateStatus };
   /** The releases since the version that ran before this one, newest first. Empty unless the app was just updated. */

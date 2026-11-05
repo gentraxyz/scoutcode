@@ -6,6 +6,7 @@ import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { core, focusComposer, ui, useCore, useUi, useView } from './store';
 import { CodeBlock, Icon, IconButton, MenuItem, Popover, SectionLabel, ShowDisplay, Spinner } from './widgets';
 import { ScoutLogo } from './logo';
+import { addProject } from './Sidebar';
 
 type ToolItem = Extract<Item, { kind: 'tool' }>;
 
@@ -420,9 +421,15 @@ function EmptyState() {
             if (kind !== 'name') return <span key={i} className={kind}>{part}</span>;
             return (
               <Popover key={i} width={240} trigger={(_, toggle) => <button type="button" className="splash-name" disabled={running} title="Switch project" onClick={toggle}>{part}</button>}>
-                {(close) => projects.map((p) => (
-                  <MenuItem key={p.path} selected={p.path === chat.cwd} onClick={() => { close(); if (p.path !== chat.cwd) act('changeProject', { dir: p.path }); }}>{p.name}</MenuItem>
-                ))}
+                {(close) => (
+                  <>
+                    {projects.map((p) => (
+                      <MenuItem key={p.path} selected={p.path === chat.cwd} onClick={() => { close(); if (p.path !== chat.cwd) act('changeProject', { dir: p.path }); }}>{p.name}</MenuItem>
+                    ))}
+                    {projects.length > 0 && <hr />}
+                    <MenuItem icon="plus" onClick={() => { close(); addProject(); }}>New project</MenuItem>
+                  </>
+                )}
               </Popover>
             );
           })}

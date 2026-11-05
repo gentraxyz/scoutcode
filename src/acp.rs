@@ -218,6 +218,10 @@ impl Server {
                     }
                     (Some(method), Some(id)) => request(method, id.clone(), m.get("params").unwrap_or(&Value::Null), &reader_conn, &tx),
                     (Some("session/update"), None) => {
+                        // Claude Code's adapter passes its plan's limits along with each answer.
+                        if let Some(info) = m.pointer("/params/update/_meta/_claude~1rateLimit") {
+                            crate::quota::record_claude_rate_limit(info);
+                        }
                         if let (Some("config_option_update"), Some(session), Some(options)) = (m.pointer("/params/update/sessionUpdate").and_then(Value::as_str), m.pointer("/params/sessionId").and_then(Value::as_str), m.pointer("/params/update/configOptions")) {
                             *reader_latest.lock().unwrap() = Some((session.to_string(), options.clone()));
                         }
@@ -353,6 +357,47 @@ pub fn permission_outcome(allow: bool, options: &[(String, String)]) -> Value {
 /// A channel for a run's messages.
 pub fn messages() -> (Sender<Msg>, Receiver<Msg>) {
     channel()
+}
+
+/// Starts `c`, writes `lines` to it one JSON value per line, and gives back the first line it prints that `want` picks.
+/// For a one-off question to a CLI that isn't an ACP server, such as Codex's app server. It's stopped afterwards.
+pub fn exchange(mut c: Command, name: &str, lines: &[Value], want: impl Fn(&Value) -> bool, wait: Duration) -> Result<Value, String> {
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window(&mut c);
+    let mut child = c.spawn().map_err(|e| format!("Couldn't start {name}: {e}"))?;
+    let stdout = child.stdout.take().ok_or(format!("{name} has no output."))?;
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                if tx.send(v).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    // Kept open until the end: some stop as soon as their input ends, before they answer.
+    let mut stdin = child.stdin.take();
+    if let Some(s) = stdin.as_mut() {
+        for l in lines {
+            let _ = writeln!(s, "{l}");
+        }
+        let _ = s.flush();
+    }
+    let until = std::time::Instant::now() + wait;
+    let answer = loop {
+        match rx.recv_timeout(until.saturating_duration_since(std::time::Instant::now())) {
+            Ok(v) if want(&v) => break Ok(v),
+            Ok(_) => continue,
+            Err(RecvTimeoutError::Timeout) => break Err(format!("{name} didn't answer.")),
+            Err(RecvTimeoutError::Disconnected) => break Err(format!("{name} stopped without answering.")),
+        }
+    };
+    kill_tree(&mut child);
+    drop(stdin);
+    let _ = child.wait();
+    answer
 }
 
 #[cfg(test)]

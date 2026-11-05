@@ -34,6 +34,7 @@ try {
 } finally { Pop-Location }
 
 New-Item -ItemType Directory -Force $dest | Out-Null
+Get-Process Scout -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
 Copy-Item (Join-Path $PSScriptRoot 'target\release\scout-desktop.exe') $exe -Force
 Copy-Item $PSCommandPath (Join-Path $dest 'install.ps1') -Force
 

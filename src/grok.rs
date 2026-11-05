@@ -287,6 +287,21 @@ fn open(cwd: &Path, tx: Sender<Msg>) -> Result<Server, String> {
     Server::open(c, "Grok Build", tx)
 }
 
+/// What's left of the plan's credit this period: the CLI's own billing call. It needs a Grok sign-in (an API key bills
+/// per token instead) and uses none of the plan up. The answer goes to `quota`.
+pub fn fetch_limits() -> Result<(), String> {
+    if !installed() || !signed_in() {
+        return Ok(());
+    }
+    let (tx, _rx) = crate::acp::messages();
+    let cwd = data_dir()?;
+    let mut server = open(&cwd, tx)?;
+    let billing = server.conn.call("_x.ai/billing", json!({}), Duration::from_secs(30));
+    server.stop();
+    crate::quota::record_grok_billing(&billing?);
+    Ok(())
+}
+
 /// A folder for sessions that aren't about a project, such as listing models.
 fn data_dir() -> Result<PathBuf, String> {
     let d = own_home().join("work");

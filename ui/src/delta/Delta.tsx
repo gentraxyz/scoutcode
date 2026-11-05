@@ -8,7 +8,7 @@
  * Host (sync.ts) that says where workspaces can be kept and how to reach Scout.
  */
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from 'react';
-import { cycleName, cycleStatus, findByKey, isDone, issueKey, newId, PRIORITIES, PROJECT_STATUSES, SCOUT, STATE_TYPES, teamStates, type Issue, type StateType } from './model';
+import { cycleName, cycleStatus, findByKey, isDone, issueKey, newId, PRIORITIES, PROJECT_STATUSES, SCOUT, STATE_TYPES, teamStates, today, type Issue, type StateType } from './model';
 import { createWorkspace, listWorkspaces, message, Session, type Host, type Storage, type WorkspaceInfo } from './sync';
 import { issueMenu } from './menus';
 import { Avatar, ContextMenuHost, LightboxHost, Icon, LabelDot, openContextMenu, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, shortDay, StateIcon, stateOptions, useLinger } from './ui';
@@ -108,7 +108,7 @@ export function Delta({ host, onExit }: { host: Host; onExit?: () => void }) {
   }, [refresh, openWs]);
   useEffect(() => () => session?.close(), [session]);
 
-  if (list === null || (opening && !session)) return <div className="delta d-center"><span className="d-spinner" /></div>;
+  if (list === null || (opening && !session)) return <div className="delta d-center"><DeltaMark size={48} /></div>;
   if (!session || making || !list.length) {
     return (
       <div className="delta d-center d-scroll">
@@ -271,13 +271,7 @@ export function DeltaMark({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 1024 1024" aria-hidden="true" className="d-mark">
       <rect width="1024" height="1024" rx="224" fill="#111111" />
-      <g transform="translate(212,382)">
-        <g fill="none" stroke="#ffffff" strokeWidth="34" strokeLinejoin="miter" strokeMiterlimit="4">
-          <polyline points="24,40 150,130 24,220" />
-          <polygon points="200,226 300,30 400,226" />
-        </g>
-        <rect x="440" y="196" width="130" height="30" fill="#ffffff" />
-      </g>
+      <polygon points="512,290 768,770 256,770" fill="none" stroke="#ffffff" strokeWidth="68" strokeLinejoin="miter" strokeMiterlimit="4" />
     </svg>
   );
 }
@@ -539,8 +533,8 @@ const NO_FILTERS: Filters = { q: '', states: [], assignees: [], priorities: [], 
 
 interface Group { key: string; label: string; icon: ReactNode; issues: Issue[]; patch: (i: Issue) => Partial<Issue> | null }
 
-const TYPE_NAMES: Record<StateType, string> = { backlog: 'Backlog', unstarted: 'Todo', started: 'In Progress', review: 'In Review', completed: 'Done', canceled: 'Canceled' };
-const TYPE_COLORS: Record<StateType, string> = { backlog: '#8b8d98', unstarted: '#b0b4ba', started: '#f5a524', review: '#3e9b4f', completed: '#5e6ad2', canceled: '#6f6e77' };
+const TYPE_NAMES: Record<StateType, string> = { unstarted: 'Todo', backlog: 'Backlog', started: 'In Progress', review: 'In Review', completed: 'Done', canceled: 'Canceled' };
+const TYPE_COLORS: Record<StateType, string> = { unstarted: '#b0b4ba', backlog: '#8b8d98', started: '#f5a524', review: '#3e9b4f', completed: '#5e6ad2', canceled: '#6f6e77' };
 
 export const byOrder = (a: Issue, b: Issue) => a.sortOrder - b.sortOrder || b.createdAt - a.createdAt;
 
@@ -767,7 +761,7 @@ export function IssueRow({ i, compact, n = 0 }: { i: Issue; compact?: boolean; n
   const st = doc.state[i.stateId];
   const set = (patch: Partial<Issue>) => s.dispatch({ type: 'update', kind: 'issue', id: i.id, patch });
   const subs = Object.values(doc.issue).filter((x) => x.parentId === i.id);
-  const overdue = i.dueDate && !isDone(st) && i.dueDate < new Date().toISOString().slice(0, 10);
+  const overdue = i.dueDate && !isDone(st) && i.dueDate < today();
   return (
     <div className="d-row-issue" style={{ ['--n' as string]: Math.min(n, 14) }} role="button" tabIndex={0} onClick={() => c.open(i.id)} onKeyDown={(e) => e.key === 'Enter' && c.open(i.id)} onContextMenu={(e) => openContextMenu(e, issueMenu(c, i))}>
       <span onClick={(e) => e.stopPropagation()}>
@@ -786,7 +780,7 @@ export function IssueRow({ i, compact, n = 0 }: { i: Issue; compact?: boolean; n
       {!compact && i.cycleId && doc.cycle[i.cycleId] && <span className="d-chip"><Icon name="cycle" size={12} />{cycleName(doc.cycle[i.cycleId])}</span>}
       {i.estimate != null && <span className="d-chip"><Icon name="estimate" size={12} />{i.estimate}</span>}
       {i.dueDate && <span className={`d-chip ${overdue ? 'late' : ''}`}><Icon name="calendar" size={12} />{shortDay(i.dueDate)}</span>}
-      <span className="d-date d-dim">{shortDay(new Date(i.createdAt).toISOString().slice(0, 10))}</span>
+      <span className="d-date d-dim">{shortDay(today(new Date(i.createdAt)))}</span>
       <span onClick={(e) => e.stopPropagation()}>
         <Picker options={peopleOptions(s.people)} value={i.assignee} onPick={(u) => set({ assignee: u })} width={220} trigger={(_, t) => <button type="button" className="d-icon-btn" onClick={t}><Avatar name={i.assignee} /></button>} />
       </span>

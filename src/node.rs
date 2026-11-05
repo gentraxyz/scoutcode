@@ -109,6 +109,11 @@ impl Agent {
         crate::config::home().join("runtime").join(self.folder)
     }
 
+    /// The installed version's folder, with its `node_modules`.
+    pub fn dir(&self) -> PathBuf {
+        self.root().join(self.version)
+    }
+
     pub fn entry(&self) -> PathBuf {
         self.root().join(self.version).join(self.entry)
     }

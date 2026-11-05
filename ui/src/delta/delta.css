@@ -112,6 +112,7 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
 
 /* menus */
 .d-menu-wrap { position: relative; display: inline-flex; min-width: 0; }
+:where(.d-prop, .d-detail-main > *, .d-row-issue, .d-group, .d-comment, .d-card-section, .d-team-settings):has(.d-menu) { position: relative; z-index: 60; }
 .d-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; background: var(--d-surface); border: 1px solid var(--d-border-hi); border-radius: 8px; box-shadow: var(--d-shadow); padding: 4px; display: flex; flex-direction: column; max-height: 360px; }
 .d-menu.end { left: auto; right: 0; }
 .d-menu.up { top: auto; bottom: calc(100% + 4px); }
@@ -221,8 +222,10 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
 .d-props { border-left: 1px solid var(--d-border); padding: 16px 14px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
 .d-prop { display: flex; flex-direction: column; gap: 2px; padding: 3px 0; }
 .d-prop-label { font-size: 11px; color: var(--d-dim); padding-left: 8px; }
-.d-prop-value { min-width: 0; }
-.d-prop-value .d-menu-wrap { max-width: 100%; }
+.d-prop-value { position: relative; min-width: 0; }
+.d-prop-value > .d-menu-wrap { display: flex; }
+.d-props .d-menu-wrap { position: static; max-width: 100%; }
+.d-props .d-menu { max-width: 100%; }
 .d-prop-btn { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 8px; border-radius: 5px; width: 100%; color: var(--d-text); cursor: pointer; overflow: hidden; white-space: nowrap; }
 .d-prop-btn:hover { background: var(--d-hover); }
 .d-props-foot { border-top: 1px solid var(--d-border); margin-top: 10px; padding: 10px 8px 0; line-height: 1.7; }
@@ -527,7 +530,7 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
 .d-box.on { animation: d-pop-in .22s var(--d-spring); }
 .d-nav-item .d-icon, .d-nav-team .d-icon { transition: transform .2s var(--d-ease); }
 .d-nav-item:hover .d-icon { transform: translateX(1px); }
-.d-nav-sub { animation: d-rise .22s var(--d-ease) both; }
+.d-nav-sub { animation: d-rise .22s var(--d-ease) backwards; }
 
 @keyframes d-fade { from { opacity: 0; } }
 @keyframes d-fade-out { to { opacity: 0; } }
@@ -562,12 +565,12 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
 .d-drawer { animation: d-drawer-in .3s var(--d-ease); }
 .d-drawer-back.closing { animation: d-fade-out .17s ease-in forwards; pointer-events: none; }
 .d-drawer-back.closing .d-drawer { animation: d-drawer-out .17s ease-in forwards; }
-.d-detail-main > *, .d-props > * { animation: d-rise .32s var(--d-ease) both; }
+.d-detail-main > *, .d-props > * { animation: d-rise .32s var(--d-ease) backwards; }
 .d-detail-main > :nth-child(2), .d-props > :nth-child(2) { animation-delay: 30ms; }
 .d-detail-main > :nth-child(3), .d-props > :nth-child(3) { animation-delay: 60ms; }
 .d-detail-main > :nth-child(n + 4), .d-props > :nth-child(n + 4) { animation-delay: 90ms; }
-.d-timeline > * { animation: d-rise .25s var(--d-ease) both; }
-.d-agent { animation: d-rise .3s var(--d-ease) both; }
+.d-timeline > * { animation: d-rise .25s var(--d-ease) backwards; }
+.d-agent { animation: d-rise .3s var(--d-ease) backwards; }
 
 /* pages fade up when you move between them */
 .d-main > .d-page { animation: d-rise .26s var(--d-ease); }
@@ -596,23 +599,23 @@ textarea.d-input { height: auto; padding: 6px 10px; resize: none; }
 .d-drop-line { animation: d-line-in .14s var(--d-ease); }
 
 /* progress, the roadmap and the burndown draw themselves in */
-.d-progress-started, .d-progress-done { transition: width .5s var(--d-ease); animation: d-grow-x .7s var(--d-ease) both; }
+.d-progress-started, .d-progress-done { transition: width .5s var(--d-ease); animation: d-grow-x .7s var(--d-ease) backwards; }
 .d-progress-done { animation-delay: 80ms; }
-.d-roadmap-bar { animation: d-reveal .6s var(--d-ease) both; }
+.d-roadmap-bar { animation: d-reveal .6s var(--d-ease) backwards; }
 .d-roadmap-bar:hover { box-shadow: 0 3px 10px rgb(0 0 0 / 22%); transform: translateY(-1px); }
 .d-roadmap-row:nth-child(2) .d-roadmap-bar { animation-delay: 40ms; }
 .d-roadmap-row:nth-child(3) .d-roadmap-bar { animation-delay: 80ms; }
 .d-roadmap-row:nth-child(n + 4) .d-roadmap-bar { animation-delay: 120ms; }
-.d-roadmap-today { animation: d-fade .6s .3s ease-out both; }
-.d-burndown path { animation: d-reveal .9s var(--d-ease) both; }
+.d-roadmap-today { animation: d-fade .6s .3s ease-out backwards; }
+.d-burndown path { animation: d-reveal .9s var(--d-ease) backwards; }
 .d-burndown .d-bd-left { animation-delay: .15s; }
-.d-table-row { animation: d-rise .26s var(--d-ease) both; }
-.d-card-section { animation: d-rise .3s var(--d-ease) both; }
+.d-table-row { animation: d-rise .26s var(--d-ease) backwards; }
+.d-card-section { animation: d-rise .3s var(--d-ease) backwards; }
 .d-card-section:nth-child(2) { animation-delay: 40ms; }
 .d-card-section:nth-child(n + 3) { animation-delay: 80ms; }
 
 /* welcome: the heading, form and cards arrive in turn */
-.d-welcome > * { animation: d-rise .45s var(--d-ease) both; }
+.d-welcome > * { animation: d-rise .45s var(--d-ease) backwards; }
 .d-welcome > :nth-child(2) { animation-delay: 70ms; }
 .d-welcome > :nth-child(3) { animation-delay: 140ms; }
 .d-welcome > :nth-child(n + 4) { animation-delay: 210ms; }

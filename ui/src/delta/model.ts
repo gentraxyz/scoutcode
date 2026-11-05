@@ -10,8 +10,8 @@
 export type Kind = 'workspace' | 'team' | 'state' | 'label' | 'issue' | 'comment' | 'project' | 'cycle' | 'activity' | 'page' | 'image';
 export const KINDS: Kind[] = ['workspace', 'team', 'state', 'label', 'issue', 'comment', 'project', 'cycle', 'activity', 'page', 'image'];
 
-export type StateType = 'backlog' | 'unstarted' | 'started' | 'review' | 'completed' | 'canceled';
-export const STATE_TYPES: StateType[] = ['backlog', 'unstarted', 'started', 'review', 'completed', 'canceled'];
+export type StateType = 'unstarted' | 'backlog' | 'started' | 'review' | 'completed' | 'canceled';
+export const STATE_TYPES: StateType[] = ['unstarted', 'backlog', 'started', 'review', 'completed', 'canceled'];
 export type ProjectStatus = 'planned' | 'active' | 'paused' | 'completed' | 'canceled';
 export const PROJECT_STATUSES: ProjectStatus[] = ['planned', 'active', 'paused', 'completed', 'canceled'];
 
@@ -98,8 +98,8 @@ export function starterOps(teamName = 'Engineering', key = 'ENG'): Op[] {
 }
 
 const DEFAULT_STATES: [string, StateType, string][] = [
-  ['Backlog', 'backlog', '#8b8d98'],
   ['Todo', 'unstarted', '#b0b4ba'],
+  ['Backlog', 'backlog', '#8b8d98'],
   ['In Progress', 'started', '#f5a524'],
   ['In Review', 'review', '#3e9b4f'],
   ['Done', 'completed', '#5e6ad2'],

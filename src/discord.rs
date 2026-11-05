@@ -1,7 +1,7 @@
 //! Discord Rich Presence: shows "Using Scout" on the user's Discord profile while Scout is open.
 //!
-//! Off by default. Nothing is sent unless the user turns it on in Settings, and the folder name is only sent when they
-//! turn that on as well. Paths, chats, prompts and file names are never sent.
+//! On by default; can be turned off in Settings. The folder name is only sent when the user turns that on as well.
+//! Paths, chats, prompts and file names are never sent.
 
 use std::io::{Read, Write};
 use std::sync::OnceLock;

@@ -3,7 +3,8 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { addDays, cycleName, cycleStatus, isDone, newId, PROJECT_STATUSES, progress, STATE_TYPES, today, type Cycle, type Issue, type Project, type ProjectStatus, type StateType } from './model';
 import { message, uploadWorkspace, type Role, type WorkspaceInfo } from './sync';
 import { Empty, IssuesPage, statusLabel, useDelta } from './Delta';
-import { Avatar, ColorPicker, COLORS, Icon, InlineText, Menu, MenuItem, Modal, peopleOptions, Picker, shortDay, StateIcon } from './ui';
+import { cycleMenu, projectMenu } from './menus';
+import { Avatar, ColorPicker, COLORS, Icon, openContextMenu, InlineText, Menu, MenuItem, Modal, peopleOptions, Picker, shortDay, StateIcon } from './ui';
 
 const STATUS_COLORS: Record<ProjectStatus, string> = { planned: '#8b8d98', active: '#f5a524', paused: '#b0b4ba', completed: '#5e6ad2', canceled: '#6f6e77' };
 
@@ -39,7 +40,8 @@ function Head({ title, children, crumb }: { title: ReactNode; children?: ReactNo
 // ---------- projects ----------
 
 export function ProjectsView() {
-  const { s, go, v } = useDelta();
+  const c = useDelta();
+  const { s, go, v } = c;
   const doc = s.doc;
   const [making, setMaking] = useState(false);
   const [show, setShow] = useState<'open' | 'all'>('open');
@@ -64,7 +66,7 @@ export function ProjectsView() {
             const issues = Object.values(doc.issue).filter((i) => i.projectId === p.id);
             const pr = progress(doc, issues);
             return (
-              <button type="button" key={p.id} className="d-table-row" onClick={() => go({ view: 'project', id: p.id })}>
+              <button type="button" key={p.id} className="d-table-row" onClick={() => go({ view: 'project', id: p.id })} onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))}>
                 <span className="d-grow d-row d-min0"><span className="d-project-color" style={{ background: p.color }} /><ProjectStatusIcon status={p.status} /><b className="d-ellipsis">{p.name}</b></span>
                 <span className="w-lead d-row">{p.lead ? <><Avatar name={p.lead} size={16} /><span className="d-ellipsis">{p.lead}</span></> : <span className="d-dim">—</span>}</span>
                 <span className={`w-date ${p.targetDate && p.targetDate < today() && p.status !== 'completed' ? 'd-late' : ''}`}>{shortDay(p.targetDate) || <span className="d-dim">—</span>}</span>
@@ -162,7 +164,8 @@ export function ProjectView({ id }: { id: string }) {
 
 /** Projects on a timeline of months, from their start to their target date. */
 export function RoadmapView() {
-  const { s, go, v } = useDelta();
+  const c = useDelta();
+  const { s, go, v } = c;
   const doc = s.doc;
   const now = today();
   const projects = useMemo(() => Object.values(doc.project).filter((p) => p.status !== 'canceled').sort((a, b) => (a.startDate ?? a.targetDate ?? '9').localeCompare(b.startDate ?? b.targetDate ?? '9')), [v]);
@@ -189,7 +192,7 @@ export function RoadmapView() {
           <div className="d-roadmap-names">
             <div className="d-roadmap-corner" />
             {projects.map((p) => (
-              <button type="button" key={p.id} className="d-roadmap-name" onClick={() => go({ view: 'project', id: p.id })}>
+              <button type="button" key={p.id} className="d-roadmap-name" onClick={() => go({ view: 'project', id: p.id })} onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))}>
                 <ProjectStatusIcon status={p.status} /><span className="d-ellipsis">{p.name}</span>
               </button>
             ))}
@@ -208,7 +211,7 @@ export function RoadmapView() {
                 return (
                   <div key={p.id} className="d-roadmap-row">
                     {a && b ? (
-                      <button type="button" className={`d-roadmap-bar ${!p.startDate || !p.targetDate ? 'open' : ''}`} style={{ left: `${x(a)}%`, width: `${Math.max(1.2, x(b) - x(a))}%`, ['--c' as string]: p.color }} onClick={() => go({ view: 'project', id: p.id })} title={`${p.name}: ${shortDay(p.startDate) || '?'} – ${shortDay(p.targetDate) || '?'}`}>
+                      <button type="button" className={`d-roadmap-bar ${!p.startDate || !p.targetDate ? 'open' : ''}`} style={{ left: `${x(a)}%`, width: `${Math.max(1.2, x(b) - x(a))}%`, ['--c' as string]: p.color }} onClick={() => go({ view: 'project', id: p.id })} onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))} title={`${p.name}: ${shortDay(p.startDate) || '?'} – ${shortDay(p.targetDate) || '?'}`}>
                         <span className="d-roadmap-fill" style={{ width: `${pr.total ? (pr.done / pr.total) * 100 : 0}%` }} />
                         <span className="d-ellipsis">{p.name}</span>
                       </button>
@@ -227,7 +230,8 @@ export function RoadmapView() {
 // ---------- cycles ----------
 
 export function CyclesView({ teamId }: { teamId: string }) {
-  const { s, go, v } = useDelta();
+  const ctx = useDelta();
+  const { s, go, v } = ctx;
   const doc = s.doc;
   const team = doc.team[teamId];
   const cycles = useMemo(() => Object.values(doc.cycle).filter((c) => c.teamId === teamId).sort((a, b) => b.startsAt.localeCompare(a.startsAt)), [v, teamId]);
@@ -253,7 +257,7 @@ export function CyclesView({ teamId }: { teamId: string }) {
                 const issues = Object.values(doc.issue).filter((i) => i.cycleId === c.id);
                 const pr = progress(doc, issues);
                 return (
-                  <button type="button" key={c.id} className="d-table-row" onClick={() => go({ view: 'cycle', id: c.id })}>
+                  <button type="button" key={c.id} className="d-table-row" onClick={() => go({ view: 'cycle', id: c.id })} onContextMenu={(e) => openContextMenu(e, cycleMenu(ctx, c))}>
                     <span className="d-grow d-row d-min0"><Icon name="cycle" size={14} /><b>{cycleName(c)}</b>{c.name && <span className="d-dim">Cycle {c.number}</span>}</span>
                     <span className="w-date2 d-dim">{shortDay(c.startsAt)} – {shortDay(c.endsAt)}</span>
                     <span className="w-issues d-dim">{issues.length} issues</span>

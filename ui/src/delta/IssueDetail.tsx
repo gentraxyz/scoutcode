@@ -1,6 +1,7 @@
 // One issue, in a panel over the page: its title and description, sub-issues, comments and history on the left, and its
 // properties on the right. "Hand to Scout" starts a Scout chat on it in one of the user's projects.
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { imageHandlers } from './images';
 import { agentPrompt, cycleName, cycleStatus, isDone, issueKey, newId, PRIORITIES, SCOUT, teamStates, type Activity, type Comment, type Issue } from './model';
 import { message, type AgentTarget } from './sync';
 import { useDelta, IssueRow, byOrder } from './Delta';
@@ -56,7 +57,7 @@ export function IssueDetail({ id, onClose, closing }: { id: string; onClose: () 
               <Description value={i.description} onDone={(v) => { setEditing(false); if (v !== i.description) set({ description: v }); }} />
             ) : (
               <div className="d-desc" role="button" tabIndex={0} onClick={(e) => { if (!(e.target as HTMLElement).closest('a')) setEditing(true); }} onKeyDown={(e) => e.key === 'Enter' && setEditing(true)}>
-                {i.description.trim() ? <RichText text={i.description} /> : <span className="d-dim">Add a description…</span>}
+                {i.description.trim() ? <RichText text={i.description} images={doc.image} /> : <span className="d-dim">Add a description…</span>}
               </div>
             )}
             {i.agent && <AgentNote i={i} />}
@@ -146,12 +147,19 @@ function Prop({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function Description({ value, onDone }: { value: string; onDone: (v: string) => void }) {
+  const { s } = useDelta();
   const [draft, setDraft] = useState(value);
+  const box = useRef<HTMLTextAreaElement>(null);
+  const img = imageHandlers(s, box, setDraft);
   return (
     <div className="d-stack">
       <textarea
+        ref={box}
         className="d-desc-edit"
         autoFocus
+        onPaste={img.onPaste}
+        onDrop={img.onDrop}
+        onDragOver={img.onDragOver}
         value={draft}
         placeholder="Add a description…"
         onChange={(e) => setDraft(e.currentTarget.value)}
@@ -161,6 +169,8 @@ function Description({ value, onDone }: { value: string; onDone: (v: string) => 
         }}
       />
       <div className="d-row d-end">
+        <button type="button" className="d-btn small ghost" onClick={img.pick} title="Add a picture (or paste or drop one)"><Icon name="image" size={13} />Image</button>
+        <span className="d-grow" />
         <span className="d-tiny d-dim">Ctrl+Enter to save</span>
         <button type="button" className="d-btn small" onClick={() => onDone(value)}>Cancel</button>
         <button type="button" className="d-btn small primary" onClick={() => onDone(draft)}>Save</button>
@@ -191,6 +201,8 @@ function Timeline({ issueId }: { issueId: string }) {
   const { s, v } = useDelta();
   const doc = s.doc;
   const [text, setText] = useState('');
+  const box = useRef<HTMLTextAreaElement>(null);
+  const img = imageHandlers(s, box, setText);
   const entries = useMemo(() => {
     const out: ({ t: 'c'; at: number; c: Comment } | { t: 'a'; at: number; a: Activity })[] = [];
     for (const c of Object.values(doc.comment)) if (c.issueId === issueId) out.push({ t: 'c', at: c.createdAt, c });
@@ -206,8 +218,10 @@ function Timeline({ issueId }: { issueId: string }) {
       <b className="d-section-title">Activity</b>
       {entries.map((e) => (e.t === 'c' ? <CommentView key={e.c.id} c={e.c} /> : <ActivityLine key={e.a.id} a={e.a} />))}
       <div className="d-comment-box">
-        <textarea placeholder="Leave a comment…" value={text} onChange={(e) => setText(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); post(); } }} />
+        <textarea ref={box} placeholder="Leave a comment… (paste or drop pictures)" onPaste={img.onPaste} onDrop={img.onDrop} onDragOver={img.onDragOver} value={text} onChange={(e) => setText(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); post(); } }} />
         <div className="d-row d-end">
+          <button type="button" className="d-icon-btn" onClick={img.pick} title="Add a picture"><Icon name="image" size={14} /></button>
+          <span className="d-grow" />
           <span className="d-tiny d-dim">Ctrl+Enter</span>
           <button type="button" className="d-btn small primary" disabled={!text.trim()} onClick={post}>Comment</button>
         </div>
@@ -220,6 +234,8 @@ function CommentView({ c }: { c: Comment }) {
   const { s } = useDelta();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(c.body);
+  const box = useRef<HTMLTextAreaElement>(null);
+  const img = imageHandlers(s, box, setDraft);
   const mine = c.author === s.me;
   return (
     <div className="d-comment">
@@ -241,14 +257,14 @@ function CommentView({ c }: { c: Comment }) {
       </div>
       {editing ? (
         <div className="d-stack">
-          <textarea className="d-desc-edit small" autoFocus value={draft} onChange={(e) => setDraft(e.currentTarget.value)} />
+          <textarea ref={box} className="d-desc-edit small" autoFocus onPaste={img.onPaste} onDrop={img.onDrop} onDragOver={img.onDragOver} value={draft} onChange={(e) => setDraft(e.currentTarget.value)} />
           <div className="d-row d-end">
             <button type="button" className="d-btn small" onClick={() => setEditing(false)}>Cancel</button>
             <button type="button" className="d-btn small primary" disabled={!draft.trim()} onClick={() => { s.dispatch({ type: 'update', kind: 'comment', id: c.id, patch: { body: draft.trim() } }); setEditing(false); }}>Save</button>
           </div>
         </div>
       ) : (
-        <RichText className="d-comment-body" text={c.body} />
+        <RichText className="d-comment-body" text={c.body} images={s.doc.image} />
       )}
     </div>
   );

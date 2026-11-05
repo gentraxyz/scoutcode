@@ -1,7 +1,7 @@
 // Delta's small building blocks: icons, menus and pickers. Delta brings its own so it looks the same in the desktop app
 // and on the website, which each have their own widgets.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { PRIORITIES, SCOUT, type Doc, type State, type StateType } from './model';
+import { PRIORITIES, SCOUT, type Doc, type Image, type State, type StateType } from './model';
 
 const PATHS: Record<string, string> = {
   plus: 'M8 3v10M3 8h10',
@@ -36,6 +36,10 @@ const PATHS: Record<string, string> = {
   copy: 'M5.5 5.5h8v8h-8zM2.5 10.5v-8h8',
   external: 'M9 2.5h4.5V7M13.5 2.5L7.5 8.5M11.5 9.5v4h-9v-9h4',
   comment: 'M2.5 3h11v8h-6l-3 2.5V11h-2z',
+  doc: 'M4 1.5h5.5L12.5 4.5v10h-8.5zM9.5 1.5v3h3M6 8h4.5M6 10.5h4.5',
+  image: 'M2.5 3h11v10h-11zM2.5 11l3.5-3.5 3 3 2-2 2.5 2.5M10.5 6.5h.01',
+  smile: 'M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.5 9.5c.6.9 1.5 1.4 2.5 1.4s1.9-.5 2.5-1.4M6 6.5h.01M10 6.5h.01',
+  expand: 'M2.5 8h11M2.5 8l2.5-2.5M2.5 8l2.5 2.5M13.5 8L11 5.5M13.5 8L11 10.5',
 };
 
 export function Icon({ name, size = 16, className = '' }: { name: string; size?: number; className?: string }) {
@@ -375,14 +379,150 @@ export function InlineText({ value, onSave, className = '', placeholder, multili
   );
 }
 
-/** Plain text with links made clickable and `code` marked, kept as written otherwise. */
-export function RichText({ text, className = '' }: { text: string; className?: string }) {
-  const parts = text.split(/(https?:\/\/[^\s)]+|`[^`\n]+`)/g);
+const IMG_TOKEN = /^!\[([^\]]*)\]\((img:([a-z0-9]+)|https:\/\/[^\s)]+)\)$/i;
+
+/** Plain text with links made clickable, `code` marked and pictures (![name](img:id) or an https link) shown, kept as
+ * written otherwise. */
+export function RichText({ text, className = '', images }: { text: string; className?: string; images?: Record<string, Image> }) {
+  const parts = text.split(/(!\[[^\]\n]*\]\((?:img:[a-z0-9]+|https:\/\/[^\s)]+)\)|https?:\/\/[^\s)]+|`[^`\n]+`)/gi);
   return (
     <div className={`d-rich ${className}`}>
-      {parts.map((p, n) =>
-        /^https?:\/\//.test(p) ? <a key={n} href={p} target="_blank" rel="noreferrer">{p}</a> : /^`[^`]+`$/.test(p) ? <code key={n}>{p.slice(1, -1)}</code> : <span key={n}>{p}</span>,
-      )}
+      {parts.map((p, n) => {
+        const img = IMG_TOKEN.exec(p);
+        if (img) {
+          const src = img[3] ? images?.[img[3]]?.data : img[2];
+          if (!src) return <span key={n} className="d-rich-img missing">{img[1] || 'Image'}</span>;
+          return <img key={n} className="d-rich-img" src={src} alt={img[1]} onClick={(e) => { e.stopPropagation(); showImage(src); }} />;
+        }
+        return /^https?:\/\//.test(p) ? <a key={n} href={p} target="_blank" rel="noreferrer">{p}</a> : /^`[^`]+`$/.test(p) ? <code key={n}>{p.slice(1, -1)}</code> : <span key={n}>{p}</span>;
+      })}
     </div>
+  );
+}
+
+// ---------- a picture, big ----------
+
+let lightbox: string | null = null;
+const lightSubs = new Set<() => void>();
+
+/** Shows a picture over everything; a click or Escape closes it. */
+export function showImage(src: string | null) {
+  lightbox = src;
+  lightSubs.forEach((f) => f());
+}
+
+export function LightboxHost() {
+  const [, set] = useState(0);
+  useEffect(() => {
+    const f = () => set((n) => n + 1);
+    lightSubs.add(f);
+    return () => { lightSubs.delete(f); };
+  }, []);
+  const [shown, leaving] = useLinger(lightbox);
+  useEffect(() => {
+    if (!lightbox) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        showImage(null);
+      }
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [lightbox]);
+  if (!shown) return null;
+  return (
+    <div className={`d-lightbox ${leaving ? 'closing' : ''}`} onClick={() => showImage(null)}>
+      <img src={shown} alt="" />
+    </div>
+  );
+}
+
+// ---------- the right-click menu ----------
+
+/** One line of a right-click menu: an action, a submenu that opens beside it, or a divider. */
+export type CtxItem = 'sep' | { label: string; icon?: ReactNode; onClick?: () => void; danger?: boolean; selected?: boolean; disabled?: boolean; sub?: CtxItem[] };
+
+let ctxMenu: { x: number; y: number; items: CtxItem[] } | null = null;
+const ctxSubs = new Set<() => void>();
+const setCtx = (m: typeof ctxMenu) => { ctxMenu = m; ctxSubs.forEach((f) => f()); };
+
+/** For an onContextMenu: shows these items at the pointer, in place of the browser's own menu. */
+export function openContextMenu(e: { preventDefault: () => void; stopPropagation: () => void; clientX: number; clientY: number; target: EventTarget | null }, items: CtxItem[]) {
+  // Text being typed keeps the browser's menu, for copy and paste.
+  if ((e.target as HTMLElement | null)?.closest?.('input, textarea, [contenteditable="true"]')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  setCtx({ x: e.clientX, y: e.clientY, items });
+}
+
+/** Where the right-click menu shows. Delta renders one. */
+export function ContextMenuHost() {
+  const [m, setM] = useState(ctxMenu);
+  useEffect(() => { const f = () => setM(ctxMenu); ctxSubs.add(f); return () => { ctxSubs.delete(f); }; }, []);
+  const panel = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!m || !panel.current) { setPos(null); return; }
+    const r = panel.current.getBoundingClientRect();
+    setPos({ left: Math.max(8, Math.min(m.x, window.innerWidth - r.width - 8)), top: Math.max(8, Math.min(m.y, window.innerHeight - r.height - 8)) });
+  }, [m]);
+  useEffect(() => {
+    if (!m) return;
+    const down = (e: MouseEvent) => { if (!panel.current?.contains(e.target as Node)) setCtx(null); };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setCtx(null); } };
+    const away = () => setCtx(null);
+    document.addEventListener('mousedown', down, true);
+    window.addEventListener('keydown', key, true);
+    window.addEventListener('blur', away);
+    window.addEventListener('resize', away);
+    document.addEventListener('scroll', away, true);
+    return () => {
+      document.removeEventListener('mousedown', down, true);
+      window.removeEventListener('keydown', key, true);
+      window.removeEventListener('blur', away);
+      window.removeEventListener('resize', away);
+      document.removeEventListener('scroll', away, true);
+    };
+  }, [m]);
+  if (!m) return null;
+  // A submenu opens to the left when there's no room for it on the right.
+  const flip = (pos?.left ?? m.x) + 220 * 2 + 16 > window.innerWidth;
+  return (
+    <div ref={panel} className={`d-menu d-ctx ${flip ? 'flip' : ''}`} style={{ position: 'fixed', width: 220, ...(pos ?? { left: m.x, top: m.y, visibility: 'hidden' }) }} onContextMenu={(e) => e.preventDefault()}>
+      <CtxList items={m.items} />
+    </div>
+  );
+}
+
+function CtxList({ items }: { items: CtxItem[] }) {
+  const [openSub, setOpenSub] = useState<number | null>(null);
+  return (
+    <>
+      {items.map((it, n) => {
+        if (it === 'sep') return <hr key={n} />;
+        const run = () => {
+          if (it.sub) return setOpenSub(openSub === n ? null : n);
+          setCtx(null);
+          it.onClick?.();
+        };
+        return (
+          <div key={n} className="d-ctx-line" onMouseEnter={() => setOpenSub(it.sub ? n : null)}>
+            <button type="button" className={`d-menu-item ${it.danger ? 'danger' : ''} ${openSub === n ? 'hot' : ''}`} disabled={it.disabled} onClick={run}>
+              {it.icon}
+              <span className="d-grow d-ellipsis">{it.label}</span>
+              {it.selected && <Icon name="check" size={14} className="d-check" />}
+              {it.sub && <Icon name="chevronRight" size={12} className="d-check" />}
+            </button>
+            {it.sub && openSub === n && (
+              <div className="d-menu d-ctx-sub" style={{ width: 220 }}>
+                <div className="d-menu-scroll"><CtxList items={it.sub} /></div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 }

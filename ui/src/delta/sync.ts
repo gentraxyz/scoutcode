@@ -178,6 +178,12 @@ export class Session {
     return true;
   }
 
+  /** Shows a problem that didn't come from a change. */
+  fail(msg: string) {
+    this.error = msg;
+    this.changed();
+  }
+
   clearError() {
     this.error = null;
     this.changed();

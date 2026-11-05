@@ -10,9 +10,13 @@
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from 'react';
 import { cycleName, cycleStatus, findByKey, isDone, issueKey, newId, PRIORITIES, PROJECT_STATUSES, SCOUT, STATE_TYPES, teamStates, type Issue, type StateType } from './model';
 import { createWorkspace, listWorkspaces, message, Session, type Host, type Storage, type WorkspaceInfo } from './sync';
-import { Avatar, Icon, LabelDot, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, shortDay, StateIcon, stateOptions, useLinger } from './ui';
+import { issueMenu } from './menus';
+import { Avatar, ContextMenuHost, LightboxHost, Icon, LabelDot, openContextMenu, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, shortDay, StateIcon, stateOptions, useLinger } from './ui';
 import { IssueDetail } from './IssueDetail';
 import { CycleView, CyclesView, ProjectsView, ProjectView, RoadmapView, SettingsView } from './views';
+import { DocTree, DocsView, DocView, newPage } from './Docs';
+import { imageHandlers } from './images';
+import { pageText, pageTitle } from './model';
 import './delta.css';
 
 export type Route =
@@ -23,6 +27,8 @@ export type Route =
   | { view: 'projects' }
   | { view: 'project'; id: string }
   | { view: 'roadmap' }
+  | { view: 'docs' }
+  | { view: 'doc'; id: string }
   | { view: 'settings' };
 
 export interface DeltaCtx {
@@ -302,8 +308,9 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
     const gone =
       ((route.view === 'team' || route.view === 'cycles') && !s.doc.team[route.teamId]) ||
       (route.view === 'project' && !s.doc.project[route.id]) ||
-      (route.view === 'cycle' && !s.doc.cycle[route.id]);
-    if (gone) setRoute(firstTeam ? { view: 'team', teamId: firstTeam.id, tab: 'all' } : { view: 'my' });
+      (route.view === 'cycle' && !s.doc.cycle[route.id]) ||
+      (route.view === 'doc' && !s.doc.page[route.id]);
+    if (gone) setRoute(route.view === 'doc' ? { view: 'docs' } : firstTeam ? { view: 'team', teamId: firstTeam.id, tab: 'all' } : { view: 'my' });
     if (openId && !s.doc.issue[openId]) setOpenId(null);
   }, [v]);
 
@@ -366,12 +373,16 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
             {route.view === 'projects' && <ProjectsView />}
             {route.view === 'project' && s.doc.project[route.id] && <ProjectView id={route.id} />}
             {route.view === 'roadmap' && <RoadmapView />}
+            {route.view === 'docs' && <DocsView />}
+            {route.view === 'doc' && s.doc.page[route.id] && <DocView id={route.id} />}
             {route.view === 'settings' && <SettingsView onGone={onGone} onMade={onMade} />}
           </Fragment>
         </main>
         {shownId && <IssueDetail id={shownId} closing={idLeaving} onClose={() => setOpenId(null)} />}
         {shownNew && <NewIssue defaults={shownNew} closing={newLeaving} onClose={() => setCreating(null)} />}
         {shownPalette && <Palette closing={paletteLeaving} onClose={() => setPalette(false)} />}
+        <ContextMenuHost />
+        <LightboxHost />
         {s.error && (
           <div className="d-toast" role="alert">
             <span className="d-grow">{s.error}</span>
@@ -442,6 +453,7 @@ function Nav({ list, cloudError, onSwitch, onNew, onExit, onSearch }: {
         <NavItem icon="inbox" label="My issues" count={myCount} on={here({ view: 'my' })} onClick={() => go({ view: 'my' })} />
         <NavItem icon="project" label="Projects" on={route.view === 'projects' || route.view === 'project'} onClick={() => go({ view: 'projects' })} />
         <NavItem icon="roadmap" label="Roadmap" on={here({ view: 'roadmap' })} onClick={() => go({ view: 'roadmap' })} />
+        <NavItem icon="doc" label="Docs" on={route.view === 'docs'} onClick={() => go({ view: 'docs' })} />
         <div className="d-section-label d-nav-label">Your teams</div>
         {teams.map((t) => {
           const open = !shut.has(t.id);
@@ -462,6 +474,7 @@ function Nav({ list, cloudError, onSwitch, onNew, onExit, onSearch }: {
             </div>
           );
         })}
+        <DocTree />
       </div>
       <div className="d-nav-foot">
         <button type="button" className={`d-nav-item ${route.view === 'settings' ? 'on' : ''}`} onClick={() => go({ view: 'settings' })}>
@@ -756,7 +769,7 @@ export function IssueRow({ i, compact, n = 0 }: { i: Issue; compact?: boolean; n
   const subs = Object.values(doc.issue).filter((x) => x.parentId === i.id);
   const overdue = i.dueDate && !isDone(st) && i.dueDate < new Date().toISOString().slice(0, 10);
   return (
-    <div className="d-row-issue" style={{ ['--n' as string]: Math.min(n, 14) }} role="button" tabIndex={0} onClick={() => c.open(i.id)} onKeyDown={(e) => e.key === 'Enter' && c.open(i.id)}>
+    <div className="d-row-issue" style={{ ['--n' as string]: Math.min(n, 14) }} role="button" tabIndex={0} onClick={() => c.open(i.id)} onKeyDown={(e) => e.key === 'Enter' && c.open(i.id)} onContextMenu={(e) => openContextMenu(e, issueMenu(c, i))}>
       <span onClick={(e) => e.stopPropagation()}>
         <Picker options={priorityOptions()} value={i.priority} onPick={(p) => set({ priority: p })} width={190} trigger={(_, t) => <button type="button" className="d-icon-btn" title={PRIORITIES[i.priority]} onClick={t}><PriorityIcon p={i.priority} /></button>} />
       </span>
@@ -842,7 +855,7 @@ function Card({ i, onDragStart, onDragOver }: { i: Issue; onDragStart: () => voi
   const doc = c.s.doc;
   const st = doc.state[i.stateId];
   return (
-    <div className="d-card" draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.id); const el = e.currentTarget; requestAnimationFrame(() => el.classList.add('dragging')); onDragStart(); }} onDragEnd={(e) => e.currentTarget.classList.remove('dragging')} onDragOver={onDragOver} onClick={() => c.open(i.id)}>
+    <div className="d-card" draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.id); const el = e.currentTarget; requestAnimationFrame(() => el.classList.add('dragging')); onDragStart(); }} onDragEnd={(e) => e.currentTarget.classList.remove('dragging')} onDragOver={onDragOver} onClick={() => c.open(i.id)} onContextMenu={(e) => openContextMenu(e, issueMenu(c, i))}>
       <div className="d-row">
         <span className="d-key">{issueKey(doc, i)}</span>
         <span className="d-grow" />
@@ -876,6 +889,8 @@ function NewIssue({ defaults, onClose, closing }: { defaults: Partial<Issue>; on
   const [d, setD] = useState<Partial<Issue>>({ priority: 0, assignee: null, labelIds: [], projectId: null, cycleId: null, estimate: null, dueDate: null, ...defaults });
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const bodyBox = useRef<HTMLTextAreaElement>(null);
+  const img = imageHandlers(s, bodyBox, setBody);
   const [more, setMore] = useState(false);
   const stateId = pickState(d.stateId);
   const cycles = Object.values(doc.cycle).filter((x) => x.teamId === teamId && cycleStatus(x) !== 'past').sort((a, b) => a.startsAt.localeCompare(b.startsAt));
@@ -907,7 +922,7 @@ function NewIssue({ defaults, onClose, closing }: { defaults: Partial<Issue>; on
         <button type="button" className="d-icon-btn" onClick={onClose} aria-label="Close"><Icon name="close" /></button>
       </div>
       <input className="d-big-input" autoFocus placeholder="Issue title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }} />
-      <textarea className="d-body-input" placeholder="Add a description…" value={body} onChange={(e) => setBody(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); }} />
+      <textarea ref={bodyBox} className="d-body-input" placeholder="Add a description… (paste or drop pictures)" onPaste={img.onPaste} onDrop={img.onDrop} onDragOver={img.onDragOver} value={body} onChange={(e) => setBody(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); }} />
       <div className="d-row d-wrap">
         <Picker options={stateOptions(states)} value={stateId ?? null} onPick={(v) => setD({ ...d, stateId: v ?? undefined })} trigger={(_, t) => <button type="button" className="d-chip-btn" onClick={t}><StateIcon state={st} />{st?.name}</button>} />
         <Picker options={priorityOptions()} value={d.priority ?? 0} onPick={(p) => setD({ ...d, priority: p })} trigger={(_, t) => <button type="button" className="d-chip-btn" onClick={t}><PriorityIcon p={d.priority ?? 0} />{PRIORITIES[d.priority ?? 0]}</button>} />
@@ -953,6 +968,12 @@ function Palette({ onClose, closing }: { onClose: () => void; closing?: boolean 
     cmd('my', <Icon name="inbox" size={14} />, 'Go to My issues', () => c.go({ view: 'my' }));
     cmd('projects', <Icon name="project" size={14} />, 'Go to Projects', () => c.go({ view: 'projects' }));
     cmd('roadmap', <Icon name="roadmap" size={14} />, 'Go to Roadmap', () => c.go({ view: 'roadmap' }));
+    cmd('docs', <Icon name="doc" size={14} />, 'Go to Docs', () => c.go({ view: 'docs' }));
+    cmd('newdoc', <Icon name="plus" size={14} />, 'Create new doc', () => newPage(c));
+    if (c.route.view === 'doc') {
+      const here = c.route.id;
+      cmd('subdoc', <Icon name="plus" size={14} />, 'Add a sub-page to this doc', () => newPage(c, here));
+    }
     cmd('settings', <Icon name="gear" size={14} />, 'Open workspace settings', () => c.go({ view: 'settings' }));
     for (const team of Object.values(doc.team)) {
       cmd(`t${team.id}`, <span className="d-team-key">{team.key}</span>, `Go to ${team.name} issues`, () => c.go({ view: 'team', teamId: team.id, tab: 'all' }));
@@ -965,6 +986,11 @@ function Palette({ onClose, closing }: { onClose: () => void; closing?: boolean 
       .sort((a, b) => (a === exact ? -1 : b === exact ? 1 : b.updatedAt - a.updatedAt))
       .slice(0, t ? 30 : 8);
     for (const i of issues) out.push({ key: i.id, icon: <StateIcon state={doc.state[i.stateId]} />, label: i.title, hint: issueKey(doc, i), run: () => c.open(i.id) });
+    const pages = Object.values(doc.page)
+      .filter((p) => !t || pageTitle(p).toLowerCase().includes(t) || (t.length > 2 && pageText(p.body).toLowerCase().includes(t)))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, t ? 20 : 5);
+    for (const p of pages) out.push({ key: `doc${p.id}`, icon: p.icon ? <span className="d-page-emoji">{p.icon}</span> : <Icon name="doc" size={14} />, label: pageTitle(p), hint: 'Doc', run: () => c.go({ view: 'doc', id: p.id }) });
     return out;
   }, [q, c.v]);
   const run = (r: Row | undefined) => {

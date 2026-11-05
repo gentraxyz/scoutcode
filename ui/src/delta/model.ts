@@ -7,8 +7,8 @@
  * No framework imports here: the website's server imports this file too.
  */
 
-export type Kind = 'workspace' | 'team' | 'state' | 'label' | 'issue' | 'comment' | 'project' | 'cycle' | 'activity';
-export const KINDS: Kind[] = ['workspace', 'team', 'state', 'label', 'issue', 'comment', 'project', 'cycle', 'activity'];
+export type Kind = 'workspace' | 'team' | 'state' | 'label' | 'issue' | 'comment' | 'project' | 'cycle' | 'activity' | 'page' | 'image';
+export const KINDS: Kind[] = ['workspace', 'team', 'state', 'label', 'issue', 'comment', 'project', 'cycle', 'activity', 'page', 'image'];
 
 export type StateType = 'backlog' | 'unstarted' | 'started' | 'review' | 'completed' | 'canceled';
 export const STATE_TYPES: StateType[] = ['backlog', 'unstarted', 'started', 'review', 'completed', 'canceled'];
@@ -37,6 +37,18 @@ export interface Project {
 }
 export interface Cycle { id: string; teamId: string; number: number; name: string; startsAt: string; endsAt: string }
 export interface Activity { id: string; issueId: string; actor: string; at: number; field: string; from: unknown; to: unknown }
+/** A doc: a page of rich text, kept as HTML (only the tags the editor makes; the app cleans it again before showing it).
+ * Pages nest under other pages. */
+export interface Page {
+  id: string; title: string; icon: string; body: string; parentId: string | null; sortOrder: number; full: boolean;
+  creator: string; createdAt: number; updatedAt: number; updatedBy: string;
+}
+/** A picture used in a doc, an issue or a comment, as a data: URL. Text points at it by id (`<img data-img>` in a doc,
+ * `![name](img:id)` in an issue or comment), so it's stored and synced once like any other record. */
+export interface Image { id: string; name: string; data: string; width: number; height: number; creator: string; createdAt: number }
+
+/** Biggest picture kept, as data: URL text (about 1.1 MB of image). The app shrinks pictures to fit. */
+export const MAX_IMAGE_CHARS = 1_500_000;
 
 export interface Doc {
   workspace: Workspace;
@@ -48,6 +60,8 @@ export interface Doc {
   project: Record<string, Project>;
   cycle: Record<string, Cycle>;
   activity: Record<string, Activity>;
+  page: Record<string, Page>;
+  image: Record<string, Image>;
 }
 
 /** A record as it's stored and sent: `data` is null once it's deleted, so a deletion syncs like any other change. */
@@ -69,7 +83,7 @@ export function newId(): string {
 }
 
 export function emptyDoc(id: string, name: string, now = Date.now()): Doc {
-  return { workspace: { id, name, createdAt: now }, team: {}, state: {}, label: {}, issue: {}, comment: {}, project: {}, cycle: {}, activity: {} };
+  return { workspace: { id, name, createdAt: now }, team: {}, state: {}, label: {}, issue: {}, comment: {}, project: {}, cycle: {}, activity: {}, page: {}, image: {} };
 }
 
 /** A new workspace's first team and labels, as ops, so a cloud workspace is seeded the same way as a local one. */
@@ -254,6 +268,22 @@ function clean(doc: Doc, kind: Kind, id: string, input: Record<string, unknown>,
         return [...new Set(v.map((x) => ref(doc, 'team', x, 'team')!))];
       });
       break;
+    case 'page':
+      f('title', (v) => str(v ?? '', 300, 'Title', true));
+      f('icon', (v) => str(v ?? '', 16, 'Icon', true));
+      f('body', (v) => str(v ?? '', 2_000_000, 'Page', true));
+      f('full', (v) => !!v);
+      f('sortOrder', (v) => num(v, 'Order'));
+      f('parentId', (v) => {
+        const p = ref(doc, 'page', v, 'parent page');
+        if (p === id) throw new OpError("A page can't be inside itself.");
+        for (let at = p, n = 0; at && n < 200; at = doc.page[at]?.parentId ?? null, n++) if (at === id) throw new OpError("A page can't go inside one of its own sub-pages.");
+        return p;
+      });
+      break;
+    case 'image':
+      f('name', (v) => str(v ?? '', 200, 'Name', true));
+      break;
     case 'cycle':
       f('name', (v) => str(v ?? '', 80, 'Cycle name', true));
       f('startsAt', (v) => date(v, 'Start') ?? (() => { throw new OpError('A cycle needs a start date.'); })());
@@ -370,6 +400,20 @@ export function apply(doc: Doc, op: Op, ctx: Ctx): Rec[] {
           targetDate: d.targetDate ?? null, color: d.color ?? '#5e6ad2', teamIds: d.teamIds ?? [], createdAt: ctx.now,
         } satisfies Project);
         break;
+      case 'page':
+        put('page', op.id, {
+          id: op.id, title: d.title ?? '', icon: d.icon ?? '', body: d.body ?? '', parentId: d.parentId ?? null, sortOrder: d.sortOrder ?? ctx.now,
+          full: d.full ?? false, creator: ctx.actor, createdAt: ctx.now, updatedAt: ctx.now, updatedBy: ctx.actor,
+        } satisfies Page);
+        break;
+      case 'image': {
+        const data = op.data?.data;
+        if (typeof data !== 'string' || !/^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i.test(data)) throw new OpError("That isn't a picture Delta can keep (PNG, JPEG, WebP or GIF).");
+        if (data.length > MAX_IMAGE_CHARS) throw new OpError('That picture is too big.');
+        const dim = (v: unknown) => Math.max(0, Math.min(100_000, Math.round(Number(v) || 0)));
+        put('image', op.id, { id: op.id, name: d.name ?? '', data, width: dim(op.data?.width), height: dim(op.data?.height), creator: ctx.actor, createdAt: ctx.now } satisfies Image);
+        break;
+      }
       case 'cycle': {
         const teamId = ref(doc, 'team', op.data?.teamId, 'team');
         if (!teamId) throw new OpError('A cycle belongs to a team.');
@@ -419,6 +463,10 @@ export function apply(doc: Doc, op: Op, ctx: Ctx): Rec[] {
       }
     }
     if (op.kind === 'comment') next.editedAt = ctx.now;
+    if (op.kind === 'page') {
+      next.updatedAt = ctx.now;
+      next.updatedBy = ctx.actor;
+    }
     put(op.kind, op.id, next);
     return changed;
   }
@@ -457,6 +505,16 @@ export function apply(doc: Doc, op: Op, ctx: Ctx): Rec[] {
       case 'cycle':
         for (const i of Object.values(doc.issue)) if (i.cycleId === op.id) put('issue', i.id, { ...i, cycleId: null });
         break;
+      case 'page': {
+        // Its sub-pages go with it, as in Notion.
+        const gone = new Set([op.id]);
+        for (let grew = true; grew; ) {
+          grew = false;
+          for (const p of Object.values(doc.page)) if (p.parentId && gone.has(p.parentId) && !gone.has(p.id)) { gone.add(p.id); grew = true; }
+        }
+        for (const id of gone) if (id !== op.id) drop('page', id);
+        break;
+      }
     }
     drop(op.kind, op.id);
     return changed;
@@ -478,6 +536,21 @@ export function applyAll(doc: Doc, ops: Op[], ctx: Ctx): Rec[] {
 }
 
 // ---------- reading ----------
+
+/** A page's sub-pages (or the top-level pages, for null), in their order. */
+export function childPages(doc: Doc, parentId: string | null): Page[] {
+  return Object.values(doc.page).filter((p) => (p.parentId ?? null) === parentId).sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt);
+}
+
+export const pageTitle = (p: Page | undefined) => p?.title.trim() || 'Untitled';
+
+/** A page's text without its tags, for search. */
+export function pageText(body: string): string {
+  return body
+    .replace(/<(br|hr)\s*\/?>|<\/(p|h[1-3]|li|pre|blockquote)>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+}
 
 export const isDone = (s: State | undefined) => s?.type === 'completed' || s?.type === 'canceled';
 

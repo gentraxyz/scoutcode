@@ -915,6 +915,15 @@ pub struct Plan {
     pub left: f64,
 }
 
+/// What a 5-hour window of desktop credit allows and has left; `resets_at` is None when none is running.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditWindow {
+    pub limit: f64,
+    pub left: f64,
+    pub resets_at: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BankedMoney {
@@ -961,8 +970,14 @@ pub struct UsageInfo {
     pub resets_at: String,
     /// None when the account is unlimited.
     pub money: Option<Plan>,
-    /// None when the account is unlimited.
+    /// The week's desktop credit. None when the account is unlimited.
     pub cli: Option<Plan>,
+    /// When the week's desktop credit comes back. None from servers before weekly credit.
+    #[serde(default)]
+    pub cli_resets_at: Option<String>,
+    /// The desktop credit's 5-hour window. None when unlimited, or from servers before weekly credit.
+    #[serde(default)]
+    pub cli_window: Option<CreditWindow>,
     pub balance: f64,
     pub banked_money: Vec<BankedMoney>,
     pub banked_resets: Vec<BankedReset>,

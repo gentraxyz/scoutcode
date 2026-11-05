@@ -317,6 +317,8 @@ function Tile({ label, value, sub }: { label: string; value: string; sub: string
 }
 
 const shortTokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+/** "14:30", local time, for when a 5-hour window resets. */
+const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const validDays = (s: string) => { const d = Number(s.trim()); return Number.isInteger(d) && d >= 1 && d <= 3650 ? d : null; };
 
 /** Admin controls: anyone's limits, giving money, and resetting everyone. */
@@ -374,7 +376,7 @@ function UsageAdmin({ info, busy }: { info: UsageInfo; busy: boolean }) {
       <input className="input field-260" placeholder="Find a user" value={search} onChange={(e) => setSearch(e.target.value)} />
       {found.slice(0, 6).map((m) => (
         <button key={m.username} type="button" className={`user-pick ${m.username === user ? 'selected' : ''}`} onClick={() => { setUser(m.username); setSearch(''); }}>
-          {m.username}   {usd(m.spentThisMonth)} spent, {usd(m.harnessSpentThisMonth)} desktop, {usd(m.balance)} balance, {usd(m.banked)} banked
+          {m.username}   {usd(m.spentThisMonth)} spent, {usd(m.harnessSpentThisMonth)} desktop this week, {usd(m.balance)} balance, {usd(m.banked)} banked
         </button>
       ))}
       {q && found.length === 0 && <div className="small dim">No matching users.</div>}
@@ -386,7 +388,7 @@ function UsageAdmin({ info, busy }: { info: UsageInfo; busy: boolean }) {
       </div>
       <div className="row wrap">
         {mode === 'custom' && <input className="input field-180" placeholder="Money per month, USD" value={monthly} onChange={(e) => setMonthly(e.target.value)} />}
-        <input className="input field-180" placeholder={`Desktop credit (now ${usd(planCli)})`} value={cli} onChange={(e) => setCli(e.target.value)} />
+        <input className="input field-180" placeholder={`Desktop credit / week (now ${usd(planCli)})`} value={cli} onChange={(e) => setCli(e.target.value)} />
         <button type="button" className="button primary" onClick={saveLimits}>Save limits</button>
       </div>
 
@@ -425,19 +427,30 @@ function UsageAdmin({ info, busy }: { info: UsageInfo; busy: boolean }) {
 function UsageLimits() {
   const { hasKey } = useView('cfg');
   const { info, busy, message } = useView('usage');
-  if (!hasKey) return <p className="muted">Sign in to ScoutCode to see your monthly limits.</p>;
+  if (!hasKey) return <p className="muted">Sign in to ScoutCode to see your credit and limits.</p>;
   const plan = (p: { limit: number; left: number } | null): [string, string] => (p ? [usd(p.left), `left of ${usd(p.limit)}`] : ['Unlimited', 'Requests are free']);
   return (
     <div className="stack">
       {info ? (
         <>
-          <div className="tiles four">
-            <Tile label="Desktop credit (browser sign-in)" value={plan(info.cli)[0]} sub={plan(info.cli)[1]} />
+          <div className="tiles three">
+            <Tile label="Desktop credit this week (browser sign-in)" value={plan(info.cli)[0]} sub={plan(info.cli)[1]} />
+            {info.cliWindow && (
+              <Tile
+                label="This 5-hour window"
+                value={usd(info.cliWindow.left)}
+                sub={`left of ${usd(info.cliWindow.limit)}${info.cliWindow.resetsAt ? `, resets ${clock(info.cliWindow.resetsAt)}` : ''}`}
+              />
+            )}
             <Tile label="Money (API keys)" value={plan(info.money)[0]} sub={plan(info.money)[1]} />
+          </div>
+          <div className="tiles three">
             <Tile label="Banked" value={usd(info.bankedMoney.reduce((n, b) => n + b.amount, 0))} sub="Spent next, runs out" />
             <Tile label="Balance" value={usd(info.balance)} sub="Spent last, doesn't reset" />
           </div>
-          <div className="tiny dim">Resets {shortDate(info.resetsAt.slice(0, 10))} UTC</div>
+          <div className="tiny dim">
+            {info.cliResetsAt && `Desktop credit resets ${shortDate(info.cliResetsAt.slice(0, 10))} UTC. `}Money resets {shortDate(info.resetsAt.slice(0, 10))} UTC.
+          </div>
           {info.bankedMoney.map((b, i) => <SettingRow key={i} title={`${usd(b.amount)} banked`} sub={`Expires ${shortDate(b.expiresAt.slice(0, 10))} UTC`} />)}
           {info.bankedResets.map((r, i) => (
             <SettingRow key={i} title="Banked reset" sub={`Clears your spending this month. Expires ${shortDate(r.expiresAt.slice(0, 10))} UTC.`}>

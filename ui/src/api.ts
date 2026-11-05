@@ -45,6 +45,8 @@ export type ManagedUser = {
 };
 export type UsageInfo = {
   username: string; admin: boolean; resetsAt: string; money: Plan | null; cli: Plan | null; balance: number;
+  /** The week's desktop credit: when it resets, and its 5-hour window (resetsAt null when none is running). Missing from older servers. */
+  cliResetsAt: string | null; cliWindow: (Plan & { resetsAt: string | null }) | null;
   bankedMoney: { amount: number; expiresAt: string }[]; bankedResets: { expiresAt: string }[]; users: ManagedUser[];
 };
 /** A file a linked chatbot changed, with the lines added and removed. */

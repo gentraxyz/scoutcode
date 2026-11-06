@@ -51,7 +51,7 @@ export type ReferralEntry = {
 };
 export type Referrals = {
   code: string; max: number; bonus: number; credit: number; expiryDays: number; earned: number;
-  referredBy: string | null; referred: ReferralEntry[];
+  referredBy: string | null; canRedeem?: boolean | null; referred: ReferralEntry[];
 };
 export type UsageInfo = {
   username: string; admin: boolean; resetsAt: string; money: Plan | null; cli: Plan | null; balance: number;

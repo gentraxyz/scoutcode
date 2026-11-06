@@ -420,6 +420,36 @@ fn pick_folder(id: &str, mut dirs: Vec<String>, mut read: impl FnMut(&str) -> Op
     dirs.into_iter().take(40).find(|d| read(d).and_then(|t| frontmatter(&t).0).is_some_and(|n| clean_name(&n) == clean_name(id)))
 }
 
+/// File types a model can't read, which a skill can do without when it's over the limits.
+const HEAVY: [&str; 24] = ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "tif", "tiff", "psd", "mp4", "webm", "mov", "mp3", "wav", "ogg", "woff", "woff2", "ttf", "otf", "zip", "gz", "pdf"];
+
+/// What of a repo folder's files (path, size) to download so it keeps to the limits. Everything fits most of the
+/// time. When it doesn't, the SKILL.md comes first, then text before media, fonts and archives, smaller before
+/// larger, and the rest is left out instead of refusing the whole skill. None if the SKILL.md alone is too large.
+fn fit_limits(mut files: Vec<(String, u64)>, manifest: &str) -> Option<Vec<(String, u64)>> {
+    files.retain(|(p, _)| !p.split('/').any(|d| SKIP_DIRS.contains(&d)));
+    let total: u64 = files.iter().map(|(_, s)| *s).sum();
+    if files.len() <= MAX_FILES && total <= MAX_TOTAL_BYTES && files.iter().all(|(_, s)| *s <= MAX_FILE_BYTES) {
+        return Some(files);
+    }
+    let heavy = |p: &str| p.rsplit_once('.').is_some_and(|(_, e)| HEAVY.contains(&e.to_lowercase().as_str()));
+    files.sort_by_key(|(p, s)| (p != manifest, heavy(p), !p.ends_with(".md"), *s));
+    if files.first().is_none_or(|(p, s)| p != manifest || *s > MAX_FILE_BYTES) {
+        return None;
+    }
+    let (mut kept, mut bytes) = (vec![], 0u64);
+    for (p, s) in files {
+        if kept.len() >= MAX_FILES {
+            break;
+        }
+        if s <= MAX_FILE_BYTES && bytes + s <= MAX_TOTAL_BYTES {
+            bytes += s;
+            kept.push((p, s));
+        }
+    }
+    Some(kept)
+}
+
 fn install_github(root: &Path, l: &Listing) -> Result<String, String> {
     let ok = |s: &str| !s.is_empty() && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
     if !l.source.split('/').all(ok) || l.source.matches('/').count() != 1 {
@@ -446,19 +476,19 @@ fn install_github(root: &Path, l: &Listing) -> Result<String, String> {
         return Err(format!("Couldn't find {} in {}.", l.id, l.source));
     };
     let prefix = if folder.is_empty() { String::new() } else { format!("{folder}/") };
-    let wanted: Vec<&(String, u64)> = blobs
+    let wanted: Vec<(String, u64)> = blobs
         .iter()
         .filter(|(p, _)| {
             let Some(rel) = p.strip_prefix(prefix.as_str()) else { return false };
             // A skill at the top of a repo: not the whole repo, only the folders the skill format defines.
             !folder.is_empty() || rel == MANIFEST || ["references/", "scripts/", "assets/"].iter().any(|d| rel.starts_with(d))
         })
+        .cloned()
         .collect();
-    if wanted.len() > MAX_FILES || wanted.iter().map(|(_, s)| *s).sum::<u64>() > MAX_TOTAL_BYTES || wanted.iter().any(|(_, s)| *s > MAX_FILE_BYTES) {
-        return Err(format!("{} is too large to install.", l.id));
-    }
+    let manifest = if prefix.is_empty() { MANIFEST.to_string() } else { format!("{prefix}{MANIFEST}") };
+    let wanted = fit_limits(wanted, &manifest).ok_or_else(|| format!("{}'s {MANIFEST} is too large to install.", l.id))?;
     let mut files = vec![];
-    for (path, _) in wanted {
+    for (path, _) in &wanted {
         let bytes = fetch(&raw(path), MAX_FILE_BYTES).map_err(|(_, e)| format!("Couldn't download {path}: {e}"))?;
         files.push((path[prefix.len()..].to_string(), bytes));
     }
@@ -620,6 +650,25 @@ mod tests {
         remove_in(&root, "other").unwrap();
         assert!(!root.join("other").exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn keeps_a_large_skill_to_the_limits() {
+        let f = |p: &str, s: u64| (p.to_string(), s);
+        // Small enough: everything, minus folders that are never part of a skill.
+        let small = vec![f("s/SKILL.md", 10), f("s/a.md", 5), f("s/node_modules/x.js", 5)];
+        assert_eq!(fit_limits(small, "s/SKILL.md").unwrap(), vec![f("s/SKILL.md", 10), f("s/a.md", 5)]);
+        // Too large: SKILL.md and text are kept, the oversized file and the media that don't fit are left out.
+        let mut big = vec![f("s/huge.mp4", MAX_FILE_BYTES + 1), f("s/photo.jpg", MAX_TOTAL_BYTES - 50), f("s/notes.md", 100), f("s/SKILL.md", 20)];
+        big.extend((0..MAX_FILES).map(|i| f(&format!("s/lib/{i}.json"), 1)));
+        let kept = fit_limits(big, "s/SKILL.md").unwrap();
+        assert_eq!(kept[0].0, "s/SKILL.md");
+        assert_eq!(kept.len(), MAX_FILES);
+        assert!(kept.iter().any(|(p, _)| p == "s/notes.md"));
+        assert!(!kept.iter().any(|(p, _)| p.ends_with(".mp4") || p.ends_with(".jpg")));
+        assert!(kept.iter().map(|(_, s)| *s).sum::<u64>() <= MAX_TOTAL_BYTES);
+        // A SKILL.md that's too large on its own can't be helped.
+        assert!(fit_limits(vec![f("SKILL.md", MAX_FILE_BYTES + 1), f("a", MAX_TOTAL_BYTES)], "SKILL.md").is_none());
     }
 
     #[test]

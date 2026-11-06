@@ -974,6 +974,8 @@ pub struct Referrals {
     pub earned: f64,
     pub referred_by: Option<String>,
     #[serde(default)]
+    pub can_redeem: Option<bool>,
+    #[serde(default)]
     pub referred: Vec<ReferralEntry>,
 }
 

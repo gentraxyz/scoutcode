@@ -4,6 +4,15 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.16
+Daily login rewards and referrals, Delta docs and pictures, a built-in folder picker, and fixes for Fallbacks and large skills.
+
+- Claim a daily login reward in Settings > Usage to add to your permanent balance, and share your referral code with up to 5 friends. New accounts have 3 days to redeem a referral code for $5 in credit.
+- Delta now has Notion-style Docs with nested pages, a "/" menu, Markdown shortcuts and export, pasted or dropped pictures in docs, issues and comments, and right-click menus for issues, projects and cycles.
+- Add projects with Scout's own folder picker instead of the Windows dialog, with places, drives, filter-as-you-type and keyboard navigation.
+- Desktop sign-ins now get $5 of credit per week ($10 with ScoutPass) with 5-hour windows, and live provider quota meters show what's left across your providers.
+- Fixed the model menu in Settings > Fallbacks going above the top of the window, and large skills on GitHub failing with "too large to install" because of extra media or assets.
+
 ## 0.1.15
 Delta, an issue tracker built into Scout, with smooth animations throughout.
 

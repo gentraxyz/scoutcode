@@ -92,11 +92,12 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/** Fills in what isn't already set from .env beside Cargo.toml, if there is one. */
+/** Fills in what isn't already set from .env beside Cargo.toml (or the repo root), if there is one. */
 function loadEnv() {
-  const file = path.join(GUI, '.env');
-  if (!fs.existsSync(file)) return;
-  for (const [k, v] of Object.entries(parseEnv(fs.readFileSync(file, 'utf8')))) process.env[k] ??= v;
+  for (const file of [path.join(GUI, '.env'), path.join(GUI, '..', '.env')]) {
+    if (!fs.existsSync(file)) continue;
+    for (const [k, v] of Object.entries(parseEnv(fs.readFileSync(file, 'utf8')))) process.env[k] ??= v;
+  }
 }
 
 function option(name: string): string | undefined {

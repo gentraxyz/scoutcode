@@ -501,18 +501,20 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
           {ref.referredBy ? (
             <SettingRow title={`Referred by ${ref.referredBy}`} sub={`You received ${usd(ref.credit)} in ScoutCode credit for ${ref.expiryDays} days.`} />
           ) : (
-            <SettingRow title="Redeem a referral code" sub={`Enter a friend's username or referral link to get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days.`}>
-              <input
-                className="input field-180"
-                placeholder="Friend's username"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && redeem()}
-              />
-              <button type="button" className="button primary" disabled={busy || !code.trim()} onClick={redeem}>
-                Redeem +{usd(ref.credit)}
-              </button>
-            </SettingRow>
+            ref.canRedeem !== false && (
+              <SettingRow title="Redeem a referral code" sub={`Enter a friend's username or referral link to get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days.`}>
+                <input
+                  className="input field-180"
+                  placeholder="Friend's username"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && redeem()}
+                />
+                <button type="button" className="button primary" disabled={busy || !code.trim()} onClick={redeem}>
+                  Redeem +{usd(ref.credit)}
+                </button>
+              </SettingRow>
+            )
           )}
         </>
       )}

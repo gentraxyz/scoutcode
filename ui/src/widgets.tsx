@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { openExternal, type DiffLines, type Display, type Todo } from './api';
 
 // ---------- icons: 16 by 16, stroked in the current color ----------
@@ -92,6 +93,9 @@ export function SectionLabel({ children }: { children: ReactNode }) {
 
 // ---------- menus ----------
 
+type OpenPopover = { anchor: () => HTMLSpanElement | null; panel: () => HTMLDivElement | null };
+const openPopovers: OpenPopover[] = [];
+
 /** A chip or button that opens a floating panel. Esc or a click outside closes it. */
 export function Popover({ trigger, children, align = 'start', side = 'auto', className = '', onOpen, width }: {
   trigger: (open: boolean, toggle: () => void) => ReactNode;
@@ -108,42 +112,64 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
   const [above, setAbove] = useState(false);
   const anchor = useRef<HTMLSpanElement>(null);
   const panel = useRef<HTMLDivElement>(null);
-  const close = () => setOpen(false);
+  const close = () => {
+    setOpen(false);
+    setStyle({ visibility: 'hidden' });
+  };
   const toggle = () => {
-    if (!open) onOpen?.();
-    setOpen(!open);
+    if (open) {
+      close();
+    } else {
+      onOpen?.();
+      setOpen(true);
+    }
   };
   useLayoutEffect(() => {
     if (!open || !anchor.current || !panel.current) return;
     const a = anchor.current.getBoundingClientRect();
     const p = panel.current.getBoundingClientRect();
-    const above = side === 'top' || a.bottom + p.height + 8 > window.innerHeight;
+    const roomAbove = a.top - 14;
+    const roomBelow = window.innerHeight - a.bottom - 14;
+    // Opens on the asked side when it fits there, else on the side with more room.
+    const above = side === 'top' ? p.height <= roomAbove || roomAbove >= roomBelow : p.height > roomBelow && roomAbove > roomBelow;
+    const room = Math.max(0, Math.floor(above ? roomAbove : roomBelow));
     const left = align === 'end' ? a.right - p.width : a.left;
     // Above the anchor it's held by its bottom edge, so it grows upward when what's in it gets longer.
     setAbove(above);
-    setStyle({
+    // --room is how much height there is on that side; the model menu shrinks to it.
+    const next: CSSProperties & { '--room': string } = {
+      '--room': `${room}px`,
       transformOrigin: `${above ? 'bottom' : 'top'} ${align === 'end' ? 'right' : 'left'}`,
       position: 'fixed',
       left: Math.max(8, Math.min(left, window.innerWidth - p.width - 8)),
-      ...(above ? { bottom: window.innerHeight - a.top + 6, maxHeight: a.top - 14 } : { top: a.bottom + 6 }),
+      ...(above ? { bottom: window.innerHeight - a.top + 6, maxHeight: room } : { top: a.bottom + 6, maxHeight: room }),
       width: width === 'anchor' ? a.width : width,
-    });
+    };
+    setStyle(next);
   }, [open, align, side, width]);
   useEffect(() => {
     if (!open) return;
+    const entry: OpenPopover = { anchor: () => anchor.current, panel: () => panel.current };
+    openPopovers.push(entry);
     const down = (e: MouseEvent) => {
-      if (!panel.current?.contains(e.target as Node) && !anchor.current?.contains(e.target as Node)) close();
+      const t = e.target as Node;
+      const at = openPopovers.indexOf(entry);
+      const inside = openPopovers.slice(at >= 0 ? at : 0).some((o) => o.panel()?.contains(t) || o.anchor()?.contains(t));
+      if (!inside) close();
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && openPopovers[openPopovers.length - 1] === entry) {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         close();
       }
     };
     document.addEventListener('mousedown', down);
     window.addEventListener('keydown', key, true);
     return () => {
+      const at = openPopovers.indexOf(entry);
+      if (at >= 0) openPopovers.splice(at, 1);
       document.removeEventListener('mousedown', down);
       window.removeEventListener('keydown', key, true);
     };
@@ -151,7 +177,10 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
   return (
     <>
       <span ref={anchor} className="popover-anchor">{trigger(open, toggle)}</span>
-      {open && <div ref={panel} className={`popover ${above ? 'above' : ''} ${className}`} style={{ width: width === 'anchor' ? anchor.current?.offsetWidth : width, ...style }}>{children(close)}</div>}
+      {open && createPortal(
+        <div ref={panel} className={`popover ${above ? 'above' : ''} ${className}`} style={{ width: width === 'anchor' ? anchor.current?.offsetWidth : width, ...style }}>{children(close)}</div>,
+        document.body,
+      )}
     </>
   );
 }

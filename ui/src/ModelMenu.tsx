@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { act, tokens, type Model, type ModelRef } from './api';
 import { AdditionalOptions, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ChatbotsPanel } from './Chatbots';
@@ -314,7 +315,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
         )}
       </div>
       {ctx && (
-        <div className="rail-menu" style={{ left: ctx.x, top: Math.max(0, Math.min(ctx.y, 470 - 48 - (ctx.tab === 'starred' ? hidden.length : 2) * 32)) }}>
+        <div className="rail-menu" style={{ left: ctx.x, top: Math.max(0, Math.min(ctx.y, (menuRef.current?.clientHeight ?? 470) - 48 - (ctx.tab === 'starred' ? hidden.length : 2) * 32)) }}>
           {ctx.tab === 'starred' ? hidden.map((t) => (
             <button key={t} type="button" className="menu-item" onClick={() => { setHidden(hidden.filter((h) => h !== t)); setCtx(null); }}>
               <RailIcon tab={t} /><span className="grow ellipsis">Show {TABS.find(([id]) => id === t)![1]}</span>
@@ -428,7 +429,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
           {!signIn && !chatbots && rows.length === 0 && <div className="small dim pad">{empty}</div>}
         </div>
       </div>
-      {hover && <ModelCard {...hover} />}
+      {hover && createPortal(<ModelCard {...hover} />, document.body)}
     </div>
   );
 }

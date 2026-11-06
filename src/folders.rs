@@ -56,7 +56,7 @@ pub fn places() -> Places {
             places.push(place(name, &p, icon));
         }
     }
-    for name in ["source/repos", "Projects", "projects", "dev", "code", "src"] {
+    for name in ["Scout", "source/repos", "Projects", "projects", "dev", "code", "src"] {
         let p = home.join(name);
         if p.is_dir() && !places.iter().any(|x| Path::new(&x.path) == p) {
             places.push(place(name.rsplit('/').next().unwrap_or(name), &p, "folder"));

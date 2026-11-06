@@ -144,26 +144,6 @@ function QuestionsCard() {
   );
 }
 
-/** Asked once, on the first run: how Scout should get the user's attention. */
-function NotifySetupCard() {
-  const cfg = useView('cfg');
-  const [flash, setFlash] = useState(true);
-  const [toast, setToast] = useState(false);
-  if (cfg.notifyFlash !== null || cfg.notifyToast !== null) return null;
-  return (
-    <div className="card">
-      <div className="card-head"><b className="strong">How should Scout get your attention?</b><span className="small dim">Change it later in Settings</span></div>
-      <div className="muted small">When Scout finishes or needs you while its window is in the background:</div>
-      <label className="check"><input type="checkbox" checked={flash} onChange={(e) => setFlash(e.target.checked)} />Flash the taskbar button</label>
-      <label className="check"><input type="checkbox" checked={toast} onChange={(e) => setToast(e.target.checked)} />Show a Windows notification</label>
-      <div className="row">
-        <button type="button" className="button primary" onClick={() => act('setNotify', { flash, toast })}>Save</button>
-        <button type="button" className="button ghost" onClick={() => act('testNotification')}>Send a test</button>
-      </div>
-    </div>
-  );
-}
-
 function QueueCard() {
   const queue = useView('queue');
   const steering = useView('steering');
@@ -536,7 +516,6 @@ export function Composer() {
     <div className="composer">
       <div className="composer-column">
         <Todos />
-        <NotifySetupCard />
         <PermissionCard />
         <PlanCard />
         <QuestionsCard />

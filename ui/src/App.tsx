@@ -14,7 +14,6 @@ import { Transcript } from './Transcript';
 import { DeltaPage } from './DeltaPage';
 import { FolderPicker } from './FolderPicker';
 import { Icon, IconButton, Modal } from './widgets';
-import { ScoutLogo } from './logo';
 
 const appWindow = getCurrentWindow();
 
@@ -160,17 +159,14 @@ function LinkPermission() {
 }
 
 function Login({ onDone }: { onDone: () => void }) {
+  // No header over the steps: the welcome says hello, and each step has its own title.
   return (
     <div className="login-screen">
       <header className="login-bar" data-tauri-drag-region><WindowButtons /></header>
-      <div className="login-scroll">
-        <div className="login-column">
-          <ScoutLogo size={52} />
-          <h1>Welcome to Scout</h1>
-          <p className="dim">A coding agent for your projects, powered by ScoutCode.</p>
-          <Onboarding onDone={onDone} />
-        </div>
+      <div className="login-body">
+        <Onboarding onDone={onDone} />
       </div>
+      <FolderPicker />
     </div>
   );
 }

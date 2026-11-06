@@ -3,13 +3,18 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const MAX_CHARS: usize = 40_000;
-pub const LANGUAGES: [(&str, &str); 18] = [
-    ("auto", "Auto (conversation language)"), ("English", "English"), ("Russian", "Русский"),
-    ("Ukrainian", "Українська"), ("Spanish", "Español"), ("French", "Français"),
-    ("German", "Deutsch"), ("Portuguese", "Português"), ("Italian", "Italiano"),
-    ("Polish", "Polski"), ("Turkish", "Türkçe"), ("Chinese", "中文"),
-    ("Japanese", "日本語"), ("Korean", "한국어"), ("Arabic", "العربية"),
-    ("Hindi", "हिन्दी"), ("Dutch", "Nederlands"), ("Vietnamese", "Tiếng Việt"),
+pub const LANGUAGES: [(&str, &str); 31] = [
+    ("auto", "Auto (conversation language)"), ("English", "English"), ("Spanish", "Español"),
+    ("French", "Français"), ("German", "Deutsch"), ("Italian", "Italiano"),
+    ("Portuguese", "Português"), ("Russian", "Русский"), ("Ukrainian", "Українська"),
+    ("Polish", "Polski"), ("Turkish", "Türkçe"), ("Dutch", "Nederlands"),
+    ("Chinese", "中文"), ("Japanese", "日本語"), ("Korean", "한국어"),
+    ("Arabic", "العربية"), ("Hindi", "हिन्दी"), ("Vietnamese", "Tiếng Việt"),
+    ("Swedish", "Svenska"), ("Danish", "Dansk"), ("Norwegian", "Norsk"),
+    ("Finnish", "Suomi"), ("Czech", "Čeština"), ("Greek", "Ελληνικά"),
+    ("Hungarian", "Magyar"), ("Romanian", "Română"), ("Indonesian", "Bahasa Indonesia"),
+    ("Thai", "ไทย"), ("Hebrew", "עברית"), ("Bengali", "বাংলা"),
+    ("Filipino", "Filipino"),
 ];
 
 fn auto() -> String { "auto".into() }

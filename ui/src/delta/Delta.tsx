@@ -108,7 +108,7 @@ export function Delta({ host, onExit }: { host: Host; onExit?: () => void }) {
   }, [refresh, openWs]);
   useEffect(() => () => session?.close(), [session]);
 
-  if (list === null || (opening && !session)) return <div className="delta d-center"><DeltaMark size={48} /></div>;
+  if (list === null || (opening && !session)) return <div className="delta d-center"><DeltaMark size={48} loading /></div>;
   if (!session || making || !list.length) {
     return (
       <div className="delta d-center d-scroll">
@@ -267,11 +267,38 @@ function BoardAnimation() {
   );
 }
 
-export function DeltaMark({ size = 18 }: { size?: number }) {
+export function DeltaMark({ size = 18, loading = false, className = '' }: { size?: number; loading?: boolean; className?: string }) {
+  if (loading) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" className={`d-mark d-mark-loading ${className}`.trim()}>
+        <defs>
+          <mask id="d-mark-mask">
+            <path d="M1.9 19.9L11.1 3C11.5 2.2 12.5 2.2 12.9 3L15.1 7.18L7.4 21.3H2.7C1.8 21.3 1.4 20.7 1.9 19.9ZM16.5 9.75L19.1 14.52L15.4 21.3H10.2ZM20.5 17.08L22.1 19.9C22.6 20.7 22.2 21.3 21.3 21.3H18.2Z" fill="#fff" />
+          </mask>
+          <linearGradient id="d-mark-shimmer" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#fff" stopOpacity="0" />
+            <stop offset="50%" stopColor="#fff" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#fff" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d="M1.9 19.9L11.1 3C11.5 2.2 12.5 2.2 12.9 3L15.1 7.18L7.4 21.3H2.7C1.8 21.3 1.4 20.7 1.9 19.9ZM16.5 9.75L19.1 14.52L15.4 21.3H10.2ZM20.5 17.08L22.1 19.9C22.6 20.7 22.2 21.3 21.3 21.3H18.2Z" fill="currentColor" opacity="0.28" />
+        <g mask="url(#d-mark-mask)">
+          <rect x="-30" y="-12" width="18" height="48" fill="url(#d-mark-shimmer)" transform="rotate(25 12 12)">
+            <animate
+              attributeName="x"
+              values="-30; 36; 36"
+              keyTimes="0; 0.35; 1"
+              dur="3.2s"
+              repeatCount="indefinite"
+            />
+          </rect>
+        </g>
+      </svg>
+    );
+  }
   return (
-    <svg width={size} height={size} viewBox="0 0 1024 1024" aria-hidden="true" className="d-mark">
-      <rect width="1024" height="1024" rx="224" fill="#111111" />
-      <polygon points="512,290 768,770 256,770" fill="none" stroke="#ffffff" strokeWidth="68" strokeLinejoin="miter" strokeMiterlimit="4" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={`d-mark ${className}`.trim()}>
+      <path d="M1.9 19.9L11.1 3C11.5 2.2 12.5 2.2 12.9 3L15.1 7.18L7.4 21.3H2.7C1.8 21.3 1.4 20.7 1.9 19.9ZM16.5 9.75L19.1 14.52L15.4 21.3H10.2ZM20.5 17.08L22.1 19.9C22.6 20.7 22.2 21.3 21.3 21.3H18.2Z" />
     </svg>
   );
 }

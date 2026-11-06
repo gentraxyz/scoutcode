@@ -61,7 +61,8 @@
 .d-late { color: var(--d-red); }
 .d-center { display: flex; align-items: center; justify-content: center; }
 .d-scroll { overflow: auto; }
-.d-mark { color: var(--d-brand); }
+.d-mark { color: #ffffff; }
+.d-mark-loading { display: inline-block; filter: drop-shadow(0 0 16px rgba(255, 255, 255, 0.08)); }
 .d-error { color: var(--d-red); font-size: 12px; }
 .d-ok { color: var(--d-green); font-size: 12px; }
 .d-section-label { font-size: 11px; font-weight: 600; color: var(--d-dim); text-transform: uppercase; letter-spacing: .04em; }

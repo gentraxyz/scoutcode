@@ -25,6 +25,8 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         paste_image,
         display_path,
         add_project,
+        detect_external_chats,
+        import_external_chats,
         folder_places,
         folder_list,
         folder_create,
@@ -344,6 +346,19 @@ fn folder_create(parent: String, name: String) -> Result<String, String> {
 #[tauri::command(async)]
 fn search_chats(q: String) -> Vec<String> {
     session::search_sessions(&q)
+}
+
+#[tauri::command(async)]
+fn detect_external_chats() -> Vec<session::DetectedChat> {
+    session::detect_external_chats()
+}
+
+#[tauri::command(async)]
+fn import_external_chats(core: Shared<'_>, ids: Vec<String>) -> usize {
+    let mut c = core.lock().unwrap();
+    let n = c.import_external_chats(&ids);
+    c.wake();
+    n
 }
 
 /// The project's files for the @ picker, listed at most every few seconds.

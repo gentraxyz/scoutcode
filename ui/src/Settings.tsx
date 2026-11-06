@@ -8,10 +8,11 @@ import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
+import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
 
 const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[] = [
-  { id: 'appearance', title: 'Appearance', icon: 'palette', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style' },
+  { id: 'appearance', title: 'Appearance', icon: 'palette', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style language interface translation' },
   { id: 'instructions', title: 'Instructions', icon: 'chat', keywords: 'instructions project global rules preferences language russian english responses' },
   { id: 'memory', title: 'Memory', icon: 'file', keywords: 'memory remember project user profile facts context' },
   { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
@@ -62,7 +63,7 @@ function Instructions() {
   return (
     <>
       <Heading title="Instructions" sub="Save preferences across chats. Scout includes these rules in its context again after a long conversation is summarized." />
-      <SettingRow title="Response language" sub="Auto follows the conversation. Choose a language to keep replies and progress updates in that language.">
+      <SettingRow title="AI replies in" sub="Auto follows the conversation. Choose a language to keep replies and progress updates in that language, separately from the interface language.">
         <select className="input select" value={draft.language} onChange={(e) => setDraft({ ...draft, language: e.target.value })}>
           {languages.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
         </select>
@@ -154,9 +155,31 @@ function Discord() {
 function Appearance() {
   const theme = useTheme();
   const elements = ELEMENTS.find((e) => e.id === theme.elements)!.vars;
+  const coreLanguages = useCore((s) => s.statics?.languages);
+  const uiLanguage = useUiLanguage();
+  const { t } = useTranslation();
+  const languages = (coreLanguages && coreLanguages.length > 0 ? (() => {
+    const map = new Map<string, string>(coreLanguages);
+    for (const [id, label] of SUPPORTED_LANGUAGES) {
+      if (!map.has(id)) map.set(id, label);
+    }
+    return [...map.entries()];
+  })() : SUPPORTED_LANGUAGES).filter(([id]) => id !== 'auto');
   return (
     <>
-      <Heading title="Appearance" sub="How Scout looks in this window. It changes right away and is kept for next time." />
+      <Heading title={t('settings_appearance')} sub={t('settings_appearance_sub')} />
+      <SettingRow title={t('settings_interface_lang')} sub={isFull(uiLanguage) ? t('settings_interface_lang_full') : t('settings_interface_lang_partial')}>
+        <select className="input select" value={uiLanguage} onChange={(e) => setUiLanguage(e.target.value)}>
+          <optgroup label={t('settings_optgroup_full')}>
+            {languages.filter(([id]) => isFull(id)).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </optgroup>
+          {languages.some(([id]) => !isFull(id)) && (
+            <optgroup label={t('settings_optgroup_partial')}>
+              {languages.filter(([id]) => !isFull(id)).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </optgroup>
+          )}
+        </select>
+      </SettingRow>
       <SectionLabel>Background</SectionLabel>
       <div className="swatches" role="radiogroup" aria-label="Background">
         {BACKGROUNDS.map((b) => (
@@ -202,7 +225,7 @@ function Appearance() {
       <div className="swatches logos" role="radiogroup" aria-label="Logo">
         {LOGOS.map((l) => (
           <button key={l.id} type="button" role="radio" aria-checked={l.id === theme.logo} className={`swatch logo-swatch ${l.id === theme.logo ? 'selected' : ''}`} onClick={() => setTheme({ logo: l.id })}>
-            {l.id === 'classic' ? <ScoutLogo size={40} /> : <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoSvg(l))}`} width={40} height={40} alt="" />}
+            {l.id === 'classic' ? <ScoutLogo size={40} id="classic" /> : <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoSvg(l))}`} width={40} height={40} alt="" />}
             {l.name}
           </button>
         ))}

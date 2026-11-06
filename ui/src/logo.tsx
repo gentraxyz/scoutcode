@@ -52,10 +52,10 @@ ${v.sheen ? '<rect x="1" y="1" width="30" height="15" rx="7" fill="url(#s)"/>' :
 
 const dataUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
-/** Scout's logo as the user picked it. */
-export function ScoutLogo({ size, className, drag }: { size: number; className?: string; drag?: boolean }) {
+/** Scout's logo as the user picked it, or a specific variant when `id` is given. */
+export function ScoutLogo({ size, className, drag, id }: { size: number; className?: string; drag?: boolean; id?: string }) {
   const theme = useTheme();
-  const v = logoById(theme.logo);
+  const v = logoById(id ?? theme.logo);
   // Theme colors are read when it draws, so it follows a change of theme too.
   const src = v.id === 'classic' ? classic : dataUrl(logoSvg(v));
   return <img className={className} src={src} width={size} height={size} alt="" {...(drag ? { 'data-tauri-drag-region': true } : {})} />;

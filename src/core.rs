@@ -292,26 +292,37 @@ fn project_name(cwd: &str) -> String {
     std::path::Path::new(cwd).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| cwd.to_string())
 }
 
-/// The folder to open: the first argument, the current directory, or the last project when launched from a shortcut.
+/// The folder to open: the first argument, the saved project, or a dedicated `~/Scout` folder on first run.
 fn initial_cwd() -> String {
     if let Some(a) = std::env::args().nth(1).filter(|a| std::path::Path::new(a).is_dir()) {
         return std::fs::canonicalize(&a).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(a);
     }
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
     let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_string_lossy().to_string())).unwrap_or_default();
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from);
+    let home_str = home.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
     let sys = std::env::var("WINDIR").unwrap_or_default();
-    let launched_oddly = cwd.is_empty() || session::same_dir(&cwd, &exe_dir) || (!sys.is_empty() && cwd.to_lowercase().starts_with(&sys.to_lowercase()));
-    if launched_oddly {
-        let saved = std::fs::read_to_string(config::home().join("config.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .and_then(|v| v.get("desktopProject").and_then(Value::as_str).map(String::from));
-        if let Some(p) = saved.filter(|p| std::path::Path::new(p).is_dir()) {
+    let saved = std::fs::read_to_string(config::home().join("config.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("desktopProject").and_then(Value::as_str).map(String::from))
+        .filter(|p| std::path::Path::new(p).is_dir());
+    let launched_oddly = cwd.is_empty()
+        || session::same_dir(&cwd, &exe_dir)
+        || (!home_str.is_empty() && session::same_dir(&cwd, &home_str))
+        || (!sys.is_empty() && cwd.to_lowercase().starts_with(&sys.to_lowercase()));
+    if saved.is_none() || launched_oddly {
+        if let Some(p) = saved {
             return p;
         }
-        // Started from the Start menu for the first time: the home folder beats the install folder.
-        if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-            return home.to_string_lossy().to_string();
+        // First run or launched from the Start menu / home folder: create and use ~/Scout.
+        if let Some(h) = home {
+            let scout = h.join("Scout");
+            let _ = std::fs::create_dir_all(&scout);
+            if scout.is_dir() {
+                return scout.to_string_lossy().to_string();
+            }
+            return h.to_string_lossy().to_string();
         }
     }
     cwd
@@ -2211,6 +2222,25 @@ impl Core {
         let is_new = self.project_index(&dir).is_none();
         self.change_project(dir);
         is_new
+    }
+
+    /// Imports detected Claude Code or Codex chats into Scout's session list and registers their project folders.
+    pub fn import_external_chats(&mut self, ids: &[String]) -> usize {
+        let imported = session::import_external_sessions(ids);
+        let mut added_project = false;
+        for s in &imported {
+            if self.project_index(&s.cwd).is_none() && std::path::Path::new(&s.cwd).is_dir() {
+                self.projects.push(config::Project { name: project_name(&s.cwd), path: s.cwd.clone() });
+                added_project = true;
+            }
+        }
+        if added_project {
+            self.save_projects();
+        }
+        if !imported.is_empty() {
+            self.refresh_sessions();
+        }
+        imported.len()
     }
 
     pub fn rename_project(&mut self, path: &str, name: &str) {

@@ -4,6 +4,15 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.17
+New onboarding walkthrough, 30 language localizations, and chat imports from Claude Code and Codex.
+
+- A welcoming multi-step onboarding experience introduces Scout, guides setup, and configures key options.
+- 30 languages supported across the interface and model response preferences.
+- Automatically detects previous conversations from Claude Code and Codex and lets you import them with one click.
+- Fresh installs default to a dedicated ~/Scout folder instead of opening the user home directory directly.
+- Polish and styling fixes across Delta, Settings, Composer, and widget controls.
+
 ## 0.1.16
 Daily login rewards and referrals, Delta docs and pictures, a built-in folder picker, and fixes for Fallbacks and large skills.
 

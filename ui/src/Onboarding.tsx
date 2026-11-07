@@ -1258,13 +1258,6 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
               >
                 <Toggle label={t('opt_games_auto_open')} on={games.openOnRun} onChange={(openOnRun) => setGames({ openOnRun })} />
               </OptionRow>
-              <OptionRow
-                icon="check"
-                title={t('opt_games_auto_close')}
-                sub={t('opt_games_auto_close_sub')}
-              >
-                <Toggle label={t('opt_games_auto_close')} on={games.autoClose} onChange={(autoClose) => setGames({ autoClose })} />
-              </OptionRow>
             </>
           )}
         </OptionSection>

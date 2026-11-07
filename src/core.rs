@@ -374,6 +374,9 @@ fn model_sources(cfg: &Config) -> Vec<&'static str> {
     out.extend(config::ADDITIONAL.iter().filter(|a| cfg.linked(a.id).is_some()).map(|a| a.id));
     let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
     out.extend(on.into_iter().filter(|(_, on)| *on).map(|(s, _)| s));
+    if crate::deepseek::enabled() {
+        out.push(crate::deepseek::PROVIDER);
+    }
     out
 }
 
@@ -438,6 +441,7 @@ fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>,
             Err(format!("OpenRouter: {failed}"))
         }
         "nvidia" => crate::api::list_nvidia(cfg).map_err(|e| format!("NVIDIA NIM: {}", e.message)),
+        crate::deepseek::PROVIDER => Ok(crate::deepseek::models()),
         "kilo" => crate::api::list_kilo(cfg).map_err(|e| format!("Kilo Code: {}", e.message)),
         "copilot" => Ok(with_default(crate::copilot::list_models(cfg.copilot_token.as_deref().unwrap_or_default()))),
         "devin" => Ok(with_default(crate::devin::list_models())),
@@ -780,7 +784,12 @@ impl Core {
     /// Asks every provider that's on for its models and merges them. The chosen model's provider goes first and the list
     /// is sent as soon as it's in; the rest are asked together after it. A list that can't be read is the one saved last
     /// time, and every list that's read is saved for the next start.
-    fn fetch_models(&mut self) {
+    /// Whether the account is in a Scout Enterprise team, whose providers replace the user's own.
+    pub fn in_team(&self) -> bool {
+        self.cfg.team.is_some()
+    }
+
+    pub fn fetch_models(&mut self) {
         self.models_loading += 1;
         let cfg = self.cfg.clone();
         let h = self.hooks.clone();
@@ -2903,6 +2912,7 @@ impl Core {
             "grok" => c.grok_signed_in || c.grok_key.is_some(),
             "hermes" => c.hermes_signed_in || c.hermes_key.is_some(),
             "kilo" => true,
+            crate::deepseek::PROVIDER => crate::deepseek::enabled(),
             other => c.additional.iter().any(|l| l.id == other),
         }
     }
@@ -2942,6 +2952,9 @@ impl Core {
                 if on {
                     add(p, &m.id, m.free, m.tier);
                 }
+            }
+            if m.id.starts_with("deepseek-web/") {
+                add(crate::deepseek::PROVIDER, &m.id, true, None);
             }
             if let Some((p, _)) = &m.additional {
                 add(p, &m.id, m.free, m.tier);

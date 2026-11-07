@@ -643,6 +643,27 @@ impl Agent {
             let content = self.acp_run(&GROK, messages, false, h)?;
             return Ok(StreamResult { content, ..Default::default() });
         }
+        // DeepSeek Web runs through chat.deepseek.com, with Scout's tool loop: see deepseek.rs.
+        if provider == crate::deepseek::PROVIDER {
+            if !quiet {
+                h.send(Ev::RequestStart);
+            }
+            let tools = if read_only { self.read_only_specs.clone() } else if no_tools { vec![] } else { self.all_specs() };
+            let mut on = |d: Delta| {
+                if quiet {
+                    return;
+                }
+                match d {
+                    Delta::Text(t) => h.send(Ev::Text(t.to_string())),
+                    Delta::Reasoning(t) => h.send(Ev::Reasoning(t.to_string())),
+                }
+            };
+            let r = crate::deepseek::chat(&model, messages, &tools, &mut on, &self.shared.cancel)?;
+            if !quiet {
+                self.last_request_at = Some(Instant::now());
+            }
+            return Ok(r);
+        }
         // A model that can't see images would refuse the whole request, so it gets a note in their place.
         let without_images: Vec<Message>;
         let messages = if self.shared.no_vision.lock().unwrap().contains(&model) && messages.iter().any(|m| matches!(m, Message::User { content } if !content.images().is_empty())) {

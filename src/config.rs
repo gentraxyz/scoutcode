@@ -28,7 +28,7 @@ pub struct AdditionalProvider {
     pub default_model: &'static str,
 }
 
-pub static ADDITIONAL: [AdditionalProvider; 2] = [
+pub static ADDITIONAL: [AdditionalProvider; 3] = [
     AdditionalProvider {
         id: "ovh",
         name: "OVH Cloud",
@@ -50,6 +50,17 @@ pub static ADDITIONAL: [AdditionalProvider; 2] = [
         key_link: "Make a key in Google AI Studio",
         key_hint: "AIza…",
         default_model: "gemini-flash-latest",
+    },
+    AdditionalProvider {
+        id: "deepseek",
+        name: "DeepSeek API",
+        url: "https://api.deepseek.com/v1",
+        needs_key: true,
+        note: "DeepSeek's official API, with your own key and credit. Saved on this PC. To use a free chat.deepseek.com account instead, link DeepSeek Web.",
+        key_url: "https://platform.deepseek.com/api_keys",
+        key_link: "Make a key on DeepSeek's platform",
+        key_hint: "sk-…",
+        default_model: "deepseek-chat",
     },
 ];
 
@@ -304,15 +315,13 @@ pub struct Games {
     pub place: String,
     /// Opens when Scout starts working.
     pub open_on_run: bool,
-    /// Closes when Scout has finished, in every chat.
-    pub auto_close: bool,
     /// Where the floating card was left: its top left, in window pixels. None for the corner above the message box.
     pub pos: Option<(f64, f64)>,
 }
 
 impl Default for Games {
     fn default() -> Self {
-        Games { on: false, place: "float".into(), open_on_run: true, auto_close: true, pos: None }
+        Games { on: false, place: "float".into(), open_on_run: true, pos: None }
     }
 }
 

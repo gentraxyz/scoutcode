@@ -96,7 +96,7 @@ export type UpdateStatus =
   | { state: 'failed'; error: string };
 
 /** Experimental games: where they show, and whether they open and close with Scout's work. */
-export type Games = { on: boolean; place: 'float' | 'panel'; openOnRun: boolean; autoClose: boolean; pos: [number, number] | null };
+export type Games = { on: boolean; place: 'float' | 'panel'; openOnRun: boolean; pos: [number, number] | null };
 
 /** Experimental music player: whether it's on, where its floating card sits, and its volume. */
 export type Music = { on: boolean; pos: [number, number] | null; volume: number };

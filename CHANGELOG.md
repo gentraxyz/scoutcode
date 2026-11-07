@@ -4,6 +4,12 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.20
+DeepSeek as a provider, with a refreshed model menu and Settings.
+
+- Use DeepSeek models directly through the API, or through the DeepSeek web sign-in, from the model menu.
+- Model menu, Settings, Accounts, Games and onboarding polish to match the new provider.
+
 ## 0.1.19
 A built-in music player, the Agent Router that picks a model to fit each request, and clearer denied-action messages.
 

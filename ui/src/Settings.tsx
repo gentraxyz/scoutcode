@@ -8,6 +8,7 @@ import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEV
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
+import { DeepSeekWebPanel, useDeepSeek } from './DeepSeek';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
@@ -353,9 +354,6 @@ function Experimental() {
           </SettingRow>
           <SettingRow title="Open when Scout starts working" sub={games.place === 'panel' ? 'Unless the panel is showing another tab.' : 'It doesn’t take the keyboard from the message box until you click it.'}>
             <Toggle label="Open when Scout starts working" on={games.openOnRun} onChange={(openOnRun) => setGames({ openOnRun })} />
-          </SettingRow>
-          <SettingRow title="Close when Scout finishes" sub="Once every chat is done, so you see the reply.">
-            <Toggle label="Close when Scout finishes" on={games.autoClose} onChange={(autoClose) => setGames({ autoClose })} />
           </SettingRow>
         </>
       )}
@@ -901,6 +899,7 @@ function Providers() {
   const cfg = useView('cfg');
   const login = useView('login');
   const { plans, kiloWarning, additionalProviders } = useCore((s) => s.statics);
+  const deepseek = useDeepSeek();
   const [open, setOpen] = useState<string | null>(null);
   const own = (which: OwnWhich, name: string, note: string, on: boolean, planText: string, who = 'Signed in'): ProviderEntry => ({
     id: which, name, linked: on, status: login[which] ? 'Signing in…' : on ? who : providerStatus(which),
@@ -1007,6 +1006,11 @@ function Providers() {
           <Link href={plans.hermes} className="small">Open Nous Portal</Link>
         </>
       ),
+    },
+    {
+      id: 'deepseek-web', name: 'DeepSeek Web', linked: !!deepseek?.enabled,
+      status: !deepseek?.enabled ? providerStatus('deepseek-web') : `${deepseek.via === 'extension' ? 'Browser extension' : 'In Scout'} · ${deepseek.signedIn ? 'Signed in' : 'Not signed in'}`,
+      body: <DeepSeekWebPanel />,
     },
     own('devin', 'Devin', DEVIN_NOTE, cfg.devin, "See Devin's plans"),
     own('kiro', 'Kiro', KIRO_NOTE, cfg.kiro, "See Kiro's plans"),

@@ -226,7 +226,7 @@ export function gameShowing(games: Games) {
   return games.place === 'panel' ? u.dockOpen && u.dockTab === 'games' : u.gameOpen;
 }
 
-/** Opens the game when Scout starts working and closes it when every chat has finished, as the settings say. */
+/** Opens the game when Scout starts working, as the settings say. It stays open once Scout finishes. */
 export function useGameAutomation() {
   const { anyRunning } = useView('run');
   const was = useRef(anyRunning);
@@ -239,7 +239,6 @@ export function useGameAutomation() {
     // In the panel, the game never takes the place of a tab the user is looking at.
     const panelFree = games.place !== 'panel' || !dockOpen || dockTab === 'games';
     if (anyRunning && games.openOnRun && panelFree) openGame(games, false);
-    if (!anyRunning && games.autoClose) closeGame();
   }, [anyRunning]);
 }
 

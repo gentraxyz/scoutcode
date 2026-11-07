@@ -203,7 +203,7 @@ export function logo(id: string): string {
 
 /** Whether an unlinked provider is Free or Paid. */
 export function providerStatus(id: string): 'Free' | 'Paid' {
-  return ['claude', 'codex', 'devin', 'grok'].includes(id) ? 'Paid' : 'Free';
+  return ['claude', 'codex', 'devin', 'grok', 'deepseek'].includes(id) ? 'Paid' : 'Free';
 }
 
 /** Every additional provider not linked yet, and how to link it. */

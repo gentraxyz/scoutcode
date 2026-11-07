@@ -161,3 +161,39 @@ all apply. The model menu lists Nous' public catalog, models with tools only, fr
 **Testing:** `cargo test hermes` covers refreshing against a stand-in server, and
 `cargo test -- --ignored live_hermes --nocapture` reads the real catalog. Neither can cover signing in or a real chat,
 which need an account.
+
+## DeepSeek API and DeepSeek Web
+
+**DeepSeek API** is an additional provider like Google AI Studio: the user's own key from platform.deepseek.com, sent
+straight to `https://api.deepseek.com/v1`, OpenAI-style, so Scout's tools, permissions, diffs and undo all apply.
+
+**DeepSeek Web** (`src/deepseek.rs`) uses the user's own chat.deepseek.com account, with no key, through the website. It's
+desktop only, off until turned on in Settings > Providers, and its settings are in `~/.scoutcode/deepseek-web.json`.
+
+- **A driver script runs in the page** (`src/deepseek/driver.js`). For each request it opens the right DeepSeek chat, types a
+  short line into the composer and sends it like the user would, so the page does its own sign-in and proof-of-work. As
+  the page's `/api/v0/chat/completion` request goes out, the driver swaps in Scout's full prompt and the mode
+  (`thinking_enabled`, `search_enabled`), and reads a copy of the streamed answer. The model menu's four entries are
+  those modes: DeepSeek, DeepThink, and each with Search.
+- **Scout runs the tool loop.** The website has no tool calling, so the first message of each DeepSeek chat lists Scout's
+  tools (and the user's MCP servers') and asks for calls in DSML, DeepSeek's own function-call format
+  (`<｜DSML｜invoke name="…">` with `<｜DSML｜parameter name="…" string="true|false">`), which its models write by habit
+  anyway. `dsml_calls` reads them, and earlier calls go back to it written the same way. `<tool_call>` blocks are still
+  read, through `tools::recover_calls`. Results go back as `<tool_result>` blocks. A Scout conversation stays in one
+  DeepSeek chat while its history matches (the system prompt isn't compared), so each step only sends what's new.
+- **Two places it can run.**
+  - *In Scout:* a hidden window, `deepseek`, on chat.deepseek.com with the driver as its initialization script. It has no
+    capability, so the page can't call Scout's IPC. Scout starts jobs and reads events by `eval`, polling
+    `window.__scoutDS.drain()`. Closing the window hides it, which keeps the sign-in. Background throttling is off.
+  - *Browser extension* (`src/deepseek/extension`, MV3, Chrome or Edge): Settings writes it to
+    `~/.scoutcode/deepseek-extension` with `scout.json` (port and token) for Load unpacked. `driver.js` and `main.js` run
+    in the page's main world, `bridge.js` links them to the background worker, and the worker long-polls
+    `POST http://127.0.0.1:47615/deepseek/sync` (or another free port, written to `scout.json`). The server answers only
+    requests with the token in `X-Scout-Token` and no web-page `Origin`. It only starts while the extension mode is on.
+- **The warning.** DeepSeek's terms don't allow automated use of the website, so the account could be limited or banned, and
+  Settings says so before it can be turned on. It also breaks when DeepSeek changes the page or its stream format. The
+  stream reader follows the formats seen so far (OpenAI-style `choices`, and the JSON-patch `{p, o, v}` updates with and
+  without `fragments`).
+
+**Testing:** `cargo test deepseek` covers the prompt bookkeeping and reading tool calls back. Nothing can test the page
+without a signed-in account: after a change, sign in, pick DeepSeek Web, and ask for something that needs a tool.

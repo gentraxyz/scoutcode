@@ -48,6 +48,10 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         skill_install,
         mcp_save,
         mcp_show_file,
+        deepseek_status,
+        deepseek_set,
+        deepseek_open,
+        deepseek_extension,
         changes_load,
         changes_diff,
         dir_read,
@@ -896,3 +900,39 @@ mod tests {
     }
 }
 
+
+// ---------- DeepSeek Web ----------
+
+#[tauri::command(async)]
+fn deepseek_status() -> Value {
+    crate::deepseek::status()
+}
+
+/// Turns DeepSeek Web on or off, or moves it between Scout's window and the extension, and lists its models.
+#[tauri::command(async)]
+fn deepseek_set(core: Shared, enabled: Option<bool>, via: Option<String>) -> Result<Value, String> {
+    let team = core.lock().unwrap().in_team();
+    if team && enabled == Some(true) {
+        return Err("Your Scout Enterprise team decides which providers you use.".into());
+    }
+    crate::deepseek::set(enabled, via)?;
+    if crate::deepseek::settings().enabled && crate::deepseek::settings().via == "window" {
+        crate::deepseek::check_window();
+    }
+    core.lock().unwrap().fetch_models();
+    Ok(crate::deepseek::status())
+}
+
+/// Shows Scout's DeepSeek window, to sign in.
+#[tauri::command(async)]
+fn deepseek_open() -> Result<(), String> {
+    crate::deepseek::open_window()
+}
+
+/// Writes the extension's folder and shows it, for Load unpacked.
+#[tauri::command]
+fn deepseek_extension() -> Result<String, String> {
+    let manifest = crate::deepseek::extension_folder()?;
+    reveal_path(&manifest);
+    Ok(manifest.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+}

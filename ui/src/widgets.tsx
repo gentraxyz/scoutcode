@@ -27,6 +27,7 @@ const PATHS: Record<string, string> = {
   memory: 'M4.500 2.500h7v11L8 11l-3.500 2.500z',
   terminal: 'M2.5 3.5h11v9h-11zM5 6.5L7 8l-2 1.5M8.5 10H11',
   changes: 'M4 5.400a1.700 1.700 0 1 0 0-3.400 1.700 1.700 0 0 0 0 3.400zM12 14a1.700 1.700 0 1 0 0-3.400 1.700 1.700 0 0 0 0 3.400zM12 10.600V6a2 2 0 0 0-2-2H7.500M9.300 2.200L7.500 4l1.800 1.800M4 5.400V10a2 2 0 0 0 2 2h2.500M6.700 10.200L8.500 12l-1.800 1.800',
+  route: 'M2.5 4.5h4l3 7h4M11.5 9.5l2 2-2 2M2.5 11.5h4l1-2.3M11.5 2.5l2 2-2 2M9.5 4.5h4',
   files: 'M3 2.5h6l3 3v8H3zM9 2.5v3h3M5.5 9h4M5.5 11h4',
   gear: 'M8 10.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4zM8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6L5 5M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4',
   chart: 'M3 13V8M8 13V3M13 13V6',
@@ -38,6 +39,7 @@ const PATHS: Record<string, string> = {
   pencil: 'M3 13l.700-2.800 7-7 2.100 2.100-7 7zM9.700 4.200l2.100 2.100',
   paperclip: 'M12.500 7.500l-4.800 4.800a2.800 2.800 0 0 1-4-4l5.200-5.200a1.900 1.900 0 0 1 2.700 2.700l-5 5a.9.9 0 0 1-1.300-1.300l4.500-4.500',
   mic: 'M8 10a2 2 0 0 0 2-2V4a2 2 0 1 0-4 0v4a2 2 0 0 0 2 2zM3.800 7.500a4.200 4.200 0 0 0 8.400 0M8 11.700V14',
+  copy: 'M6.5 5.5h5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1zM3.5 10.5v-6a1 1 0 0 1 1-1h6',
   arrowUp: 'M8 13V3.500M3.800 7.500L8 3.300l4.200 4.200',
   refresh: 'M13 8a5 5 0 1 1-1.500-3.500M13 2.500v3h-3',
   back: 'M9.500 3.500L5 8l4.500 4.500',
@@ -45,6 +47,15 @@ const PATHS: Record<string, string> = {
   maximize: 'M3.500 3.500h9v9h-9z',
   restore: 'M5.500 5.500h7v7h-7zM3.500 10.500v-7h7',
   game: 'M5 5h6a3 3 0 0 1 3 3v1a2.300 2.300 0 0 1-4.100 1.400L9.200 9.800H6.800l-.700.600A2.300 2.300 0 0 1 2 9V8a3 3 0 0 1 3-3zM5 6.700v2.200M3.900 7.800h2.200M10.300 7.400h.01M11.700 8.600h.01',
+  music: 'M6 12.500V3.800l7-1.300v8.700M6 6.200l7-1.300M4.500 14a1.800 1.800 0 1 0 0-3.600 1.800 1.800 0 0 0 0 3.600zM11.500 12.700a1.800 1.800 0 1 0 0-3.600 1.800 1.800 0 0 0 0 3.600z',
+  play: 'M5 3.500l8 4.500-8 4.500z',
+  pause: 'M5.500 3.500v9M10.500 3.500v9',
+  skipBack: 'M3.500 4v8M12.500 4L6.500 8l6 4z',
+  skipForward: 'M12.500 4v8M3.500 4l6 4-6 4z',
+  volume: 'M3 6.500h2.500L9 3.500v9l-3.500-3H3zM11.200 5.800a3.200 3.200 0 0 1 0 4.400M12.800 4a5.500 5.500 0 0 1 0 8',
+  volumeOff: 'M3 6.500h2.500L9 3.500v9l-3.500-3H3zM11.500 6.500l3 3M14.500 6.500l-3 3',
+  repeat: 'M3.500 6.500V5a1.500 1.500 0 0 1 1.500-1.500h7.500M10.500 1.800L12.500 3.500l-2 1.700M12.500 9.500V11a1.500 1.500 0 0 1-1.500 1.500H3.500M5.500 14.200L3.500 12.500l2-1.700',
+  upload: 'M8 10.500V3M4.800 6.200L8 3l3.200 3.200M3 13.500h10',
   sparkle: 'M7 2.500l1.300 3.200 3.200 1.300-3.200 1.300L7 11.500 5.700 8.300 2.500 7l3.200-1.300zM12 10v4M10 12h4',
   layers: 'M8 2.500l5.500 3L8 8.500l-5.500-3zM2.500 8L8 11l5.500-3M2.500 10.500L8 13.500l5.500-3',
   shield: 'M8 1.800l5 1.900V8c0 3-2.200 5-5 6.200C5.200 13 3 11 3 8V3.700zM5.800 8l1.600 1.600 2.900-3',
@@ -101,6 +112,7 @@ export function Link({ href, children, className = '' }: { href: string; childre
 export function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) => void; label: string }) {
   return <button type="button" role="switch" aria-checked={on} aria-label={label} className={`toggle ${on ? 'on' : ''}`} onClick={() => onChange(!on)}><span /></button>;
 }
+export const Switch = Toggle;
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return <div className="section-label">{children}</div>;
@@ -261,10 +273,19 @@ export function TodoList({ todos }: { todos: Todo[] }) {
   );
 }
 
+function userFacingText(text: string): string {
+  if (text.startsWith('The user denied this')) {
+    const fb = text.includes(' They said: ') ? text.split(' They said: ')[1] : '';
+    const noun = text.includes('bash call') || text.includes('command') ? 'command' : text.includes('edit') || text.includes('write_file') ? 'edit' : 'call';
+    return fb ? `You denied this ${noun}: ${fb}` : `You denied this ${noun}.`;
+  }
+  return text;
+}
+
 export function ShowDisplay({ d }: { d: Display }) {
   switch (d.type) {
     case 'text':
-      return <pre className="tool-text">{d.text}</pre>;
+      return <pre className="tool-text">{userFacingText(d.text)}</pre>;
     case 'todos':
       return <TodoList todos={d.todos} />;
     case 'image':
@@ -295,6 +316,24 @@ export function CopyButton({ text, label = 'Copy', className = '' }: { text: str
       setDone(true);
       setTimeout(() => setDone(false), 1200);
     }}>{done ? 'Copied' : label}</button>
+  );
+}
+
+export function CopyIconButton({ text, tip = 'Copy', size = 26, className = '' }: { text: string; tip?: string; size?: number; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <IconButton
+      icon={copied ? 'check' : 'copy'}
+      tip={copied ? 'Copied' : tip}
+      size={size}
+      className={`${className} ${copied ? 'copied' : ''}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+    />
   );
 }
 

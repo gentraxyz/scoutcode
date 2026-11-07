@@ -512,7 +512,7 @@ mod tests {
         let msgs = [
             Message::System { content: "S".into() },
             user("read a"),
-            Message::Assistant { content: Some("ok".into()), tool_calls: Some(vec![call]), reasoning_content: None },
+            Message::Assistant { content: Some("ok".into()), tool_calls: Some(vec![call]), reasoning_content: None, model: None, provider: None },
             Message::Tool { tool_call_id: "c1".into(), content: "text of a".into() },
             user("thanks"),
         ];

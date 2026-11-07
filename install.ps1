@@ -10,9 +10,8 @@ $startMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Scout.lnk'
 $desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Scout.lnk'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ScoutDesktop'
 
-Get-Process Scout -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
-
 if ($Uninstall) {
+    Get-Process Scout -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
     Remove-Item $startMenu, $desktopLink -Force -ErrorAction SilentlyContinue
     Remove-Item $uninstallKey -Recurse -Force -ErrorAction SilentlyContinue
     # Registered by the app for its Windows notifications.
@@ -34,7 +33,10 @@ try {
 } finally { Pop-Location }
 
 New-Item -ItemType Directory -Force $dest | Out-Null
-Get-Process Scout -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
+Get-ChildItem $dest -Filter 'Scout.exe.*.old' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+if (Test-Path $exe) {
+    Move-Item $exe "$exe.$([guid]::NewGuid().ToString('N').Substring(0, 8)).old" -Force -ErrorAction SilentlyContinue
+}
 Copy-Item (Join-Path $PSScriptRoot 'target\release\scout-desktop.exe') $exe -Force
 Copy-Item $PSCommandPath (Join-Path $dest 'install.ps1') -Force
 

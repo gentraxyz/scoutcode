@@ -13,11 +13,13 @@
       "dangerousDisableAssetCspModification": ["style-src"],
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self'",
+        "script-src": "'self' https://w.soundcloud.com",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data:",
+        "img-src": "'self' data: https://*.ytimg.com https://*.ggpht.com https://*.sndcdn.com",
+        "media-src": "'self' blob: data: music: http://music.localhost",
         "font-src": "'self' data:",
-        "connect-src": "ipc: http://ipc.localhost"
+        "frame-src": "https://w.soundcloud.com",
+        "connect-src": "ipc: http://ipc.localhost music: http://music.localhost"
       }
     }
   },

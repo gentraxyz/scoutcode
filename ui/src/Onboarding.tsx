@@ -8,8 +8,9 @@
 // 6. Appearance (theme, accent, window material, logo — with Classic logo fixed)
 // 7. General Options (sectioned cards with icons: personal instructions, ScoutMote, Discord RPC, Games, Notifications & updates)
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { act, invoke, openExternal, type Games, type View } from './api';
+import { act, invoke, openExternal, type Games, type Music, type View } from './api';
 import { closeGame } from './Games';
+import { closeMusic } from './Music';
 import {
   AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GrokEntry, HERMES_NOTE, HermesEntry, KeyField,
   KIRO_NOTE, logo, NvidiaEntry, OPENCODE_NOTE, ScoutKeyEntry, SignInEntry,
@@ -1163,6 +1164,11 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
     if (next.on === false || (next.place && next.place !== games.place)) closeGame();
     act('setGames', { games: { ...games, ...next } });
   };
+  const music = cfg.music;
+  const setMusic = (next: Partial<Music>) => {
+    if (next.on === false) closeMusic(true);
+    act('setMusic', { music: { ...music, ...next } });
+  };
 
   const finish = async () => {
     await saveInstructions();
@@ -1261,6 +1267,16 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
               </OptionRow>
             </>
           )}
+        </OptionSection>
+
+        <OptionSection icon="music" title={t('opt_music_title')} desc={t('opt_music_desc')}>
+          <OptionRow
+            icon="music"
+            title={t('opt_music_play')}
+            sub={t('opt_music_play_sub')}
+          >
+            <Toggle label={t('opt_music_title')} on={music.on} onChange={(on) => setMusic({ on })} />
+          </OptionRow>
         </OptionSection>
 
         <OptionSection icon="bell" title={updater.enabled ? t('opt_notify_title_with_updates') : t('opt_notify_title')} desc={t('opt_notify_desc')}>

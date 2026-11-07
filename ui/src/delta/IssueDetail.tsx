@@ -5,7 +5,7 @@ import { imageHandlers } from './images';
 import { agentPrompt, cycleName, cycleStatus, isDone, issueKey, newId, PRIORITIES, SCOUT, teamStates, type Activity, type Comment, type Issue } from './model';
 import { message, type AgentTarget } from './sync';
 import { useDelta, IssueRow, byOrder } from './Delta';
-import { ago, Avatar, Icon, InlineText, LabelDot, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, RichText, shortDay, StateIcon, stateOptions } from './ui';
+import { ago, AnimatedStateIcon, Avatar, Icon, InlineText, LabelDot, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, RichText, shortDay, StateIcon, stateOptions } from './ui';
 
 export function IssueDetail({ id, onClose, closing }: { id: string; onClose: () => void; closing?: boolean }) {
   const c = useDelta();
@@ -74,7 +74,7 @@ export function IssueDetail({ id, onClose, closing }: { id: string; onClose: () 
           </div>
           <div className="d-props">
             <Prop label="Status">
-              <Picker options={stateOptions(teamStates(doc, i.teamId))} value={i.stateId} onPick={(v) => set({ stateId: v })} trigger={(_, t) => <button type="button" className="d-prop-btn" onClick={t}><StateIcon state={st} />{st?.name}</button>} />
+              <Picker options={stateOptions(teamStates(doc, i.teamId))} value={i.stateId} onPick={(v) => set({ stateId: v })} trigger={(_, t) => <button type="button" className="d-prop-btn" onClick={t}><AnimatedStateIcon key={i.id} state={st} /><span key={st?.id} className="d-prop-btn-name">{st?.name}</span></button>} />
             </Prop>
             <Prop label="Priority">
               <Picker options={priorityOptions()} value={i.priority} onPick={(p) => set({ priority: p })} trigger={(_, t) => <button type="button" className="d-prop-btn" onClick={t}><PriorityIcon p={i.priority} />{PRIORITIES[i.priority]}</button>} />

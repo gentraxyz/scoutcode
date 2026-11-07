@@ -41,7 +41,7 @@ export function logoSvg(v: LogoVariant): string {
   const [a, b] = v.tile.map(color);
   const fill = b ? 'url(#g)' : a;
   const edge = v.edge ? `stroke="${color(v.edge)}" stroke-width="1.2"` : '';
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
 <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b ?? a}"/></linearGradient>
 <linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
 <rect x="${v.edge ? 0.6 : 0}" y="${v.edge ? 0.6 : 0}" width="${v.edge ? 30.8 : 32}" height="${v.edge ? 30.8 : 32}" rx="7.5" fill="${fill}" ${edge}/>
@@ -75,14 +75,43 @@ export function updateAppIcon(id: string) {
   drawn = src;
   const size = 64;
   const img = new Image();
-  img.onload = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(img, 0, 0, size, size);
-    const rgba = Array.from(ctx.getImageData(0, 0, size, size).data);
-    invoke('set_app_icon', { rgba, size }).catch((e) => console.error('set_app_icon', e));
+  img.crossOrigin = 'anonymous';
+
+  const drawAndSend = (imageSource: HTMLImageElement) => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(imageSource, 0, 0, size, size);
+      const rgba = Array.from(ctx.getImageData(0, 0, size, size).data);
+      invoke('set_app_icon', { rgba, size }).catch((e) => {
+        console.error('set_app_icon', e);
+        drawn = '';
+      });
+    } catch (e) {
+      console.error('Failed to draw icon to canvas', e);
+      // If an external image (e.g. classic PNG) throws due to cross-origin taint, fall back to SVG
+      if (imageSource.src !== dataUrl(logoSvg(v))) {
+        const svgImg = new Image();
+        svgImg.onload = () => drawAndSend(svgImg);
+        svgImg.src = dataUrl(logoSvg(v));
+      } else {
+        drawn = '';
+      }
+    }
+  };
+
+  img.onload = () => drawAndSend(img);
+  img.onerror = () => {
+    console.warn('Failed to load icon image', src);
+    if (src !== dataUrl(logoSvg(v))) {
+      const svgImg = new Image();
+      svgImg.onload = () => drawAndSend(svgImg);
+      svgImg.src = dataUrl(logoSvg(v));
+    } else {
+      drawn = '';
+    }
   };
   img.src = src;
 }

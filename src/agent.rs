@@ -100,6 +100,8 @@ pub enum Ev {
     HermesModelsError(Option<String>),
     /// Why Grok Build's models couldn't be listed, from the last time the lists were loaded.
     GrokModelsError(Option<String>),
+    /// Jev picked the starting step for an Agent Router turn.
+    RouterPicked { step: crate::config::AgentRouteStep, tier: u8, rest: Vec<crate::config::AgentRouteStep> },
     Finished(Box<Agent>, Result<(), String>),
     /// A merged model list, and whether it's the last of this fetch: the chosen model's provider is sent first.
     Models(Result<Vec<ModelInfo>, String>, bool),
@@ -312,6 +314,79 @@ fn devin_shown(kind: &str, input: &Value, cwd: &str) -> (String, Value) {
     }
 }
 
+/// The tool name, label and arguments an ACP tool call goes under, in the window and the session.
+fn acp_shown(kind: &str, title: &str, input: &Value, fallback_tool: &str) -> (String, String, Value) {
+    let cmd = input.get("command").and_then(Value::as_str).filter(|s| !s.is_empty());
+    if kind == "execute" || cmd.is_some() || title.eq_ignore_ascii_case("terminal") {
+        let command = cmd.unwrap_or(if !title.is_empty() && !title.eq_ignore_ascii_case("terminal") { title } else { "" });
+        let mut normalized_input = input.clone();
+        if !command.is_empty() && normalized_input.get("command").is_none() {
+            if let Value::Object(ref mut map) = normalized_input {
+                map.insert("command".into(), json!(command));
+            } else {
+                normalized_input = json!({ "command": command });
+            }
+        }
+        let label = if !command.is_empty() {
+            command.to_string()
+        } else if !title.is_empty() && !title.eq_ignore_ascii_case("terminal") {
+            title.to_string()
+        } else {
+            String::new()
+        };
+        ("bash".into(), label, normalized_input)
+    } else if kind == "read" {
+        let path = input.get("file_path").or_else(|| input.get("path")).and_then(Value::as_str).unwrap_or("");
+        let label = if !path.is_empty() {
+            path.to_string()
+        } else if !title.is_empty() {
+            title.to_string()
+        } else {
+            String::new()
+        };
+        ("view".into(), label, input.clone())
+    } else if kind == "edit" {
+        let path = input.get("file_path").or_else(|| input.get("path")).and_then(Value::as_str).unwrap_or("");
+        let label = if !path.is_empty() {
+            path.to_string()
+        } else if !title.is_empty() {
+            title.to_string()
+        } else {
+            String::new()
+        };
+        ("edit_file".into(), label, input.clone())
+    } else if kind == "search" {
+        let pat = input.get("pattern").or_else(|| input.get("query")).and_then(Value::as_str).unwrap_or("");
+        let label = if !pat.is_empty() {
+            pat.to_string()
+        } else if !title.is_empty() {
+            title.to_string()
+        } else {
+            String::new()
+        };
+        ("grep".into(), label, input.clone())
+    } else if kind == "fetch" {
+        let url = input.get("url").and_then(Value::as_str).unwrap_or("");
+        let label = if !url.is_empty() {
+            url.to_string()
+        } else if !title.is_empty() {
+            title.to_string()
+        } else {
+            String::new()
+        };
+        ("web_fetch".into(), label, input.clone())
+    } else {
+        let label = if !title.is_empty() {
+            title.to_string()
+        } else if !kind.is_empty() {
+            kind.to_string()
+        } else {
+            String::new()
+        };
+        (fallback_tool.into(), label, input.clone())
+    }
+}
+
 /// What a Copilot session is for: the conversation itself, a sub-agent (by its description), or a one-off answer.
 #[derive(Clone, Copy)]
 enum CopilotRole<'a> {
@@ -337,6 +412,8 @@ pub struct Agent {
     pub before_model: bool,
     /// A failure goes straight to a fallback, or to the card that offers them, instead of being retried here.
     pub fail_fast: bool,
+    /// In the Agent Router, whether a 429 on the current step should wait and retry before moving on to the next step.
+    pub rate_limit_retry: Option<bool>,
     /// A message whose turn failed before it joined the conversation, for a retry to send.
     unsent: Option<Content>,
     last_request_at: Option<Instant>,
@@ -418,6 +495,24 @@ static GROK: AcpCli = AcpCli {
     forget: crate::grok::forget,
 };
 
+pub fn denied_noun(name: &str) -> &'static str {
+    match name {
+        "bash" => "command",
+        "write_file" | "edit_file" | "multi_edit" | "apply_patch" => "edit",
+        "update_memory" => "memory update",
+        _ => "call",
+    }
+}
+
+pub fn denied_display(name: &str, fb: &str) -> String {
+    let noun = denied_noun(name);
+    if fb.is_empty() {
+        format!("You denied this {noun}.")
+    } else {
+        format!("You denied this {noun}: {fb}")
+    }
+}
+
 impl Agent {
     pub fn new(cfg: Config, session: Session, shared: Arc<Shared>) -> Self {
         Agent {
@@ -432,6 +527,7 @@ impl Agent {
             out_of_credit: false,
             before_model: false,
             fail_fast: false,
+            rate_limit_retry: None,
             unsent: None,
             last_request_at: None,
             sys: None,
@@ -443,6 +539,35 @@ impl Agent {
 
     fn cancelled(&self) -> bool {
         self.shared.cancel.load(Ordering::Relaxed)
+    }
+
+    fn push_assistant(&mut self, content: Option<String>, tool_calls: Option<Vec<ToolCall>>) {
+        let tool_calls = tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|mut c| {
+                    if let Ok(val) = serde_json::from_str::<Value>(&c.function.arguments) {
+                        let (name, args) = tools::canonical(&c.function.name, val.clone());
+                        if name != c.function.name || args != val {
+                            c.function.name = name;
+                            c.function.arguments = args.to_string();
+                        }
+                    }
+                    c
+                })
+                .collect()
+        });
+        let (model, provider) = (
+            Some(self.shared.model.lock().unwrap().clone()),
+            Some(self.shared.provider.lock().unwrap().clone()),
+        );
+        self.session.messages.push(Message::Assistant {
+            content,
+            tool_calls,
+            reasoning_content: None,
+            model,
+            provider,
+        });
     }
 
     /// Reload at turn boundaries; the prompt stays byte-identical within a turn until compaction or a model change.
@@ -598,15 +723,23 @@ impl Agent {
                     if provider == "hermes" && e.status == 402 {
                         return Err(ApiError { message: crate::hermes::NO_CREDIT.into(), ..e });
                     }
-                    if !e.retryable() || attempt >= 4 || self.fail_fast {
+                    let should_retry = if e.status == 429 {
+                        match self.rate_limit_retry {
+                            Some(retry_429) => retry_429,
+                            None => !self.fail_fast,
+                        }
+                    } else {
+                        !self.fail_fast
+                    };
+                    if !e.retryable() || attempt >= 4 || !should_retry {
                         return Err(e);
                     }
                     // ScoutCode's free requests for the day are used up, so waiting a minute won't help.
-                    if provider == "scoutcode" && e.status == 429 && e.retry_after.is_some_and(|s| s > 60) {
+                    if provider == "scoutcode" && e.status == 429 && e.retry_after.is_some_and(|s| s > 60) && self.rate_limit_retry != Some(true) {
                         return Err(e);
                     }
                     // Kilo's limit is per hour, so a retry seconds later fails too and burns what's left. Only its own short wait gets one.
-                    if provider == "kilo" && e.status == 429 && !(attempt == 0 && e.retry_after.is_some_and(|s| s <= 60)) {
+                    if provider == "kilo" && e.status == 429 && !(attempt == 0 && e.retry_after.is_some_and(|s| s <= 60)) && self.rate_limit_retry != Some(true) {
                         return Err(ApiError { message: "Kilo's free models allow 200 requests an hour from your network, and that's used up. Switch provider in the model menu, use a paid model with a Kilo key (Settings > Providers), or try again later.".into(), ..e });
                     }
                     let wait = e.retry_after.unwrap_or(2u64.pow(attempt + 1)).min(60);
@@ -806,13 +939,16 @@ impl Agent {
         }
         match self.permit(name, args, h) {
             PermissionAnswer::Deny(fb) => {
-                return ToolResult::err(
-                    format!(
-                        "The user denied this {name} call.{}",
+                let noun = denied_noun(name);
+                return ToolResult {
+                    output: format!(
+                        "The user denied this {noun}.{}",
                         if fb.is_empty() { " Do not retry it unchanged; ask the user how to proceed if you need it.".to_string() } else { format!(" They said: {fb}") }
                     ),
-                    "denied",
-                );
+                    is_error: true,
+                    summary: Some("denied".into()),
+                    display: Some(Display::Text(denied_display(name, &fb))),
+                };
             }
             _ => {}
         }
@@ -872,7 +1008,7 @@ impl Agent {
         for _ in 0..60 {
             let r = self.request(&messages, true, true, model.clone(), false, h)?;
             let calls = r.tool_calls.clone();
-            messages.push(Message::Assistant { content: (!r.content.is_empty()).then(|| r.content.clone()), tool_calls: (!calls.is_empty()).then(|| calls.clone()), reasoning_content: None });
+            messages.push(Message::Assistant { content: (!r.content.is_empty()).then(|| r.content.clone()), tool_calls: (!calls.is_empty()).then(|| calls.clone()), reasoning_content: None, model: None, provider: None });
             if calls.is_empty() {
                 return Ok(r.content);
             }
@@ -957,7 +1093,7 @@ impl Agent {
                     let call = ToolCall { id, kind: "function".into(), extra_content: None, function: api::FunctionCall { name, arguments } };
                     let out = match role {
                         CopilotRole::Main => {
-                            self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(&mut text)), tool_calls: Some(vec![call.clone()]), reasoning_content: None });
+                            self.push_assistant((!text.is_empty()).then(|| std::mem::take(&mut text)), Some(vec![call.clone()]));
                             h.send(Ev::AssistantDone);
                             let res = self.run_tool(&call, h);
                             let out = cap_output(res.output);
@@ -978,7 +1114,7 @@ impl Agent {
                         break Ok(std::mem::take(&mut text));
                     }
                     if !text.is_empty() {
-                        self.session.messages.push(Message::Assistant { content: Some(std::mem::take(&mut text)), tool_calls: None, reasoning_content: None });
+                        self.push_assistant(Some(std::mem::take(&mut text)), None);
                         h.send(Ev::AssistantDone);
                     }
                     save_session(&mut self.session);
@@ -1004,7 +1140,7 @@ impl Agent {
 
     /// One of Devin's writes or commands, run like any other tool, with what it did going in the session as usual.
     fn devin_tool(&mut self, call: ToolCall, text: &mut String, h: &Hooks) -> ToolResult {
-        self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(text)), tool_calls: Some(vec![call.clone()]), reasoning_content: None });
+        self.push_assistant((!text.is_empty()).then(|| std::mem::take(text)), Some(vec![call.clone()]));
         h.send(Ev::AssistantDone);
         let res = self.run_tool(&call, h);
         self.session.messages.push(Message::Tool { tool_call_id: call.id, content: cap_output(res.output.clone()) });
@@ -1107,7 +1243,7 @@ impl Agent {
                     let summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
                     h.send(Ev::ToolResult { id: id.clone(), result: ToolResult { output: out.clone(), is_error: failed, summary: Some(summary), display: None } });
                     let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name, arguments: args.to_string() } };
-                    self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(&mut text)), tool_calls: Some(vec![call]), reasoning_content: None });
+                    self.push_assistant((!text.is_empty()).then(|| std::mem::take(&mut text)), Some(vec![call]));
                     self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { title } else { out }) });
                     save_session(&mut self.session);
                 }
@@ -1205,7 +1341,7 @@ impl Agent {
                         break Ok(std::mem::take(&mut text));
                     }
                     if !text.is_empty() {
-                        self.session.messages.push(Message::Assistant { content: Some(std::mem::take(&mut text)), tool_calls: None, reasoning_content: None });
+                        self.push_assistant(Some(std::mem::take(&mut text)), None);
                         h.send(Ev::AssistantDone);
                     }
                     save_session(&mut self.session);
@@ -1269,8 +1405,8 @@ impl Agent {
             h.send(Ev::RequestStart);
         }
         let (mut text, mut said, mut refused) = (String::new(), false, false);
-        // Its calls not finished yet: id → title, input.
-        let mut open: HashMap<String, (String, Value)> = HashMap::new();
+        // Its calls not finished yet: id → name, label, input, kind.
+        let mut open: HashMap<String, (String, String, Value, String)> = HashMap::new();
         let result = loop {
             if self.cancelled() {
                 run.abort();
@@ -1292,26 +1428,53 @@ impl Agent {
                     h.send(Ev::Todos(t));
                 }
                 CliMsg::Todos(_) => {}
-                // A call can be announced again as it fills in, and only the first shows.
+                // A call can be announced again as it fills in.
                 CliMsg::ToolStart { id, kind, title, input } => {
-                    if main && !open.contains_key(&id) {
-                        let title = if title.is_empty() { kind } else { title };
-                        h.send(Ev::AssistantDone);
-                        h.send(Ev::ToolCall { id: id.clone(), name: tool.into(), label: title.clone() });
-                        open.insert(id, (title, input));
+                    if main {
+                        if let Some((prev_name, prev_label, prev_input, prev_kind)) = open.get_mut(&id) {
+                            let effective_kind = if !kind.is_empty() { &kind } else { prev_kind.as_str() };
+                            let (tool_name, label, full_input) = acp_shown(effective_kind, &title, &input, tool);
+                            let mut changed = false;
+                            if !tool_name.is_empty() && *prev_name != tool_name && *prev_name == tool {
+                                *prev_name = tool_name;
+                                changed = true;
+                            }
+                            if !label.is_empty() && (label != *prev_label || *prev_label == "Terminal") {
+                                *prev_label = label;
+                                changed = true;
+                            }
+                            if !full_input.as_object().map_or(true, |o| o.is_empty()) {
+                                *prev_input = full_input;
+                            }
+                            if !kind.is_empty() && *prev_kind != kind {
+                                *prev_kind = kind;
+                            }
+                            if changed {
+                                h.send(Ev::ToolCall { id: id.clone(), name: prev_name.clone(), label: prev_label.clone() });
+                            }
+                        } else {
+                            let (tool_name, label, full_input) = acp_shown(&kind, &title, &input, tool);
+                            h.send(Ev::AssistantDone);
+                            h.send(Ev::ToolCall { id: id.clone(), name: tool_name.clone(), label: label.clone() });
+                            open.insert(id, (tool_name, label, full_input, kind));
+                        }
+                    } else if !open.contains_key(&id) {
+                        let (tool_name, label, full_input) = acp_shown(&kind, &title, &input, tool);
+                        open.insert(id, (tool_name, label, full_input, kind));
                     }
                 }
                 CliMsg::ToolEnd { id, failed, text: out } => {
-                    let Some((title, input)) = open.remove(&id) else { continue };
+                    let Some((tool_name, label, input, _kind)) = open.remove(&id) else { continue };
                     said = true;
                     let summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
                     h.send(Ev::ToolResult { id: id.clone(), result: ToolResult { output: out.clone(), is_error: failed, summary: Some(summary), display: None } });
-                    let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: tool.into(), arguments: input.to_string() } };
-                    self.session.messages.push(Message::Assistant { content: (!text.is_empty()).then(|| std::mem::take(&mut text)), tool_calls: Some(vec![call]), reasoning_content: None });
-                    self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { title } else { out }) });
+                    let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: tool_name, arguments: input.to_string() } };
+                    self.push_assistant((!text.is_empty()).then(|| std::mem::take(&mut text)), Some(vec![call]));
+                    self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { label } else { out }) });
                     save_session(&mut self.session);
                 }
                 CliMsg::Permission { id, kind, title, options } => {
+                    let req_tool = if kind == "execute" || title.eq_ignore_ascii_case("terminal") { "bash" } else if kind == "edit" { "edit_file" } else { tool };
                     let allow = main
                         && match self.shared.mode().as_str() {
                             "yolo" => true,
@@ -1319,7 +1482,7 @@ impl Agent {
                             "acceptEdits" if kind == "edit" => true,
                             _ => {
                                 let (tx, rx) = channel();
-                                h.send(Ev::AskPermission(PermissionRequest { tool: tool.into(), label: title, preview: None, prefix: None, reason: None }, tx));
+                                h.send(Ev::AskPermission(PermissionRequest { tool: req_tool.into(), label: title, preview: None, prefix: None, reason: None }, tx));
                                 !matches!(rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())), PermissionAnswer::Deny(_))
                             }
                         };
@@ -1335,7 +1498,7 @@ impl Agent {
                         break Ok(std::mem::take(&mut text));
                     }
                     if !text.is_empty() {
-                        self.session.messages.push(Message::Assistant { content: Some(std::mem::take(&mut text)), tool_calls: None, reasoning_content: None });
+                        self.push_assistant(Some(std::mem::take(&mut text)), None);
                         h.send(Ev::AssistantDone);
                     }
                     save_session(&mut self.session);
@@ -1545,7 +1708,7 @@ impl Agent {
         }
         let mut msgs = vec![
             Message::User { content: Content::Text(format!("This session continues an earlier conversation that was compacted. Summary of it:\n\n{summary}")) },
-            Message::Assistant { content: Some("✓".into()), tool_calls: None, reasoning_content: None },
+            Message::Assistant { content: Some("✓".into()), tool_calls: None, reasoning_content: None, model: None, provider: None },
         ];
         msgs.extend(tail.iter().cloned());
         self.session.messages = msgs;
@@ -1692,6 +1855,8 @@ impl Agent {
     /// Asks the model until it stops calling tools, from the conversation as it stands.
     fn carry_on(&mut self, h: &Hooks) -> Result<(), ApiError> {
         if *self.shared.provider.lock().unwrap() == "copilot" {
+            self.session.model = self.shared.model.lock().unwrap().clone();
+            self.session.provider = Some(self.shared.provider.lock().unwrap().clone());
             self.announce_mode();
             self.session.model = self.shared.model.lock().unwrap().clone();
             let model = self.session.model.clone();
@@ -1708,6 +1873,7 @@ impl Agent {
 
         if *self.shared.provider.lock().unwrap() == "devin" {
             self.session.model = self.shared.model.lock().unwrap().clone();
+            self.session.provider = Some(self.shared.provider.lock().unwrap().clone());
             let req = self.session.messages.clone();
             let r = self.devin_run(&req, true, h).map(|_| ());
             save_session(&mut self.session);
@@ -1716,6 +1882,7 @@ impl Agent {
         for cli in [&KIRO, &CODEX, &CLAUDE, &OPENCODE, &GROK] {
             if *self.shared.provider.lock().unwrap() == cli.tool {
                 self.session.model = self.shared.model.lock().unwrap().clone();
+                self.session.provider = Some(self.shared.provider.lock().unwrap().clone());
                 let req = self.session.messages.clone();
                 let r = self.acp_run(cli, &req, true, h).map(|_| ());
                 save_session(&mut self.session);
@@ -1736,6 +1903,7 @@ impl Agent {
             }
             self.announce_mode();
             self.session.model = self.shared.model.lock().unwrap().clone();
+            self.session.provider = Some(self.shared.provider.lock().unwrap().clone());
             let mut req = vec![self.system()];
             req.extend_from_slice(&self.session.messages);
             let r = match self.request(&req, false, false, None, false, h) {
@@ -1746,11 +1914,7 @@ impl Agent {
                 }
             };
             let calls = r.tool_calls.clone();
-            self.session.messages.push(Message::Assistant {
-                content: (!r.content.is_empty()).then(|| r.content.clone()),
-                tool_calls: (!calls.is_empty()).then(|| calls.clone()),
-                reasoning_content: None,
-            });
+            self.push_assistant((!r.content.is_empty()).then(|| r.content.clone()), (!calls.is_empty()).then(|| calls.clone()));
             h.send(Ev::AssistantDone);
             save_session(&mut self.session);
 
@@ -1791,7 +1955,7 @@ impl Agent {
             return;
         }
         if let Some(Message::User { .. }) | Some(Message::Tool { .. }) = self.session.messages.last() {
-            self.session.messages.push(Message::Assistant { content: Some(format!("{partial}\n\n[interrupted by the user]")), tool_calls: None, reasoning_content: None });
+            self.push_assistant(Some(format!("{partial}\n\n[interrupted by the user]")), None);
             save_session(&mut self.session);
         }
     }
@@ -2193,6 +2357,7 @@ mod tests {
                 run.join().unwrap()
             });
             assert!(waiter.is_error && waiter.output.contains("denied"), "{mode}: {}", waiter.output);
+            assert!(matches!(waiter.display, Some(Display::Text(ref t)) if t == "You denied this call."));
             let (label, prefix) = asked_rx.recv().unwrap();
             assert_eq!((label.as_str(), prefix.as_deref()), ("srv / do_it", Some("mcp__srv__do_it")), "{mode}");
         }
@@ -2204,6 +2369,16 @@ mod tests {
         assert!(r.is_error && r.output.contains("isn't connected"), "{}", r.output);
         assert!(!rx.try_iter().any(|e| matches!(e, Ev::AskPermission(..))));
         assert!(!tools::READ_ONLY.contains(&"mcp__srv__do_it"));
+    }
+
+    #[test]
+    fn denied_display_uses_user_facing_wording() {
+        assert_eq!(denied_display("bash", ""), "You denied this command.");
+        assert_eq!(denied_display("bash", "not now"), "You denied this command: not now");
+        assert_eq!(denied_display("edit_file", ""), "You denied this edit.");
+        assert_eq!(denied_display("write_file", "don't overwrite"), "You denied this edit: don't overwrite");
+        assert_eq!(denied_display("update_memory", ""), "You denied this memory update.");
+        assert_eq!(denied_display("custom_tool", ""), "You denied this call.");
     }
 
     #[test]
@@ -2220,6 +2395,8 @@ mod tests {
             content: None,
             tool_calls: Some(vec![ToolCall { id: id.into(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: "write_file".into(), arguments: "{}".into() } }]),
             reasoning_content: None,
+            model: None,
+            provider: None,
         };
         let user = |t: &str| Message::User { content: Content::Text(t.into()) };
         let tool = |id: &str| Message::Tool { tool_call_id: id.into(), content: "ok".into() };

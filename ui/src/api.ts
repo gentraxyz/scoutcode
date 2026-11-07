@@ -14,7 +14,7 @@ export type Display =
 export type ToolResult = { isError: boolean; summary: string | null; display: Display };
 export type Item =
   | { id: number; kind: 'user'; text: string; files: string[] }
-  | { id: number; kind: 'assistant'; text: string; reasoning: string }
+  | { id: number; kind: 'assistant'; text: string; reasoning: string; model?: string | null; provider?: string | null }
   | { id: number; kind: 'tool'; name: string; label: string; progress: string; result: ToolResult | null }
   | { id: number; kind: 'notice' | 'error' | 'outOfCredit'; text: string }
   | { id: number; kind: 'fallbackSetup'; text: string; key: string; provider: string };
@@ -23,6 +23,10 @@ export type Item =
 export type ModelRef = { key: string; provider: string };
 /** The models to try, in order, when the chosen one fails. */
 export type Fallbacks = { chosen: boolean; all: ModelRef[]; models: [ModelRef, ModelRef[]][] };
+/** One step in the Agent Router. */
+export type AgentRouteStep = { key: string; provider: string; intelligence: 1 | 2 | 3; retryRateLimit: boolean };
+/** The Agent Router: an ordered list of provider/model steps, optionally routed by Jev prompt difficulty. */
+export type AgentRouter = { id: string; name: string; useJev: boolean; steps: AgentRouteStep[]; lastProvider: string | null };
 
 export type Model = {
   id: string; label: string; description: string | null; context: number | null; tools: boolean | null; vision: boolean | null; cost: string | null;
@@ -53,12 +57,23 @@ export type Referrals = {
   code: string; max: number; bonus: number; credit: number; expiryDays: number; earned: number;
   referredBy: string | null; canRedeem?: boolean | null; referred: ReferralEntry[];
 };
+export const DISCORD_INVITE_URL = 'https://discord.gg/T9Ch9wVAUc';
+
+export type DiscordLink = {
+  linked: boolean;
+  reward?: number | null;
+  discordTag?: string | null;
+  linkedAt?: string | null;
+  code?: string | null;
+  expiresAt?: string | null;
+  discordUrl?: string | null;
+};
 export type UsageInfo = {
   username: string; admin: boolean; resetsAt: string; money: Plan | null; cli: Plan | null; balance: number;
   /** The week's desktop credit: when it resets, and its 5-hour window (resetsAt null when none is running). Missing from older servers. */
   cliResetsAt: string | null; cliWindow: (Plan & { resetsAt: string | null }) | null;
   bankedMoney: { amount: number; expiresAt: string }[]; bankedResets: { expiresAt: string }[];
-  dailyReward?: DailyReward | null; referrals?: Referrals | null;
+  dailyReward?: DailyReward | null; referrals?: Referrals | null; discordLink?: DiscordLink | null;
   users: ManagedUser[];
 };
 /** One of a provider's limits, as it last said: what's left of how much, and when it resets (ms since 1970). */
@@ -83,6 +98,23 @@ export type UpdateStatus =
 /** Experimental games: where they show, and whether they open and close with Scout's work. */
 export type Games = { on: boolean; place: 'float' | 'panel'; openOnRun: boolean; autoClose: boolean; pos: [number, number] | null };
 
+/** Experimental music player: whether it's on, where its floating card sits, and its volume. */
+export type Music = { on: boolean; pos: [number, number] | null; volume: number };
+
+export type MusicTrack = {
+  id: string;
+  title: string;
+  artist: string;
+  kind: 'mp3' | 'sc';
+  file: string | null;
+  /** SoundCloud page the entry came from. */
+  url: string | null;
+  /** SoundCloud player source, e.g. https://api.soundcloud.com/tracks/293. */
+  embed: string | null;
+  thumbnail: string | null;
+  duration: number | null;
+};
+
 /** The Scout Enterprise team the account is in: the providers it runs through the server, and the ones on this PC it allows. */
 export type Team = { name: string; role: string; providers: string[]; acp: string[] };
 
@@ -90,7 +122,7 @@ export type View = {
   cfg: {
     loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks; experimentalImages: boolean; imageModel: string | null; games: Games;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; games: Games; music: Music;
   };
   mode: string;
   model: { id: string; provider: string; key: string; short: string };

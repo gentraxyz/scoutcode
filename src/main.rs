@@ -22,6 +22,7 @@ mod hermes;
 mod instructions;
 mod mcp;
 mod mcp_client;
+mod music;
 mod node;
 mod memory;
 mod notify;
@@ -79,6 +80,10 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(dock::Terminal::default())
         .invoke_handler(bridge::handler())
+        // The music player streams audio from here, so playback starts at once and can seek (see music::serve).
+        .register_asynchronous_uri_scheme_protocol("music", |_ctx, req, responder| {
+            std::thread::spawn(move || responder.respond(music::serve(&req)));
+        })
         .setup(|app| {
             let (tx, rx) = channel();
             let (wake_tx, wake_rx) = channel();

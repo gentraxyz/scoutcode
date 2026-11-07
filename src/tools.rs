@@ -146,25 +146,251 @@ const SEARCH_NAMES: [&str; 6] = ["search", "search_files", "search_code", "code_
 /// The tool a call means and its arguments in that tool's terms. Models often call a code search "search" with a
 /// `query`; that runs grep for the text as written (not a regex), ignoring case and showing the matching lines.
 pub fn canonical(name: &str, args: Value) -> (String, Value) {
-    if !SEARCH_NAMES.contains(&name) {
+    if !SEARCH_NAMES.contains(&name) && name != "grep" {
         return (name.to_string(), args);
     }
     let mut a = args.as_object().cloned().unwrap_or_default();
+    let mut from_query = false;
     if a.get("pattern").and_then(Value::as_str).is_none_or(str::is_empty) {
         let query = ["query", "q", "text", "search", "term", "regex"].iter().find_map(|k| a.get(*k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from));
         if let Some(q) = query {
+            from_query = true;
             let literal = a.get("regex").and_then(Value::as_str) != Some(q.as_str());
+            for k in ["query", "q", "text", "search", "term", "regex"] {
+                a.remove(k);
+            }
             a.insert("pattern".into(), json!(if literal { regex::escape(&q) } else { q }));
             a.entry("ignore_case").or_insert(json!(true));
         }
     }
-    a.entry("output_mode").or_insert(json!("content"));
+    if SEARCH_NAMES.contains(&name) || from_query {
+        a.entry("output_mode").or_insert(json!("content"));
+    }
     if a.get("path").is_none() {
-        if let Some(d) = ["directory", "dir", "folder"].iter().find_map(|k| a.get(*k).cloned()) {
+        if let Some(d) = ["directory", "dir", "folder"].iter().find_map(|k| a.remove(*k)) {
             a.insert("path".into(), d);
+        }
+    } else {
+        for k in ["directory", "dir", "folder"] {
+            a.remove(k);
         }
     }
     ("grep".to_string(), Value::Object(a))
+}
+
+/// Whether streamed text so far could be a raw tool call pasted as chat content, so `stream_chat` should hold back
+/// showing it until either normal prose appears or the stream ends.
+pub fn might_be_tool_call(s: &str) -> bool {
+    let t = s.trim_start();
+    if t.is_empty() {
+        return true;
+    }
+    if t.starts_with('{')
+        || "<tool_call".starts_with(t)
+        || "<function=".starts_with(t)
+        || "[TOOL_CALLS]".starts_with(t)
+        || t.starts_with("<tool_call")
+        || t.starts_with("<function=")
+        || t.starts_with("[TOOL_CALLS]")
+        || "```json".starts_with(t)
+        || "```\n{".starts_with(t)
+        || "```\r\n{".starts_with(t)
+        || t.starts_with("```json")
+        || t.starts_with("```\n{")
+        || t.starts_with("```\r\n{")
+    {
+        return true;
+    }
+    let prefix: String = t.chars().take_while(|c| c.is_ascii_lowercase() || *c == '_').collect();
+    if prefix.is_empty() || prefix.len() > 24 {
+        return false;
+    }
+    let rest = &t[prefix.len()..];
+    if rest.is_empty() {
+        return true;
+    }
+    (known(&prefix) || SEARCH_NAMES.contains(&prefix.as_str()) || is_mcp(&prefix))
+        && (rest.chars().all(char::is_whitespace) || rest.trim_start().starts_with('{'))
+}
+
+/// Infers a tool name and arguments from a JSON object when a model forgot the tool-call wrapper and emitted the call or
+/// its arguments in `content`.
+fn infer_from_value(v: &Value, reasoning: &str, allowed: &HashSet<&str>) -> Option<(String, Value)> {
+    let map = v.as_object()?;
+    let has_str = |k: &str| map.get(k).and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    let only_keys = |keys: &[&str]| !map.is_empty() && map.keys().all(|k| keys.contains(&k.as_str()));
+    let check_allowed = |(name, args): (String, Value)| allowed.contains(name.as_str()).then_some((name, args));
+
+    // OpenAI-style `{"function": {"name": "...", "arguments": ...}}`.
+    if let Some(f) = map.get("function").and_then(Value::as_object) {
+        if only_keys(&["id", "type", "function", "extra_content"]) {
+            let name = f.get("name").and_then(Value::as_str)?;
+            let raw = f.get("arguments").or_else(|| f.get("parameters")).cloned().unwrap_or_else(|| json!({}));
+            let args = match raw {
+                Value::String(s) => serde_json::from_str(&s).ok()?,
+                other if other.is_object() => other,
+                _ => return None,
+            };
+            return check_allowed(canonical(name, args));
+        }
+    }
+
+    // Wrapped `{"name": "...", "arguments": ...}` or flat `{"name": "grep", "path": "...", ...}`.
+    if let Some(name) = ["name", "tool", "function"].iter().find_map(|k| map.get(*k).and_then(Value::as_str)).filter(|n| !n.is_empty()) {
+        if only_keys(&["id", "type", "name", "tool", "function", "arguments", "parameters", "args", "input"]) {
+            let raw = ["arguments", "parameters", "args", "input"].iter().find_map(|k| map.get(*k)).cloned().unwrap_or_else(|| json!({}));
+            let args = match raw {
+                Value::String(s) => serde_json::from_str(&s).ok()?,
+                other if other.is_object() => other,
+                _ => return None,
+            };
+            return check_allowed(canonical(name, args));
+        }
+        if known(name) || SEARCH_NAMES.contains(&name) || is_mcp(name) {
+            let mut rest = map.clone();
+            for k in ["id", "type", "name", "tool", "function"] {
+                rest.remove(k);
+            }
+            if !rest.is_empty() {
+                return check_allowed(canonical(name, Value::Object(rest)));
+            }
+        }
+    }
+
+    // Bare argument objects, matched strictly against each tool's parameter schema.
+    let tool = if map.contains_key("old_string") && map.contains_key("new_string") && has_str("path") && only_keys(&["path", "old_string", "new_string", "replace_all"]) {
+        "edit_file"
+    } else if has_str("path") && map.get("edits").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) && only_keys(&["path", "edits"]) {
+        "multi_edit"
+    } else if has_str("path") && map.get("content").is_some_and(Value::is_string) && only_keys(&["path", "content"]) {
+        "write_file"
+    } else if ["input", "patch"].iter().any(|k| map.get(*k).and_then(Value::as_str).is_some_and(|s| s.contains("*** Begin Patch"))) && only_keys(&["input", "patch"]) {
+        "apply_patch"
+    } else if has_str("command") && only_keys(&["command", "description", "run_for_seconds", "run_in_background", "timeout_ms"]) {
+        "bash"
+    } else if has_str("id") && (map.contains_key("lines") || map.contains_key("wait_seconds")) && only_keys(&["id", "lines", "wait_seconds"]) {
+        "shell_output"
+    } else if map.get("url").and_then(Value::as_str).is_some_and(|u| u.starts_with("http://") || u.starts_with("https://")) && only_keys(&["url"]) {
+        "web_fetch"
+    } else if has_str("query")
+        && only_keys(&["query", "num_results", "include_domains", "exclude_domains", "start_published_date", "category"])
+        && (map.len() > 1 || reasoning.to_lowercase().contains("web"))
+    {
+        "web_search"
+    } else if ["pattern", "query", "q", "text", "search", "term", "regex"].iter().any(|k| has_str(k))
+        && only_keys(&["pattern", "query", "q", "text", "search", "term", "regex", "path", "directory", "dir", "folder", "glob", "output_mode", "ignore_case", "context", "max_results"])
+    {
+        if has_str("pattern") && only_keys(&["pattern", "path"]) {
+            let pat = s(v, "pattern");
+            let r_last = reasoning.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").to_lowercase();
+            let looks_like_glob = !pat.contains(' ')
+                && (pat.starts_with("**/") || pat.starts_with("*.") || pat.contains("/*.") || r_last.contains("glob") || r_last.contains("find file"));
+            if looks_like_glob { "glob" } else { "grep" }
+        } else if has_str("pattern") {
+            "grep"
+        } else {
+            "search"
+        }
+    } else if (map.get("paths").and_then(Value::as_array).is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_string)) && only_keys(&["paths"]))
+        || (["path", "file_path", "filepath", "file", "filename"].iter().any(|k| has_str(k)) && only_keys(&["path", "file_path", "filepath", "file", "filename", "start", "offset", "line"]))
+    {
+        "view"
+    } else if map.get("todos").and_then(Value::as_array).is_some_and(|a| a.iter().all(|t| t.get("content").is_some_and(Value::is_string) && t.get("status").is_some_and(Value::is_string))) && only_keys(&["todos"]) {
+        "todo_write"
+    } else if has_str("description") && has_str("prompt") && only_keys(&["description", "prompt"]) {
+        "task"
+    } else if has_str("plan") && only_keys(&["plan"]) {
+        "present_plan"
+    } else if map.get("questions").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) && only_keys(&["questions"]) {
+        "ask_questions"
+    } else if has_str("memory") && has_str("action") && only_keys(&["memory", "action", "section", "text", "old_text"]) {
+        "update_memory"
+    } else if has_str("prompt") && has_str("path") && only_keys(&["prompt", "path", "aspect_ratio"]) {
+        "generate_image"
+    } else {
+        return None;
+    };
+
+    check_allowed(canonical(tool, Value::Object(map.clone())))
+}
+
+fn parse_calls_blob(blob: &str, reasoning: &str, allowed: &HashSet<&str>) -> Option<Vec<(String, Value)>> {
+    let mut body = blob.trim();
+    if let Some(fenced) = body.strip_prefix("```") {
+        if let Some(inner) = fenced.strip_suffix("```") {
+            let inner = inner.strip_prefix("json").or_else(|| inner.strip_prefix("JSON")).unwrap_or(inner).trim();
+            if inner.starts_with('{') || inner.starts_with('[') {
+                body = inner;
+            }
+        }
+    }
+    let prefix: String = body.chars().take_while(|c| c.is_ascii_lowercase() || *c == '_').collect();
+    if !prefix.is_empty() && (known(&prefix) || SEARCH_NAMES.contains(&prefix.as_str()) || is_mcp(&prefix)) {
+        let rest = body[prefix.len()..].trim_start();
+        if rest.starts_with('{') {
+            if let Ok(val) = serde_json::from_str::<Value>(rest) {
+                if val.is_object() {
+                    let (name, args) = canonical(&prefix, val);
+                    if allowed.contains(name.as_str()) {
+                        return Some(vec![(name, args)]);
+                    }
+                }
+            }
+        }
+    }
+    if body.starts_with('[') {
+        let list: Vec<Value> = serde_json::from_str(body).ok()?;
+        if list.is_empty() {
+            return None;
+        }
+        return list.iter().map(|v| infer_from_value(v, reasoning, allowed)).collect();
+    }
+    if body.starts_with('{') {
+        let objs: Vec<Value> = serde_json::Deserializer::from_str(body).into_iter::<Value>().collect::<Result<_, _>>().ok()?;
+        if objs.is_empty() {
+            return None;
+        }
+        return objs.iter().map(|v| infer_from_value(v, reasoning, allowed)).collect();
+    }
+    None
+}
+
+/// Recovers tool calls when a model forgets the tool-call part and writes raw JSON or `<tool_call>` tags into `content`.
+/// Returns the remaining assistant text (usually empty) and the recovered `(name, arguments)` pairs.
+pub fn recover_calls(content: &str, reasoning: &str, tools: &[Value]) -> Option<(String, Vec<(String, Value)>)> {
+    let allowed: HashSet<&str> = tools.iter().filter_map(|t| t.pointer("/function/name").and_then(Value::as_str)).collect();
+    if allowed.is_empty() || content.trim().is_empty() {
+        return None;
+    }
+    if let Some((before, _)) = content.split_once("<tool_call>") {
+        let mut calls = Vec::new();
+        for part in content.split("<tool_call>").skip(1) {
+            let inner = part.split("</tool_call>").next().unwrap_or(part).trim();
+            calls.extend(parse_calls_blob(inner, reasoning, &allowed)?);
+        }
+        if !calls.is_empty() {
+            return Some((before.trim().to_string(), calls));
+        }
+    }
+    if let Some((before, rest)) = content.split_once("<function=") {
+        if let Some((name, after)) = rest.split_once('>') {
+            let inner = after.split("</function>").next().unwrap_or(after).trim();
+            if let Ok(val) = serde_json::from_str::<Value>(if inner.is_empty() { "{}" } else { inner }) {
+                if val.is_object() {
+                    let (cname, cargs) = canonical(name.trim(), val);
+                    if allowed.contains(cname.as_str()) {
+                        return Some((before.trim().to_string(), vec![(cname, cargs)]));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((before, rest)) = content.split_once("[TOOL_CALLS]") {
+        let calls = parse_calls_blob(rest, reasoning, &allowed)?;
+        return Some((before.trim().to_string(), calls));
+    }
+    let calls = parse_calls_blob(content, reasoning, &allowed)?;
+    Some((String::new(), calls))
 }
 
 pub fn known(name: &str) -> bool {
@@ -239,6 +465,15 @@ pub fn label(name: &str, a: &Value) -> String {
             match qs.map_or(0, Vec::len) {
                 0 | 1 => first.to_string(),
                 n => format!("{first} (+{} more)", n - 1),
+            }
+        }
+        "claude" | "codex" | "kiro" | "opencode" | "grok" => {
+            if let Some(cmd) = a.get("command").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                cmd.into()
+            } else if let Some(path) = a.get("file_path").or_else(|| a.get("path")).and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                path.into()
+            } else {
+                s(a, "title").into()
             }
         }
         n if is_mcp(n) => a.to_string().chars().take(160).collect(),
@@ -1408,6 +1643,13 @@ mod tests {
         assert_eq!(a["ignore_case"], true);
         assert_eq!(a["output_mode"], "content");
         assert_eq!(a["path"], "src");
+        assert!(a.get("query").is_none() && a.get("directory").is_none());
+        // grep called with query also gets canonicalised.
+        let (name, a) = canonical("grep", json!({"path": "src/utils.js", "query": "sendLog"}));
+        assert_eq!(name, "grep");
+        assert_eq!(a["pattern"], "sendLog");
+        assert_eq!(a["path"], "src/utils.js");
+        assert!(a.get("query").is_none());
         // A real pattern is kept as a regex, and other tools pass through untouched.
         assert_eq!(canonical("search_files", json!({"pattern": "a.*b"})).1["pattern"], "a.*b");
         assert_eq!(canonical("view", json!({"path": "x"})), ("view".to_string(), json!({"path": "x"})));
@@ -1466,5 +1708,43 @@ mod tests {
         assert!(more.output.contains("line 80") && !more.output.contains("line 77"), "{}", more.output);
         assert!(!finished_shell_notes().contains(&id));
         run("kill_shell", &json!({ "id": id }), &mut ctx).unwrap();
+    }
+
+    #[test]
+    fn recovers_pasted_tool_calls_from_content_without_false_positives() {
+        let all = specs(None, EditTool::StrReplace);
+        let ro = specs(Some(&READ_ONLY), EditTool::StrReplace);
+
+        // Bare search arguments pasted as a chat message.
+        let (rest, calls) = recover_calls(r#"{"path":"src/utils.js","query":"sendLog"}"#, "Search 'function sendLog' in utils.", &all).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "grep");
+        assert_eq!(calls[0].1["path"], "src/utils.js");
+        assert_eq!(calls[0].1["pattern"], "sendLog");
+        assert_eq!(calls[0].1["output_mode"], "content");
+
+        // Bare view, edit_file, bash, glob and wrapped tool calls.
+        assert_eq!(recover_calls(r#"{"path":"src/setup.js","start":6}"#, "", &all).unwrap().1[0].0, "view");
+        assert_eq!(recover_calls(r#"{"path":"a.js","old_string":"a","new_string":"b"}"#, "", &all).unwrap().1[0].0, "edit_file");
+        assert_eq!(recover_calls(r#"{"command":"npm test"}"#, "", &all).unwrap().1[0].0, "bash");
+        assert_eq!(recover_calls(r#"{"pattern":"src/**/*.ts"}"#, "", &all).unwrap().1[0].0, "glob");
+        assert_eq!(recover_calls("search\n{\"path\":\"src\",\"query\":\"post\"}", "", &all).unwrap().1[0].0, "grep");
+        assert_eq!(recover_calls("```json\n{\"name\":\"view\",\"arguments\":{\"path\":\"a.rs\"}}\n```", "", &all).unwrap().1[0].0, "view");
+        let (before, xml) = recover_calls("Checking now.\n<tool_call>\n{\"name\":\"grep\",\"arguments\":{\"pattern\":\"foo\"}}\n</tool_call>", "", &all).unwrap();
+        assert_eq!(before, "Checking now.");
+        assert_eq!(xml[0].0, "grep");
+
+        // Disallowed tools (e.g. bash in a read-only sub-agent) and ordinary JSON are left alone.
+        assert!(recover_calls(r#"{"command":"npm test"}"#, "", &ro).is_none());
+        assert!(recover_calls(r#"{"name":"my-app","version":"1.0.0"}"#, "", &all).is_none());
+        assert!(recover_calls("Here is the answer.", "", &all).is_none());
+
+        // Stream hold-back check.
+        assert!(might_be_tool_call(r#"{"path":"src/utils.js""#));
+        assert!(might_be_tool_call("<tool"));
+        assert!(might_be_tool_call("search\n{"));
+        assert!(!might_be_tool_call("Here is what I found"));
+        assert!(!might_be_tool_call("```rust\nfn main()"));
     }
 }

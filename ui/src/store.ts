@@ -23,7 +23,7 @@ export type CoreState = { view: View; models: Model[]; items: Item[]; statics: S
 export const core = createStore<CoreState>(null as unknown as CoreState);
 
 export type DockTab = 'terminal' | 'changes' | 'files' | 'games';
-export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'notifications' | 'discord' | 'fallbacks' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'scoutmote' | 'experimental' | 'updates';
+export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'notifications' | 'discord' | 'fallbacks' | 'router' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'scoutmote' | 'experimental' | 'updates';
 
 export const ui = createStore({
   sidebar: true,
@@ -49,6 +49,8 @@ export const ui = createStore({
   dropping: false,
   /** The floating game card is up. In the panel, the game is open when the panel shows its tab. */
   gameOpen: false,
+  /** The floating music player card is up. Closing it keeps music playing in the background. */
+  musicOpen: false,
 });
 
 export function useCore<T>(pick: (s: CoreState) => T): T {

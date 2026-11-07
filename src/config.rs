@@ -185,12 +185,17 @@ pub struct Config {
     pub last_version: Option<String>,
     /// Desktop app only: the models to try when the chosen one fails.
     pub fallbacks: Fallbacks,
+    /// Desktop app only: the user's Agent Routers, each an ordered route across providers with optional Jev
+    /// difficulty routing. One is chosen like a model: provider "router", model its id.
+    pub agent_routers: Vec<AgentRouter>,
     /// Experimental: the agent gets a generate_image tool, which makes images on the ScoutCode server. Off until turned on.
     pub experimental_images: bool,
     /// The server's image model generate_image uses. None for the server's default.
     pub image_model: Option<String>,
     /// Desktop app only, experimental: a game to play while Scout works.
     pub games: Games,
+    /// Desktop app only, experimental: music player for uploaded MP3s and SoundCloud.
+    pub music: Music,
     /// The Scout Enterprise team the account is in. While there is one, its providers replace the user's own.
     pub team: Option<Team>,
     /// Desktop app only: ScoutMote, so the account's website can drive this Scout. Off until turned on.
@@ -226,6 +231,70 @@ impl Fallbacks {
     }
 }
 
+fn default_intelligence() -> u8 {
+    2
+}
+
+/// One step in the Agent Router: where it runs, its model list key, the intelligence tier the user gave it (1..=3),
+/// and whether hitting a rate limit (429) waits and retries this step before moving on to the next.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRouteStep {
+    pub key: String,
+    pub provider: String,
+    #[serde(default = "default_intelligence")]
+    pub intelligence: u8,
+    #[serde(default)]
+    pub retry_rate_limit: bool,
+}
+
+impl AgentRouteStep {
+    pub fn model_ref(&self) -> ModelRef {
+        ModelRef { key: self.key.clone(), provider: self.provider.clone() }
+    }
+}
+
+/// The Agent Router: an ordered list of models across providers tried one by one or picked by Jev for the prompt's difficulty.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRouter {
+    /// Stable id, used as the model key when the router is chosen.
+    #[serde(default)]
+    pub id: String,
+    /// The name the user gave it.
+    #[serde(default)]
+    pub name: String,
+    /// Whether Jev rates each prompt's difficulty and starts on the matching intelligence tier.
+    #[serde(default)]
+    pub use_jev: bool,
+    /// The steps in the route.
+    #[serde(default)]
+    pub steps: Vec<AgentRouteStep>,
+    /// The provider last chosen when adding a step, so the next '+' defaults to it.
+    #[serde(default)]
+    pub last_provider: Option<String>,
+}
+
+impl AgentRouter {
+    /// The steps in the order a turn should try them: as listed, or starting at the tier Jev picked and falling back
+    /// through the other tiers.
+    pub fn ordered_steps(&self, target_tier: Option<u8>) -> Vec<AgentRouteStep> {
+        let Some(target) = target_tier.filter(|_| self.use_jev).map(|t| t.clamp(1, 3)) else {
+            return self.steps.clone();
+        };
+        let tiers = match target {
+            1 => [1, 2, 3],
+            2 => [2, 3, 1],
+            _ => [3, 2, 1],
+        };
+        let mut out = Vec::with_capacity(self.steps.len());
+        for t in tiers {
+            out.extend(self.steps.iter().filter(|s| s.intelligence.clamp(1, 3) == t).cloned());
+        }
+        out
+    }
+}
+
 /// Experimental games: where they show and when they open and close by themselves. Off until turned on.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
@@ -244,6 +313,53 @@ pub struct Games {
 impl Default for Games {
     fn default() -> Self {
         Games { on: false, place: "float".into(), open_on_run: true, auto_close: true, pos: None }
+    }
+}
+
+/// Experimental music player: where its floating card sits and its volume. Off until turned on.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Music {
+    pub on: bool,
+    /// Where the floating card was left: its top left, in window pixels. None for the default corner.
+    pub pos: Option<(f64, f64)>,
+    /// Saved playback volume (0.0..=1.0).
+    pub volume: f64,
+}
+
+impl Default for Music {
+    fn default() -> Self {
+        Music { on: false, pos: None, volume: 0.8 }
+    }
+}
+
+/// The saved Agent Routers. A file from before the list has one `agentRouter`, which becomes a router with the id
+/// "router", the model key that file chose it by.
+fn saved_agent_routers(s: &Map<String, Value>) -> Vec<AgentRouter> {
+    let mut list: Vec<AgentRouter> = match s.get("agentRouters").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        Some(l) => l,
+        None => s
+            .get("agentRouter")
+            .and_then(|v| serde_json::from_value::<AgentRouter>(v.clone()).ok())
+            .filter(|r| !r.steps.is_empty())
+            .map(|r| vec![AgentRouter { id: "router".into(), name: "Agent Router".into(), ..r }])
+            .unwrap_or_default(),
+    };
+    for (i, r) in list.iter_mut().enumerate() {
+        if r.id.is_empty() {
+            r.id = format!("router-{i}");
+        }
+        if r.name.trim().is_empty() {
+            r.name = format!("Router {}", i + 1);
+        }
+    }
+    list
+}
+
+impl Config {
+    /// The Agent Router chosen by `id`, or the first one when no router has it (as from an older build).
+    pub fn agent_router(&self, id: &str) -> Option<&AgentRouter> {
+        self.agent_routers.iter().find(|r| r.id == id).or_else(|| self.agent_routers.first())
     }
 }
 
@@ -361,9 +477,11 @@ pub fn load_config() -> Config {
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
         last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),
         fallbacks: s.get("modelFallbacks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        agent_routers: saved_agent_routers(&s),
         experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
         image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
         games: s.get("games").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        music: s.get("music").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         team: s.get("team").and_then(|v| serde_json::from_value(v.clone()).ok()),
         scout_mote: s.get("scoutMote").and_then(Value::as_bool).unwrap_or(false),
         scout_mote_id: s.get("scoutMoteId").and_then(Value::as_str).filter(|v| !v.is_empty()).map(String::from),
@@ -494,9 +612,11 @@ impl Config {
         self.hermes_signed_in = other.hermes_signed_in;
         self.hermes_key = other.hermes_key.clone();
         self.additional = other.additional.clone();
+        self.agent_routers = other.agent_routers.clone();
         self.experimental_images = other.experimental_images;
         self.image_model = other.image_model.clone();
         self.games = other.games.clone();
+        self.music = other.music.clone();
         self.team = other.team.clone();
     }
 }
@@ -581,5 +701,50 @@ mod tests {
         assert_eq!(f.after(&m("a")), vec![m("b")]);
         let saved: Fallbacks = serde_json::from_value(json!(f)).unwrap();
         assert_eq!(saved.after(&m("x")), vec![m("c")]);
+    }
+
+    #[test]
+    fn agent_router_orders_steps_sequentially_or_by_jev_intelligence_tier() {
+        let step = |key: &str, provider: &str, intelligence: u8, retry_rate_limit: bool| AgentRouteStep {
+            key: key.into(),
+            provider: provider.into(),
+            intelligence,
+            retry_rate_limit,
+        };
+        let router = AgentRouter {
+            id: "r".into(),
+            name: "R".into(),
+            use_jev: false,
+            steps: vec![
+                step("opus", "claude", 3, true),
+                step("haiku", "claude", 1, false),
+                step("deepseek", "openrouter", 2, true),
+            ],
+            last_provider: Some("openrouter".into()),
+        };
+        let keys = |steps: Vec<AgentRouteStep>| steps.into_iter().map(|s| s.key).collect::<Vec<_>>();
+        assert_eq!(keys(router.ordered_steps(Some(1))), vec!["opus", "haiku", "deepseek"], "jev off: sequential order");
+
+        let jev_router = AgentRouter { use_jev: true, ..router };
+        assert_eq!(keys(jev_router.ordered_steps(None)), vec!["opus", "haiku", "deepseek"]);
+        assert_eq!(keys(jev_router.ordered_steps(Some(1))), vec!["haiku", "deepseek", "opus"], "tier 1 -> 2 -> 3");
+        assert_eq!(keys(jev_router.ordered_steps(Some(2))), vec!["deepseek", "opus", "haiku"], "tier 2 -> 3 -> 1");
+        assert_eq!(keys(jev_router.ordered_steps(Some(3))), vec!["opus", "deepseek", "haiku"], "tier 3 -> 2 -> 1");
+
+        let saved: AgentRouter = serde_json::from_value(json!(jev_router)).unwrap();
+        assert_eq!(saved, jev_router);
+    }
+
+    #[test]
+    fn agent_routers_migrate_from_the_single_router() {
+        let old = json!({ "agentRouter": { "useJev": true, "steps": [{ "key": "a", "provider": "claude" }] } });
+        let list = saved_agent_routers(old.as_object().unwrap());
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].id.as_str(), list[0].name.as_str(), list[0].use_jev), ("router", "Agent Router", true));
+        let empty = json!({ "agentRouter": { "steps": [] } });
+        assert!(saved_agent_routers(empty.as_object().unwrap()).is_empty());
+        let new = json!({ "agentRouters": [{ "id": "x", "name": "Fast", "steps": [] }, { "steps": [] }], "agentRouter": { "steps": [{ "key": "a", "provider": "claude" }] } });
+        let list = saved_agent_routers(new.as_object().unwrap());
+        assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["x", "router-1"]);
     }
 }

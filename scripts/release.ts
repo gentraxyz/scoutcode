@@ -321,7 +321,12 @@ async function main() {
       if (build.status !== 0) fail(`npm ${args.join(' ')} failed`);
     }
     for (const { target } of TARGETS) {
-      const build = spawnSync('cargo', ['build', '--release', '--target', target], { cwd: GUI, stdio: 'inherit', shell: true });
+      const build = spawnSync('cargo', ['build', '--release', '--target', target], {
+        cwd: GUI,
+        stdio: 'inherit',
+        shell: true,
+        env: { ...process.env, CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS || '2' },
+      });
       if (build.status !== 0) fail(`cargo build failed for ${target}`);
     }
   }

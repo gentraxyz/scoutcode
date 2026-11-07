@@ -1,6 +1,6 @@
 // Delta's other pages: projects, one project, the roadmap, a team's cycles, one cycle, and the workspace's settings.
 import { useMemo, useState, type ReactNode } from 'react';
-import { addDays, cycleName, cycleStatus, isDone, newId, PROJECT_STATUSES, progress, STATE_TYPES, today, type Cycle, type Issue, type Project, type ProjectStatus, type StateType } from './model';
+import { addDays, cycleName, cycleStatus, isDone, newId, PROJECT_STATUSES, progress, STATE_TYPES, teamStates, today, type Cycle, type Issue, type Project, type ProjectStatus, type StateType } from './model';
 import { message, uploadWorkspace, type Role, type WorkspaceInfo } from './sync';
 import { Empty, IssuesPage, statusLabel, useDelta } from './Delta';
 import { cycleMenu, projectMenu } from './menus';
@@ -66,7 +66,26 @@ export function ProjectsView() {
             const issues = Object.values(doc.issue).filter((i) => i.projectId === p.id);
             const pr = progress(doc, issues);
             return (
-              <button type="button" key={p.id} className="d-table-row" onClick={() => go({ view: 'project', id: p.id })} onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))}>
+              <button
+                type="button"
+                key={p.id}
+                className="d-table-row"
+                onClick={(e) => {
+                  if (c.openTab && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    c.openTab({ view: 'project', id: p.id });
+                  } else {
+                    go({ view: 'project', id: p.id });
+                  }
+                }}
+                onAuxClick={(e) => {
+                  if (e.button === 1 && c.openTab) {
+                    e.preventDefault();
+                    c.openTab({ view: 'project', id: p.id });
+                  }
+                }}
+                onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))}
+              >
                 <span className="d-grow d-row d-min0"><span className="d-project-color" style={{ background: p.color }} /><ProjectStatusIcon status={p.status} /><b className="d-ellipsis">{p.name}</b></span>
                 <span className="w-lead d-row">{p.lead ? <><Avatar name={p.lead} size={16} /><span className="d-ellipsis">{p.lead}</span></> : <span className="d-dim">—</span>}</span>
                 <span className={`w-date ${p.targetDate && p.targetDate < today() && p.status !== 'completed' ? 'd-late' : ''}`}>{shortDay(p.targetDate) || <span className="d-dim">—</span>}</span>
@@ -192,7 +211,26 @@ export function RoadmapView() {
           <div className="d-roadmap-names">
             <div className="d-roadmap-corner" />
             {projects.map((p) => (
-              <button type="button" key={p.id} className="d-roadmap-name" onClick={() => go({ view: 'project', id: p.id })} onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))}>
+              <button
+                type="button"
+                key={p.id}
+                className="d-roadmap-name"
+                onClick={(e) => {
+                  if (c.openTab && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    c.openTab({ view: 'project', id: p.id });
+                  } else {
+                    go({ view: 'project', id: p.id });
+                  }
+                }}
+                onAuxClick={(e) => {
+                  if (e.button === 1 && c.openTab) {
+                    e.preventDefault();
+                    c.openTab({ view: 'project', id: p.id });
+                  }
+                }}
+                onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))}
+              >
                 <ProjectStatusIcon status={p.status} /><span className="d-ellipsis">{p.name}</span>
               </button>
             ))}
@@ -211,7 +249,27 @@ export function RoadmapView() {
                 return (
                   <div key={p.id} className="d-roadmap-row">
                     {a && b ? (
-                      <button type="button" className={`d-roadmap-bar ${!p.startDate || !p.targetDate ? 'open' : ''}`} style={{ left: `${x(a)}%`, width: `${Math.max(1.2, x(b) - x(a))}%`, ['--c' as string]: p.color }} onClick={() => go({ view: 'project', id: p.id })} onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))} title={`${p.name}: ${shortDay(p.startDate) || '?'} – ${shortDay(p.targetDate) || '?'}`}>
+                      <button
+                        type="button"
+                        className={`d-roadmap-bar ${!p.startDate || !p.targetDate ? 'open' : ''}`}
+                        style={{ left: `${x(a)}%`, width: `${Math.max(1.2, x(b) - x(a))}%`, ['--c' as string]: p.color }}
+                        onClick={(e) => {
+                          if (c.openTab && (e.ctrlKey || e.metaKey)) {
+                            e.preventDefault();
+                            c.openTab({ view: 'project', id: p.id });
+                          } else {
+                            go({ view: 'project', id: p.id });
+                          }
+                        }}
+                        onAuxClick={(e) => {
+                          if (e.button === 1 && c.openTab) {
+                            e.preventDefault();
+                            c.openTab({ view: 'project', id: p.id });
+                          }
+                        }}
+                        onContextMenu={(e) => openContextMenu(e, projectMenu(c, p))}
+                        title={`${p.name}: ${shortDay(p.startDate) || '?'} – ${shortDay(p.targetDate) || '?'}`}
+                      >
                         <span className="d-roadmap-fill" style={{ width: `${pr.total ? (pr.done / pr.total) * 100 : 0}%` }} />
                         <span className="d-ellipsis">{p.name}</span>
                       </button>
@@ -257,7 +315,26 @@ export function CyclesView({ teamId }: { teamId: string }) {
                 const issues = Object.values(doc.issue).filter((i) => i.cycleId === c.id);
                 const pr = progress(doc, issues);
                 return (
-                  <button type="button" key={c.id} className="d-table-row" onClick={() => go({ view: 'cycle', id: c.id })} onContextMenu={(e) => openContextMenu(e, cycleMenu(ctx, c))}>
+                  <button
+                    type="button"
+                    key={c.id}
+                    className="d-table-row"
+                    onClick={(e) => {
+                      if (ctx.openTab && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault();
+                        ctx.openTab({ view: 'cycle', id: c.id });
+                      } else {
+                        go({ view: 'cycle', id: c.id });
+                      }
+                    }}
+                    onAuxClick={(e) => {
+                      if (e.button === 1 && ctx.openTab) {
+                        e.preventDefault();
+                        ctx.openTab({ view: 'cycle', id: c.id });
+                      }
+                    }}
+                    onContextMenu={(e) => openContextMenu(e, cycleMenu(ctx, c))}
+                  >
                     <span className="d-grow d-row d-min0"><Icon name="cycle" size={14} /><b>{cycleName(c)}</b>{c.name && <span className="d-dim">Cycle {c.number}</span>}</span>
                     <span className="w-date2 d-dim">{shortDay(c.startsAt)} – {shortDay(c.endsAt)}</span>
                     <span className="w-issues d-dim">{issues.length} issues</span>
@@ -500,7 +577,7 @@ function TeamsSettings() {
       <h2>Teams</h2>
       {!admin && <p className="d-small d-dim">Only workspace admins can change teams and workflows.</p>}
       {teams.map((t) => {
-        const states = Object.values(doc.state).filter((x) => x.teamId === t.id).sort((a, b) => STATE_TYPES.indexOf(a.type) - STATE_TYPES.indexOf(b.type) || a.position - b.position);
+        const states = teamStates(doc, t.id);
         const count = Object.values(doc.issue).filter((i) => i.teamId === t.id).length;
         return (
           <div key={t.id} className="d-team-settings">

@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { act, invoke, money, openExternal, parseUsd, shortDate, usd, type Fallbacks, type Games, type McpServer, type ModelRef, type UsageInfo } from './api';
+import { act, invoke, money, openExternal, parseUsd, shortDate, usd, DISCORD_INVITE_URL, type Fallbacks, type Games, type McpServer, type ModelRef, type Music, type UsageInfo } from './api';
 import { closeGame } from './Games';
-import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
+import { closeMusic } from './Music';
+import { AgentRouterPanel, FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { ProviderQuotas } from './Quota';
-import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
@@ -18,6 +19,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
   { id: 'discord', title: 'Discord', icon: 'chat', keywords: 'discord rich presence profile status privacy share activity' },
   { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
+  { id: 'router', title: 'Agent Router', icon: 'route', keywords: 'agent router routing route fallback fallbacks jev rate limit 429 retry provider models intelligence tier' },
   { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily weekly monthly 5-hour limits balance banked reset chart history quota free requests rate limit providers rewards login streak claim referral referrals invite code bonus credit' },
   { id: 'account', title: 'Account', icon: 'user', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
   { id: 'providers', title: 'Providers', icon: 'user', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro kilo models' },
@@ -25,7 +27,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
   { id: 'scoutmote', title: 'ScoutMote', icon: 'terminal', keywords: 'scoutmote remote control browser web phone away online computer pc' },
-  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 play puzzle fun waiting' },
+  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 play puzzle fun waiting music mp3 soundcloud audio song player' },
   { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
 ];
 
@@ -33,7 +35,7 @@ function Heading({ title, sub }: { title: string; sub: string }) {
   return <div className="settings-heading"><h2>{title}</h2><p className="small dim">{sub}</p></div>;
 }
 
-function SettingRow({ title, sub, children }: { title: string; sub?: string; children?: ReactNode }) {
+function SettingRow({ title, sub, children }: { title: string; sub?: ReactNode; children?: ReactNode }) {
   return (
     <div className="setting-row">
       <div className="grow min0"><div className="setting-title">{title}</div>{sub && <div className="small dim pre-wrap">{sub}</div>}</div>
@@ -145,6 +147,33 @@ function Discord() {
   return (
     <>
       <Heading title="Discord" sub="Shows on your Discord profile that you're using Scout." />
+      <SettingRow
+        title="Scout Discord server"
+        sub={
+          <>
+            Join our community at{' '}
+            <a
+              className="link"
+              href={DISCORD_INVITE_URL}
+              onClick={(e) => {
+                e.preventDefault();
+                openExternal(DISCORD_INVITE_URL);
+              }}
+            >
+              discord.gg/T9Ch9wVAUc
+            </a>{' '}
+            to chat with the team, get support, and link your account for a $0.25 balance reward.
+          </>
+        }
+      >
+        <button
+          type="button"
+          className="button"
+          onClick={() => openExternal(DISCORD_INVITE_URL)}
+        >
+          Join Discord
+        </button>
+      </SettingRow>
       <SettingRow title="Show Scout on Discord" sub="Your profile shows \“Using Scout\” while the app is open. Nothing else is sent."><Toggle label="Show Scout on Discord" on={presence} onChange={(on) => act('setDiscord', { presence: on, project: on && project })} /></SettingRow>
       <SettingRow title="Show the folder's name" sub="Adds \“Working on <folder>\”, using only the folder's name, never its path, chats or files. Needs the setting above."><Toggle label="Show the folder's name" on={project} onChange={(on) => act('setDiscord', { presence, project: on })} /></SettingRow>
     </>
@@ -153,6 +182,7 @@ function Discord() {
 
 /** Colors, picked from short lists of ones that go together. */
 function Appearance() {
+  const { cwd } = useView('chat');
   const theme = useTheme();
   const elements = ELEMENTS.find((e) => e.id === theme.elements)!.vars;
   const coreLanguages = useCore((s) => s.statics?.languages);
@@ -169,7 +199,17 @@ function Appearance() {
     <>
       <Heading title={t('settings_appearance')} sub={t('settings_appearance_sub')} />
       <SettingRow title={t('settings_interface_lang')} sub={isFull(uiLanguage) ? t('settings_interface_lang_full') : t('settings_interface_lang_partial')}>
-        <select className="input select" value={uiLanguage} onChange={(e) => setUiLanguage(e.target.value)}>
+        <select
+          className="input select"
+          value={uiLanguage}
+          onChange={(e) => {
+            const next = e.target.value;
+            setUiLanguage(next);
+            invoke<{ global: string; project: string; language: string }>('instructions_load', { cwd })
+              .then((p) => invoke('instructions_save', { cwd, ...p, language: next }))
+              .catch(() => {});
+          }}
+        >
           <optgroup label={t('settings_optgroup_full')}>
             {languages.filter(([id]) => isFull(id)).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
           </optgroup>
@@ -274,6 +314,11 @@ function Experimental() {
     if (next.on === false || (next.place && next.place !== games.place)) closeGame();
     act('setGames', { games: { ...games, ...next } });
   };
+  const music = cfg.music;
+  const setMusic = (next: Partial<Music>) => {
+    if (next.on === false) closeMusic(true);
+    act('setMusic', { music: { ...music, ...next } });
+  };
   return (
     <>
       <Heading title="Experimental" sub="Features still being tried out. They may change or go away, and are off until you turn them on." />
@@ -314,6 +359,9 @@ function Experimental() {
           </SettingRow>
         </>
       )}
+      <SettingRow title="Music" sub="Listen to your own MP3s or SoundCloud while Scout works. Open it with the music button at the top of the window. Music keeps playing when you close the card.">
+        <Toggle label="Music" on={music.on} onChange={(on) => setMusic({ on })} />
+      </SettingRow>
     </>
   );
 }
@@ -350,6 +398,18 @@ function FallbacksPage() {
           onRemove={() => save({ models: f.models.filter((_, j) => j !== i) })} />
       ))}
       <div><ModelPicker label="Add a model" onPick={(key, provider) => { const m = { key, provider }; if (!f.models.some(([x]) => same(x, m))) save({ models: [...f.models, [m, []]] }); }} /></div>
+    </>
+  );
+}
+
+function AgentRouterPage() {
+  return (
+    <>
+      <Heading
+        title="Agent Router"
+        sub="Make as many routers as you like, each its own route of providers and models (for example Opus 4.6 → Haiku 4.5 → DeepSeek), and pick one like a model. Each routes step-by-step as rate limits kick in, or with Jev on, rates each prompt's difficulty and picks the matching intelligence tier."
+      />
+      <AgentRouterPanel />
     </>
   );
 }
@@ -473,7 +533,8 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
   const [code, setCode] = useState('');
   const dr = info.dailyReward;
   const ref = info.referrals;
-  if (!dr && !ref) return null;
+  const dl = info.discordLink;
+  if (!dr && !ref && !dl) return null;
   const site = baseUrl.replace(/\/v1\/?$/, '');
   const redeem = () => {
     const trimmed = code.trim();
@@ -538,6 +599,126 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
                 </button>
               </SettingRow>
             )
+          )}
+        </>
+      )}
+      {dl && (
+        <>
+          {dl.linked ? (
+            <SettingRow
+              title="Discord account linked"
+              sub={
+                <>
+                  Linked to Discord tag &ldquo;{dl.discordTag || 'linked'}&rdquo;
+                  {dl.linkedAt ? ` on ${shortDate(dl.linkedAt.slice(0, 10))}` : ''}. Earned {usd(dl.reward ?? 0.25)} balance reward. Chat with us on{' '}
+                  <a
+                    className="link"
+                    href={DISCORD_INVITE_URL}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openExternal(DISCORD_INVITE_URL);
+                    }}
+                  >
+                    Discord
+                  </a>.
+                </>
+              }
+            >
+              <button
+                type="button"
+                className="button"
+                onClick={() => openExternal(DISCORD_INVITE_URL)}
+              >
+                Open Discord
+              </button>
+              <span className="small muted">Linked (+{usd(dl.reward ?? 0.25)})</span>
+            </SettingRow>
+          ) : (
+            <SettingRow
+              title="Link Discord account · Earn $0.25"
+              sub={
+                dl.code ? (
+                  <>
+                    Your link code is &ldquo;{dl.code}&rdquo; (expires in 15 minutes). Run &ldquo;/link code:{dl.code}&rdquo; on{' '}
+                    <a
+                      className="link"
+                      href={DISCORD_INVITE_URL}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        openExternal(DISCORD_INVITE_URL);
+                      }}
+                    >
+                      our Discord server
+                    </a>{' '}
+                    to earn {usd(dl.reward ?? 0.25)} balance.
+                  </>
+                ) : (
+                  <>
+                    Link your Discord account once to earn {usd(dl.reward ?? 0.25)} added to your permanent balance. Generate a code and run /link on{' '}
+                    <a
+                      className="link"
+                      href={DISCORD_INVITE_URL}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        openExternal(DISCORD_INVITE_URL);
+                      }}
+                    >
+                      our Discord server
+                    </a>.
+                  </>
+                )
+              }
+            >
+              {dl.code ? (
+                <>
+                  <CopyButton text={dl.code} label="Copy code" />
+                  <CopyButton text={`/link ${dl.code}`} label="Copy /link" />
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={busy}
+                    onClick={() =>
+                      act('usageChange', {
+                        body: { action: 'generate-discord-code' },
+                        said: 'Generated new Discord linking code.',
+                      })
+                    }
+                  >
+                    New code
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => openExternal(DISCORD_INVITE_URL)}
+                  >
+                    Open Discord
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="button primary"
+                    disabled={busy}
+                    onClick={() =>
+                      act('usageChange', {
+                        body: { action: 'generate-discord-code' },
+                        said: 'Generated Discord linking code.',
+                      })
+                    }
+                  >
+                    Get link code
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => openExternal(DISCORD_INVITE_URL)}
+                  >
+                    Join Discord
+                  </button>
+                </>
+              )}
+            </SettingRow>
           )}
         </>
       )}
@@ -698,12 +879,16 @@ function OwnAccount({ which, title, note, who, planText, planUrl }: { which: Own
 type ProviderEntry = { id: string; name: string; linked: boolean; status: string; body: ReactNode };
 
 function ProviderRow({ p, open, onToggle }: { p: ProviderEntry; open: boolean; onToggle: () => void }) {
+  const unlinkedStatus = !p.linked ? providerStatus(p.id) : null;
   return (
     <div className={`provider-row ${open ? 'open' : ''}`}>
       <button type="button" className="provider-head" aria-expanded={open} onClick={onToggle}>
         <img className="logo" src={logo(p.id)} width={22} height={22} alt="" />
-        <div className="grow min0"><div className="setting-title">{p.name}</div><div className="small dim ellipsis">{p.status}</div></div>
-        {p.linked && <span className="badge">Linked</span>}
+        <div className="grow min0">
+          <div className="setting-title">{p.name}</div>
+          {p.linked && <div className="small dim ellipsis">{p.status}</div>}
+        </div>
+        {p.linked ? <span className="badge">Linked</span> : <span className={`badge ${unlinkedStatus === 'Paid' ? 'paid' : ''}`}>{unlinkedStatus}</span>}
         <Icon name={open ? 'chevronDown' : 'chevronRight'} />
       </button>
       {open && <div className="provider-body stack">{p.body}</div>}
@@ -718,14 +903,14 @@ function Providers() {
   const { plans, kiloWarning, additionalProviders } = useCore((s) => s.statics);
   const [open, setOpen] = useState<string | null>(null);
   const own = (which: OwnWhich, name: string, note: string, on: boolean, planText: string, who = 'Signed in'): ProviderEntry => ({
-    id: which, name, linked: on, status: login[which] ? 'Signing in…' : on ? who : 'Not linked',
+    id: which, name, linked: on, status: login[which] ? 'Signing in…' : on ? who : providerStatus(which),
     body: <OwnAccount which={which} title={name} note={note} who={on ? who : null} planText={planText} planUrl={plans[which]} />,
   });
   const keyRow = (title: string, masked: string, onRemove: () => void) => <SettingRow title={title} sub={masked}><button type="button" className="button" onClick={onRemove}>Unlink</button></SettingRow>;
   const all: ProviderEntry[] = [
     {
       id: 'scoutcode', name: 'ScoutCode', linked: cfg.hasKey || cfg.guest,
-      status: cfg.hasKey ? 'Signed in' : cfg.guest ? 'Free models only' : 'Not linked',
+      status: cfg.hasKey ? 'Signed in' : cfg.guest ? 'Free models only' : providerStatus('scoutcode'),
       body: (
         <>
           <p className="small dim">{GUEST_NOTE}</p>
@@ -749,11 +934,11 @@ function Providers() {
     own('copilot', 'GitHub Copilot', COPILOT_NOTE, cfg.copilot, 'No Copilot plan yet? Turn on the free one', cfg.copilotUser ?? 'Signed in'),
     {
       id: 'openrouter', name: 'OpenRouter', linked: cfg.openrouterKeys.length > 0,
-      status: cfg.openrouterKeys.length ? `${cfg.openrouterKeys.length} key${cfg.openrouterKeys.length === 1 ? '' : 's'}` : 'Not linked',
+      status: cfg.openrouterKeys.length ? `${cfg.openrouterKeys.length} key${cfg.openrouterKeys.length === 1 ? '' : 's'}` : providerStatus('openrouter'),
       body: <OpenRouterKeys />,
     },
     {
-      id: 'nvidia', name: 'NVIDIA NIM', linked: !!cfg.nvidiaKey, status: cfg.nvidiaKey ?? 'Not linked',
+      id: 'nvidia', name: 'NVIDIA NIM', linked: !!cfg.nvidiaKey, status: cfg.nvidiaKey ?? providerStatus('nvidia'),
       body: (
         <>
           <p className="small dim">Saved on this PC. Models on NVIDIA NIM use your NVIDIA account.</p>
@@ -763,7 +948,7 @@ function Providers() {
     },
     {
       id: 'opencode', name: 'OpenCode', linked: cfg.opencode,
-      status: login.opencode ? 'Signing in…' : !cfg.opencode ? 'Not linked' : cfg.opencodeSignedIn ? 'Signed in' : 'Free models only',
+      status: login.opencode ? 'Signing in…' : !cfg.opencode ? providerStatus('opencode') : cfg.opencodeSignedIn ? 'Signed in' : 'Free models only',
       body: (
         <>
           <p className="small dim">{OPENCODE_NOTE}</p>
@@ -783,7 +968,7 @@ function Providers() {
     },
     {
       id: 'grok', name: 'Grok Build', linked: cfg.grokSignedIn || !!cfg.grokKey,
-      status: login.grok ? 'Signing in…' : cfg.grokSignedIn ? 'Signed in' : cfg.grokKey ?? 'Not linked',
+      status: login.grok ? 'Signing in…' : cfg.grokSignedIn ? 'Signed in' : cfg.grokKey ?? providerStatus('grok'),
       body: (
         <>
           <p className="small dim">{GROK_NOTE}</p>
@@ -805,7 +990,7 @@ function Providers() {
     },
     {
       id: 'hermes', name: 'Hermes', linked: cfg.hermesSignedIn || !!cfg.hermesKey,
-      status: login.hermes ? 'Signing in…' : cfg.hermesSignedIn ? 'Signed in' : cfg.hermesKey ?? 'Not linked',
+      status: login.hermes ? 'Signing in…' : cfg.hermesSignedIn ? 'Signed in' : cfg.hermesKey ?? providerStatus('hermes'),
       body: (
         <>
           <p className="small dim">{HERMES_NOTE}</p>
@@ -828,7 +1013,7 @@ function Providers() {
     ...additionalProviders.map((a): ProviderEntry => {
       const l = cfg.additional.find((x) => x.id === a.id);
       return {
-        id: a.id, name: a.name, linked: !!l, status: l ? l.masked ?? 'Free, no key' : 'Not linked',
+        id: a.id, name: a.name, linked: !!l, status: l ? l.masked ?? 'Free, no key' : providerStatus(a.id),
         body: (
           <>
             <p className="small dim">{a.note}</p>
@@ -1174,6 +1359,7 @@ export function Settings() {
           {tab === 'notifications' && <Notifications />}
           {tab === 'discord' && <Discord />}
           {tab === 'fallbacks' && <FallbacksPage />}
+          {tab === 'router' && <AgentRouterPage />}
           {tab === 'usage' && <Usage />}
           {tab === 'account' && <Account />}
           {tab === 'providers' && <Providers />}

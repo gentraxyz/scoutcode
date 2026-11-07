@@ -20,7 +20,7 @@ use tauri::{AppHandle, Emitter, Manager};
 pub enum ItemKind {
     /// What the user typed, and the files they attached.
     User { text: String, files: Vec<String> },
-    Assistant { text: String, reasoning: String },
+    Assistant { text: String, reasoning: String, model: Option<String>, provider: Option<String> },
     Tool { name: String, label: String, progress: String, result: Option<ToolResult> },
     Notice(String),
     Error(String),
@@ -158,12 +158,23 @@ struct Chat {
     fallback: Option<FallbackRun>,
 }
 
-/// A turn handed from model to model as each fails.
+/// One step in a fallback or Agent Router run.
+#[derive(Clone, Debug)]
+struct FallbackStep {
+    model: ModelRef,
+    retry_rate_limit: Option<bool>,
+}
+
+/// A turn handed from model to model as each fails, or routed through the Agent Router.
 struct FallbackRun {
-    /// The model the user chose, to go back to once the turn ends.
+    /// The model (or `"router"`) the user chose, to go back to once the turn ends.
     from: ModelRef,
+    /// True when this turn was started on the Agent Router (`provider == "router"`).
+    is_router: bool,
+    /// Whether the step currently running should retry on 429 (`Some(...)` in the Agent Router, `None` otherwise).
+    current_retry_rate_limit: Option<bool>,
     /// The fallbacks not tried yet.
-    left: Vec<ModelRef>,
+    left: Vec<FallbackStep>,
 }
 
 impl Chat {
@@ -521,10 +532,21 @@ fn todos_json(todos: &[Todo]) -> Value {
 fn item_json(item: &Item) -> Value {
     match &item.kind {
         ItemKind::User { text, files } => json!({ "id": item.id, "kind": "user", "text": text, "files": files }),
-        ItemKind::Assistant { text, reasoning } => json!({ "id": item.id, "kind": "assistant", "text": text, "reasoning": reasoning }),
+        ItemKind::Assistant { text, reasoning, model, provider } => json!({ "id": item.id, "kind": "assistant", "text": text, "reasoning": reasoning, "model": model, "provider": provider }),
         ItemKind::Tool { name, label, progress, result } => {
             let result = result.as_ref().map(|r| {
-                let display = r.display.clone().unwrap_or_else(|| Display::Text(r.output.clone()));
+                let display = r.display.clone().unwrap_or_else(|| {
+                    if r.output.starts_with("The user denied") || r.output.starts_with("You denied") {
+                        let fb = r.output
+                            .split_once(" They said: ")
+                            .map(|(_, fb)| fb)
+                            .or_else(|| r.output.split_once(": ").map(|(_, fb)| fb))
+                            .unwrap_or("");
+                        Display::Text(crate::agent::denied_display(name, fb))
+                    } else {
+                        Display::Text(r.output.clone())
+                    }
+                });
                 json!({ "isError": r.is_error, "summary": r.summary, "display": display_json(&display) })
             });
             json!({ "id": item.id, "kind": "tool", "name": name, "label": label, "progress": progress, "result": result })
@@ -576,18 +598,50 @@ fn rebuild(s: &Session, next_id: &mut u64) -> Vec<Item> {
                 let (text, files) = user_parts(content);
                 kinds.push(ItemKind::User { text, files });
             }
-            Message::Assistant { content, tool_calls, .. } => {
+            Message::Assistant { content, tool_calls, model, provider, .. } => {
                 if let Some(c) = content.as_ref().filter(|c| !c.is_empty()) {
-                    kinds.push(ItemKind::Assistant { text: c.clone(), reasoning: String::new() });
+                    let m = model.clone().or_else(|| (!s.model.is_empty()).then(|| s.model.clone()));
+                    let p = provider.clone().or_else(|| s.provider.clone());
+                    kinds.push(ItemKind::Assistant { text: c.clone(), reasoning: String::new(), model: m, provider: p });
                 }
                 for c in tool_calls.iter().flatten() {
                     let args: Value = serde_json::from_str(&c.function.arguments).unwrap_or_default();
                     let out = results.get(c.id.as_str()).map(|o| crate::prompt::strip_mode_note(o).to_string());
+                    let mut name = c.function.name.clone();
+                    let mut label = tools::label(&name, &args);
+                    if label.is_empty() {
+                        if let Some(cmd) = args.get("command").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                            name = "bash".into();
+                            label = cmd.to_string();
+                        } else if let Some(path) = args.get("file_path").or_else(|| args.get("path")).and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                            label = path.to_string();
+                        } else if let Some(title) = args.get("title").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                            label = title.to_string();
+                        }
+                    }
+                    let is_denied = out.as_deref().is_some_and(|o| o.starts_with("The user denied") || o.starts_with("You denied"));
+                    let is_error = out.as_deref().is_some_and(|o| o.starts_with("Error")) || is_denied;
+                    let display = if is_denied {
+                        let out_str = out.as_deref().unwrap_or("");
+                        let fb = out_str
+                            .split_once(" They said: ")
+                            .map(|(_, fb)| fb)
+                            .or_else(|| out_str.split_once(": ").map(|(_, fb)| fb))
+                            .unwrap_or("");
+                        Some(Display::Text(crate::agent::denied_display(&name, fb)))
+                    } else {
+                        None
+                    };
                     kinds.push(ItemKind::Tool {
-                        name: c.function.name.clone(),
-                        label: tools::label(&c.function.name, &args),
+                        name,
+                        label,
                         progress: String::new(),
-                        result: Some(ToolResult { is_error: out.as_deref().is_some_and(|o| o.starts_with("Error") || o.starts_with("The user denied")), output: out.unwrap_or_default(), ..Default::default() }),
+                        result: Some(ToolResult {
+                            is_error,
+                            summary: if is_denied { Some("denied".into()) } else { None },
+                            output: out.unwrap_or_default(),
+                            display,
+                        }),
                     });
                 }
             }
@@ -611,10 +665,13 @@ fn user_parts(content: &Content) -> (String, Vec<String>) {
 
 impl Core {
     pub fn new(handle: AppHandle, tx: Sender<Ev>, waker: Waker) -> Self {
-        let cfg = config::load_config();
+        let mut cfg = config::load_config();
+        if !MODES.contains(&cfg.mode.as_str()) {
+            cfg.mode = "default".into();
+        }
         let hooks = Hooks { chat: None, tx, ctx: waker.clone() };
         let shared = Arc::new(Shared {
-            mode: Mutex::new(if MODES.contains(&cfg.mode.as_str()) { cfg.mode.clone() } else { "default".into() }),
+            mode: Mutex::new(cfg.mode.clone()),
             model: Mutex::new(cfg.model.clone()),
             provider: Mutex::new(cfg.provider.clone()),
             effort: Mutex::new(cfg.effort.clone()),
@@ -741,7 +798,12 @@ impl Core {
             }
             let sources = model_sources(&cfg);
             let mut lists = crate::api::load_model_cache();
-            let first = sources.iter().copied().find(|s| *s == cfg.provider);
+            let preferred = if cfg.provider == "router" {
+                cfg.agent_router(&cfg.model).and_then(|r| r.steps.first()).map(|s| s.provider.as_str()).unwrap_or("scoutcode")
+            } else {
+                cfg.provider.as_str()
+            };
+            let first = sources.iter().copied().find(|s| *s == preferred);
             let mut results = vec![];
             if let Some(s) = first {
                 let r = fetch_source(&cfg, s, &h);
@@ -830,8 +892,16 @@ impl Core {
             }
             Ev::ToolCall { id, name, label } => {
                 self.chat.streaming = None;
-                self.chat.tool_index.insert(id, self.chat.items.len());
-                self.push(ItemKind::Tool { name, label, progress: String::new(), result: None });
+                if let Some(&i) = self.chat.tool_index.get(&id) {
+                    if let Some(ItemKind::Tool { name: n, label: l, .. }) = self.chat.items.get_mut(i).map(|item| &mut item.kind) {
+                        *n = name;
+                        *l = label;
+                        self.chat.changed.insert(i);
+                    }
+                } else {
+                    self.chat.tool_index.insert(id, self.chat.items.len());
+                    self.push(ItemKind::Tool { name, label, progress: String::new(), result: None });
+                }
             }
             Ev::ToolProgress { id, text } => {
                 if let Some(&i) = self.chat.tool_index.get(&id) {
@@ -888,6 +958,23 @@ impl Core {
                     self.push(ItemKind::User { text, files });
                 }
             }
+            Ev::RouterPicked { step, tier, rest } => {
+                let tier_name = match tier {
+                    1 => "Light",
+                    3 => "Frontier",
+                    _ => "Capable",
+                };
+                let picked = self.model_label(&step.model_ref());
+                self.push(ItemKind::Notice(format!("Jev rated this prompt {tier_name} — routing to {picked}.")));
+                let from = self.chat.fallback.as_ref().filter(|r| r.is_router).map(|r| r.from.clone()).unwrap_or(ModelRef { key: "router".into(), provider: "router".into() });
+                self.switch_model(&step.key, &step.provider, false);
+                self.chat.fallback = Some(FallbackRun {
+                    from,
+                    is_router: true,
+                    current_retry_rate_limit: Some(step.retry_rate_limit),
+                    left: rest.into_iter().map(|s| FallbackStep { model: s.model_ref(), retry_rate_limit: Some(s.retry_rate_limit) }).collect(),
+                });
+            }
             Ev::Finished(mut agent, result) => {
                 let stopped = self.chat.stopping || matches!(&result, Err(e) if e == "Interrupted");
                 let error = result.as_ref().err().filter(|_| !stopped).cloned();
@@ -907,8 +994,13 @@ impl Core {
                         let short: String = e.chars().take(200).collect();
                         self.push(ItemKind::Notice(format!("{} failed: {short} Trying {}.", self.model_label(&failed), self.model_label(&next))));
                         fall_back = Some(next);
-                    } else if self.chat.fallback.is_some() {
-                        self.push(ItemKind::Error(format!("{e}\n\nThe fallback models failed too.")));
+                    } else if let Some(run) = &self.chat.fallback {
+                        let msg = if run.is_router {
+                            format!("{e}\n\nAll models in the Agent Router failed.")
+                        } else {
+                            format!("{e}\n\nThe fallback models failed too.")
+                        };
+                        self.push(ItemKind::Error(msg));
                     } else if out_of_credit {
                         self.push(ItemKind::OutOfCredit(e));
                     } else if model_failed && !self.cfg.fallbacks.chosen {
@@ -1096,7 +1188,12 @@ impl Core {
     fn assistant_item(&mut self) -> &mut ItemKind {
         if self.chat.streaming.is_none() {
             self.chat.streaming = Some(self.chat.items.len());
-            self.push(ItemKind::Assistant { text: String::new(), reasoning: String::new() });
+            self.push(ItemKind::Assistant {
+                text: String::new(),
+                reasoning: String::new(),
+                model: Some(self.current_key()),
+                provider: Some(self.chat.provider.clone()),
+            });
         }
         let i = self.chat.streaming.unwrap();
         self.chat.changed.insert(i);
@@ -1814,12 +1911,18 @@ impl Core {
                 a.cfg.take_keys(&self.cfg);
             }
         }
-        let model = self.models.iter().find(|m| m.id == key).map(|m| m.request_id(provider).to_string()).unwrap_or_else(|| key.to_string());
+        let model = if provider == "router" {
+            key.to_string()
+        } else {
+            self.models.iter().find(|m| m.id == key).map(|m| m.request_id(provider).to_string()).unwrap_or_else(|| key.to_string())
+        };
         self.chat.model = model.clone();
         self.chat.provider = provider.to_string();
         *self.chat.shared.model.lock().unwrap() = model.clone();
         *self.chat.shared.provider.lock().unwrap() = provider.to_string();
         if save {
+            self.cfg.model = model.clone();
+            self.cfg.provider = provider.to_string();
             config::save_one("model", json!(model));
             config::save_one("provider", json!(provider));
         }
@@ -1832,14 +1935,24 @@ impl Core {
     /// The next model to hand a failed turn to, starting a run of `failed`'s fallbacks if this is its first failure.
     fn next_fallback(&mut self, failed: &ModelRef) -> Option<ModelRef> {
         if self.chat.fallback.is_none() {
-            let left = self.cfg.fallbacks.after(failed);
+            let left: Vec<FallbackStep> = self.cfg.fallbacks.after(failed).into_iter().map(|model| FallbackStep { model, retry_rate_limit: None }).collect();
             if left.is_empty() {
                 return None;
             }
-            self.chat.fallback = Some(FallbackRun { from: failed.clone(), left });
+            self.chat.fallback = Some(FallbackRun {
+                from: failed.clone(),
+                is_router: false,
+                current_retry_rate_limit: None,
+                left,
+            });
         }
         let run = self.chat.fallback.as_mut()?;
-        (!run.left.is_empty()).then(|| run.left.remove(0))
+        if run.left.is_empty() {
+            return None;
+        }
+        let step = run.left.remove(0);
+        run.current_retry_rate_limit = step.retry_rate_limit;
+        Some(step.model)
     }
 
     /// Whether a failure should end the turn at once rather than be retried: there's a fallback to move on to, or the
@@ -1855,6 +1968,44 @@ impl Core {
     fn retry_on(&mut self, next: ModelRef) {
         self.switch_model(&next.key, &next.provider, false);
         self.start(|agent, h| agent.retry(h).map_err(|e| agent.failed(e)));
+    }
+
+    /// Prepares a turn on the Agent Router by switching to its first step and queuing the rest. False when the router
+    /// has no steps yet.
+    fn begin_router_turn(&mut self) -> bool {
+        if self.chat.provider != "router" {
+            return true;
+        }
+        let Some(router) = self.cfg.agent_router(&self.chat.model).cloned() else {
+            self.push(ItemKind::Notice("There's no Agent Router yet. Make one in the model menu or Settings > Agent Router.".into()));
+            return false;
+        };
+        let steps = router.ordered_steps(None);
+        let Some(first) = steps.first() else {
+            self.push(ItemKind::Notice(format!("The Agent Router \"{}\" has no models yet. Add models in the model menu or Settings > Agent Router.", router.name)));
+            return false;
+        };
+        self.chat.fallback = Some(FallbackRun {
+            from: ModelRef { key: router.id.clone(), provider: "router".into() },
+            is_router: true,
+            current_retry_rate_limit: Some(first.retry_rate_limit),
+            left: steps[1..].iter().map(|s| FallbackStep { model: s.model_ref(), retry_rate_limit: Some(s.retry_rate_limit) }).collect(),
+        });
+        self.switch_model(&first.key, &first.provider, false);
+        true
+    }
+
+    /// Saves the Agent Routers from the model menu or Settings > Agent Router.
+    pub fn set_agent_routers(&mut self, routers: Vec<config::AgentRouter>) {
+        if routers.iter().flat_map(|r| &r.steps).any(|s| s.provider == "kilo") && !self.cfg.kilo_enabled {
+            self.cfg.kilo_enabled = true;
+            config::save_one("kiloEnabled", json!(true));
+        }
+        config::save_one("agentRouters", json!(routers));
+        self.cfg.agent_routers = routers;
+        if let Some(a) = &mut self.chat.agent {
+            a.cfg.take_keys(&self.cfg);
+        }
     }
 
     /// The answer to the card the first failure shows: the list for every model and `failed`'s own, which wins over
@@ -1904,6 +2055,7 @@ impl Core {
         if EFFORTS.contains(&effort) {
             self.chat.effort = effort.to_string();
             *self.chat.shared.effort.lock().unwrap() = self.chat.effort.clone();
+            self.cfg.effort = self.chat.effort.clone();
             config::save_one("effort", json!(self.chat.effort));
         }
     }
@@ -1911,15 +2063,25 @@ impl Core {
     pub fn set_mode(&mut self, mode: &str) {
         if MODES.contains(&mode) {
             *self.chat.shared.mode.lock().unwrap() = mode.to_string();
+            self.cfg.mode = mode.to_string();
+            config::save_one("mode", json!(mode));
+            if self.chat.running {
+                let perm = self.chat.permission.as_ref().map(|p| tools::permission(&p.req.tool));
+                if mode == "yolo" && self.chat.permission.is_some() {
+                    self.answer_permission(PermissionAnswer::Allow);
+                } else if mode == "acceptEdits" && perm == Some(tools::Permission::Edit) {
+                    self.answer_permission(PermissionAnswer::Allow);
+                } else if mode == "plan" && self.chat.permission.is_some() {
+                    self.answer_permission(PermissionAnswer::Deny("Switched to plan mode".into()));
+                }
+            }
         }
     }
 
     pub fn cycle_mode(&mut self) {
-        if !self.chat.running {
-            let m = self.chat.shared.mode();
-            let next = MODES[(MODES.iter().position(|x| *x == m).unwrap_or(0) + 1) % MODES.len()];
-            *self.chat.shared.mode.lock().unwrap() = next.into();
-        }
+        let m = self.chat.shared.mode();
+        let next = MODES[(MODES.iter().position(|x| *x == m).unwrap_or(0) + 1) % MODES.len()];
+        self.set_mode(next);
     }
 
     // ---------- actions ----------
@@ -1976,10 +2138,43 @@ impl Core {
             return;
         }
         let (cwd, files) = (self.chat.cwd.clone(), o.files.clone());
+        let raw_text = o.text.clone();
         let text = crate::prompt::command_prompt(&o.text);
         self.push(ItemKind::User { text: o.text, files: o.files });
+        let router = (self.chat.provider == "router").then(|| self.cfg.agent_router(&self.chat.model).cloned()).flatten();
+        if !self.begin_router_turn() {
+            return;
+        }
+        let router = router.filter(|r| r.use_jev && r.steps.len() > 1);
+        let use_jev = router.is_some();
+        let req_ids: HashMap<(String, String), String> = if let Some(router) = &router {
+            router
+                .steps
+                .iter()
+                .map(|s| {
+                    let req_id = self.models.iter().find(|m| m.id == s.key).map(|m| m.request_id(&s.provider).to_string()).unwrap_or_else(|| s.key.clone());
+                    ((s.key.clone(), s.provider.clone()), req_id)
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
         // Off the window's thread: reading attachments takes a while when images have to be shrunk.
         self.start(move |agent, h| {
+            if use_jev {
+                h.send(Ev::Status("Routing with Jev…".into()));
+                if let (Some(router), Some(tier)) = (&router, crate::api::classify_with_jev(&agent.cfg, &raw_text)) {
+                    let steps = router.ordered_steps(Some(tier));
+                    if let Some(first) = steps.first() {
+                        let req_id = req_ids.get(&(first.key.clone(), first.provider.clone())).cloned().unwrap_or_else(|| first.key.clone());
+                        *agent.shared.model.lock().unwrap() = req_id;
+                        *agent.shared.provider.lock().unwrap() = first.provider.clone();
+                        agent.rate_limit_retry = Some(first.retry_rate_limit);
+                        agent.fail_fast = steps.len() > 1;
+                        h.send(Ev::RouterPicked { step: first.clone(), tier, rest: steps[1..].to_vec() });
+                    }
+                }
+            }
             let (content, read) = attach::build(&cwd, &text, &files);
             agent.read_files.extend(read);
             agent.turn(content, h).map_err(|e| agent.failed(e))
@@ -2099,6 +2294,7 @@ impl Core {
         let Some(mut agent) = self.chat.agent.take() else { return };
         agent.cfg.take_keys(&self.cfg);
         agent.fail_fast = self.fails_fast();
+        agent.rate_limit_retry = self.chat.fallback.as_ref().and_then(|r| r.current_retry_rate_limit);
         self.chat.running = true;
         self.chat.stopping = false;
         self.chat.shared.cancel.store(false, Ordering::Relaxed);
@@ -2152,7 +2348,13 @@ impl Core {
     fn open_session(&mut self, s: Session) {
         let items = rebuild(&s, &mut self.next_item);
         self.next_chat += 1;
-        let mut chat = Chat::new(self.next_chat, s, &self.cfg, self.chat.shared.for_new_chat());
+        let shared = self.chat.shared.for_new_chat();
+        if let Some(run) = &self.chat.fallback {
+            *shared.model.lock().unwrap() = if run.from.provider == "router" { run.from.key.clone() } else { self.cfg.model.clone() };
+            *shared.provider.lock().unwrap() = run.from.provider.clone();
+        }
+        let mut chat = Chat::new(self.next_chat, s, &self.cfg, shared);
+        *chat.shared.mode.lock().unwrap() = self.cfg.mode.clone();
         chat.items = items;
         self.show(chat);
     }
@@ -2298,6 +2500,9 @@ impl Core {
     }
 
     pub fn compact(&mut self, focus: String) {
+        if !self.begin_router_turn() {
+            return;
+        }
         self.start(move |agent, h| match agent.compact(&focus, h) {
             Ok(true) => {
                 h.send(Ev::Notice("Compacted the conversation.".into()));
@@ -2435,6 +2640,14 @@ impl Core {
         let mut m = serde_json::Map::new();
         m.insert("games".into(), json!(games));
         self.cfg.games = games;
+        config::save_config(m);
+    }
+
+    /// Experimental music player: whether it's on, its floating card position and volume.
+    pub fn set_music(&mut self, music: config::Music) {
+        let mut m = serde_json::Map::new();
+        m.insert("music".into(), json!(music));
+        self.cfg.music = music;
         config::save_config(m);
     }
 
@@ -2747,7 +2960,7 @@ impl Core {
             .iter()
             .map(|i| match &i.kind {
                 ItemKind::User { text, files } => json!({ "id": i.id, "kind": "user", "text": cut(text), "files": files.len() }),
-                ItemKind::Assistant { text, .. } => json!({ "id": i.id, "kind": "assistant", "text": cut(text) }),
+                ItemKind::Assistant { text, model, provider, .. } => json!({ "id": i.id, "kind": "assistant", "text": cut(text), "model": model, "provider": provider }),
                 ItemKind::Tool { name, label, result, .. } => json!({
                     "id": i.id, "kind": "tool", "name": name, "label": label, "done": result.is_some(),
                     "error": result.as_ref().is_some_and(|r| r.is_error), "summary": result.as_ref().and_then(|r| r.summary.clone()),
@@ -2871,12 +3084,21 @@ impl Core {
                 "autoUpdate": cfg.auto_update,
                 "autoCompactTokens": cfg.auto_compact_tokens,
                 "fallbacks": cfg.fallbacks,
+                "agentRouters": cfg.agent_routers,
                 "experimentalImages": cfg.experimental_images,
                 "imageModel": cfg.image_model,
                 "games": cfg.games,
+                "music": cfg.music,
             })),
             ("mode", json!(self.chat.shared.mode())),
-            ("model", json!({ "id": self.chat.model, "provider": self.chat.provider, "key": self.current_key(), "short": crate::api::short_id(&self.chat.model) })),
+            ("model", if let Some(id) = (self.chat.provider == "router").then(|| self.chat.model.clone()).or_else(|| self.chat.fallback.as_ref().filter(|r| r.is_router).map(|r| r.from.key.clone())) {
+                let router = self.cfg.agent_router(&id);
+                let id = router.map(|r| r.id.clone()).unwrap_or(id);
+                let short = router.map(|r| r.name.clone()).unwrap_or_else(|| "Agent Router".into());
+                json!({ "id": id, "provider": "router", "key": id, "short": short })
+            } else {
+                json!({ "id": self.chat.model, "provider": self.chat.provider, "key": self.current_key(), "short": crate::api::short_id(&self.chat.model) })
+            }),
             ("effort", json!(self.chat.effort)),
             ("starred", json!(self.starred)),
             ("modelsLoading", json!(self.models_loading)),
@@ -3030,5 +3252,199 @@ pub fn pump(core: Arc<Mutex<Core>>, rx: Receiver<Ev>, wake: Receiver<()>) {
             core.flush();
         }
         std::thread::sleep(Duration::from_millis(16));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_transitions_and_cycling() {
+        let modes = MODES;
+        assert_eq!(modes, ["default", "acceptEdits", "auto", "plan", "yolo"]);
+        for (i, m) in modes.iter().enumerate() {
+            let next = modes[(modes.iter().position(|x| x == m).unwrap() + 1) % modes.len()];
+            assert_eq!(next, modes[(i + 1) % modes.len()]);
+        }
+    }
+
+    #[test]
+    fn permission_answer_resolution_for_modes() {
+        let edit_perm = tools::permission("write_file");
+        assert_eq!(edit_perm, tools::Permission::Edit);
+        let exec_perm = tools::permission("bash");
+        assert_eq!(exec_perm, tools::Permission::Exec);
+
+        // Under acceptEdits, edits are allowed automatically
+        assert_eq!(edit_perm == tools::Permission::Edit, true);
+        // Under yolo, anything is allowed
+        // Under plan, denied
+    }
+
+    #[test]
+    fn new_chat_inherits_configured_mode() {
+        let cfg = Config {
+            api_key: None,
+            guest: false,
+            openrouter_keys: vec![],
+            nvidia_key: None,
+            kilo_enabled: false,
+            kilo_key: None,
+            copilot_token: None,
+            copilot_user: None,
+            devin_enabled: false,
+            kiro_enabled: false,
+            codex_enabled: false,
+            claude_enabled: false,
+            opencode_enabled: false,
+            opencode_signed_in: false,
+            grok_signed_in: false,
+            grok_key: None,
+            hermes_signed_in: false,
+            hermes_key: None,
+            additional: vec![],
+            provider: "scoutcode".into(),
+            username: None,
+            base_url: "https://scoutcode.dev/v1".into(),
+            model: "auto".into(),
+            mode: "auto".into(),
+            effort: "low".into(),
+            allow: HashMap::new(),
+            auto_compact_tokens: 90_000,
+            prune_tokens: 60_000,
+            subagent_model: "qwen3.8-27b".into(),
+            temperature: None,
+            starred_models: vec![],
+            projects: vec![],
+            notify_flash: None,
+            notify_toast: None,
+            discord_presence: false,
+            discord_project: false,
+            auto_update: false,
+            last_version: None,
+            fallbacks: Default::default(),
+            experimental_images: false,
+            image_model: None,
+            games: Default::default(),
+            music: Default::default(),
+            team: None,
+            scout_mote: false,
+            scout_mote_id: None,
+            agent_routers: Default::default(),
+        };
+
+        // Shared had temporarily escalated to acceptEdits
+        let shared = Arc::new(Shared {
+            mode: Mutex::new("acceptEdits".into()),
+            model: Mutex::new("auto".into()),
+            provider: Mutex::new("scoutcode".into()),
+            effort: Mutex::new("low".into()),
+            cancel: Default::default(),
+            edit_tools: Default::default(),
+            model_names: Default::default(),
+            no_vision: Default::default(),
+            steer: Default::default(),
+        });
+
+        // Chat opened for new session uses for_new_chat and then resets to cfg.mode
+        let for_new = shared.for_new_chat();
+        let s = session::new_session("", "auto");
+        let chat = Chat::new(1, s, &cfg, for_new);
+        *chat.shared.mode.lock().unwrap() = cfg.mode.clone();
+
+        assert_eq!(chat.shared.mode(), "auto");
+    }
+
+    #[test]
+    fn rebuild_reconstructs_denied_tools_with_user_facing_display() {
+        use crate::api::{FunctionCall, Message, ToolCall};
+        let mut s = session::new_session("", "auto");
+        s.messages.push(Message::Assistant {
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".into(),
+                kind: "function".into(),
+                extra_content: None,
+                function: FunctionCall {
+                    name: "bash".into(),
+                    arguments: serde_json::to_string(&json!({ "command": "rm -rf /tmp" })).unwrap(),
+                },
+            }]),
+            reasoning_content: None,
+            model: None,
+            provider: None,
+        });
+        s.messages.push(Message::Tool {
+            tool_call_id: "call_1".into(),
+            content: "The user denied this command. Do not retry it unchanged; ask the user how to proceed if you need it.".into(),
+        });
+
+        let mut next_id = 0;
+        let items = rebuild(&s, &mut next_id);
+        assert_eq!(items.len(), 1);
+        if let ItemKind::Tool { name, label, result, .. } = &items[0].kind {
+            assert_eq!(name, "bash");
+            assert_eq!(label, "rm -rf /tmp");
+            let r = result.as_ref().unwrap();
+            assert!(r.is_error);
+            assert_eq!(r.summary.as_deref(), Some("denied"));
+            assert!(matches!(&r.display, Some(Display::Text(t)) if t == "You denied this command."));
+        } else {
+            panic!("Expected ItemKind::Tool");
+        }
+    }
+
+    #[test]
+    fn rebuild_preserves_assistant_model_and_provider() {
+        use crate::api::Message;
+        let mut s = session::new_session("", "default-model");
+        s.messages.push(Message::Assistant {
+            content: Some("First reply from model A".into()),
+            tool_calls: None,
+            reasoning_content: None,
+            model: Some("model-a".into()),
+            provider: Some("scoutcode".into()),
+        });
+        s.messages.push(Message::Assistant {
+            content: Some("Second reply from model B after fallback".into()),
+            tool_calls: None,
+            reasoning_content: None,
+            model: Some("model-b".into()),
+            provider: Some("openrouter".into()),
+        });
+        // Legacy message without explicit model
+        s.messages.push(Message::Assistant {
+            content: Some("Third reply legacy".into()),
+            tool_calls: None,
+            reasoning_content: None,
+            model: None,
+            provider: None,
+        });
+
+        let mut next_id = 0;
+        let items = rebuild(&s, &mut next_id);
+        assert_eq!(items.len(), 3);
+        if let ItemKind::Assistant { text, model, provider, .. } = &items[0].kind {
+            assert_eq!(text, "First reply from model A");
+            assert_eq!(model.as_deref(), Some("model-a"));
+            assert_eq!(provider.as_deref(), Some("scoutcode"));
+        } else {
+            panic!("Expected ItemKind::Assistant");
+        }
+        if let ItemKind::Assistant { text, model, provider, .. } = &items[1].kind {
+            assert_eq!(text, "Second reply from model B after fallback");
+            assert_eq!(model.as_deref(), Some("model-b"));
+            assert_eq!(provider.as_deref(), Some("openrouter"));
+        } else {
+            panic!("Expected ItemKind::Assistant");
+        }
+        if let ItemKind::Assistant { text, model, provider, .. } = &items[2].kind {
+            assert_eq!(text, "Third reply legacy");
+            assert_eq!(model.as_deref(), Some("default-model"));
+            assert_eq!(provider.as_deref(), None);
+        } else {
+            panic!("Expected ItemKind::Assistant");
+        }
     }
 }

@@ -4,6 +4,21 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.19
+A built-in music player, the Agent Router that picks a model to fit each request, and clearer denied-action messages.
+
+- Turn on the music player in Settings to play your own MP3s or SoundCloud tracks and playlists while Scout works.
+- The Agent Router asks Jev how capable a model each request needs and starts at the right step, with an option to wait and retry on rate limits before moving on.
+- Denied commands and edits now say what you denied ("You denied this command"), and each reply remembers the model and provider that wrote it.
+- Model menu, Settings, Delta and onboarding polish, plus a smoother in-place install that no longer has to close Scout first.
+
+## 0.1.18
+Discord account linking in Rewards, terminal command title refinements, and tool execution improvements.
+
+- Link your Discord account in Settings > Usage (or Rewards) to earn a one-time $0.25 balance reward.
+- Improved ACP terminal title detection and live execution state for background commands.
+- Model menu and accounts view refinements and polish across Delta issues and docs.
+
 ## 0.1.17
 New onboarding walkthrough, 30 language localizations, and chat imports from Claude Code and Codex.
 

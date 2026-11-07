@@ -62,7 +62,7 @@ export function StateIcon({ state, size = 14 }: { state: Pick<State, 'type' | 'c
       {(type === 'started' || type === 'review') && (
         <>
           <circle cx="7" cy="7" r={r} fill="none" stroke={c} strokeWidth="1.5" />
-          <path d={type === 'started' ? 'M7 3.5A3.5 3.5 0 0 1 10.5 7H7z' : 'M7 3.5A3.5 3.5 0 1 1 3.5 7H7z'} fill={c} />
+          <path d={type === 'started' ? 'M7 3.5A3.5 3.5 0 0 1 7 10.5Z' : 'M7 3.5A3.5 3.5 0 1 1 3.5 7H7z'} fill={c} />
         </>
       )}
       {type === 'completed' && (
@@ -78,6 +78,106 @@ export function StateIcon({ state, size = 14 }: { state: Pick<State, 'type' | 'c
         </>
       )}
     </svg>
+  );
+}
+
+
+/** An animated state icon that transitions between workflow states (e.g. In Progress -> Done). */
+export function AnimatedStateIcon({
+  state,
+  size = 14,
+}: {
+  state: Pick<State, 'id' | 'type' | 'color'> | undefined;
+  size?: number;
+}) {
+  const [transition, setTransition] = useState<{
+    from: Pick<State, 'type' | 'color'>;
+    to: Pick<State, 'type' | 'color'>;
+    key: number;
+  } | null>(null);
+  const prevRef = useRef(state);
+  const timerRef = useRef<any>(null);
+
+  useEffect(() => {
+    const prev = prevRef.current;
+    const currentId = (state as any)?.id ?? state?.type;
+    const prevId = (prev as any)?.id ?? prev?.type;
+    if (prev && state && (currentId !== prevId || prev.type !== state.type)) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      setTransition({
+        from: { type: prev.type, color: prev.color ?? '#8b8d98' },
+        to: { type: state.type, color: state.color ?? '#8b8d98' },
+        key: Date.now(),
+      });
+      timerRef.current = setTimeout(() => {
+        setTransition(null);
+      }, 650);
+    }
+    prevRef.current = state;
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [state?.id, state?.type, state?.color]);
+
+  if (!transition) {
+    return <StateIcon state={state} size={size} />;
+  }
+
+  const { from, to, key } = transition;
+  const isToDone = to.type === 'completed';
+  const isFromStarted = from.type === 'started' || from.type === 'review';
+
+  return (
+    <span
+      key={key}
+      className={`d-state-anim-wrap ${isToDone ? 'to-done' : ''} from-${from.type} to-${to.type}`}
+      style={{
+        '--from-color': from.color,
+        '--to-color': to.color,
+      } as any}
+    >
+      {isToDone && <span className="d-state-anim-ripple" />}
+      <svg className="d-icon d-state-anim-svg" width={size} height={size} viewBox="0 0 14 14" aria-hidden="true">
+        <circle className="d-state-anim-ring" cx="7" cy="7" r="5.5" fill="none" strokeWidth="1.5" />
+        {isToDone ? (
+          <>
+            {isFromStarted ? (
+              <>
+                <path className="d-state-anim-base" d="M7 0.75 A6.25 6.25 0 0 1 7 13.25 Z" />
+                <path className="d-state-anim-wedge" d="M7 0.75 A6.25 6.25 0 0 1 7 13.25 Z" />
+              </>
+            ) : (
+              <circle className="d-state-anim-grow" cx="7" cy="7" r="6.25" />
+            )}
+            <path
+              className="d-state-anim-check"
+              d="M4.3 7.2l1.8 1.8 3.6-3.8"
+              fill="none"
+              stroke="var(--d-bg)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </>
+        ) : to.type === 'canceled' ? (
+          <>
+            <circle className="d-state-anim-grow" cx="7" cy="7" r="6.25" />
+            <path
+              className="d-state-anim-x"
+              d="M4.9 4.9l4.2 4.2M9.1 4.9l-4.2 4.2"
+              fill="none"
+              stroke="var(--d-bg)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </>
+        ) : to.type === 'started' || to.type === 'review' ? (
+          <path className="d-state-anim-wedge-in" d="M7 3.5 A3.5 3.5 0 0 1 7 10.5 Z" />
+        ) : (
+          <circle className="d-state-anim-shrink" cx="7" cy="7" r="6.25" />
+        )}
+      </svg>
+    </span>
   );
 }
 
@@ -292,6 +392,16 @@ export function useLinger<T>(value: T | null | undefined | false, ms = 170): [T 
 }
 
 export function Modal({ children, onClose, className = '', closing }: { children: ReactNode; onClose: () => void; className?: string; closing?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const focus = () => {
+      const el = ref.current?.querySelector<HTMLElement>('[autofocus], .d-big-input, .d-palette-input');
+      el?.focus();
+    };
+    focus();
+    const t = setTimeout(focus, 50);
+    return () => clearTimeout(t);
+  }, []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !e.defaultPrevented) {
@@ -305,7 +415,7 @@ export function Modal({ children, onClose, className = '', closing }: { children
   }, [onClose]);
   return (
     <div className={`d-modal-back ${closing ? 'closing' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className={`d-modal ${className}`} role="dialog">{children}</div>
+      <div ref={ref} className={`d-modal ${className}`} role="dialog">{children}</div>
     </div>
   );
 }
@@ -348,10 +458,36 @@ export function InlineText({ value, onSave, className = '', placeholder, multili
   useEffect(() => setDraft(value), [value]);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el) {
-      el.style.height = '0px';
+    if (!el) return;
+
+    const adjust = () => {
+      if (typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content')) {
+        el.style.height = '';
+        return;
+      }
+      el.style.height = 'auto';
       el.style.height = `${el.scrollHeight}px`;
+    };
+
+    adjust();
+
+    if (typeof document !== 'undefined' && 'fonts' in document) {
+      document.fonts.ready.then(adjust);
     }
+
+    let lastWidth = el.clientWidth;
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w && w !== lastWidth) {
+          lastWidth = w;
+          adjust();
+        }
+      }
+    }) : null;
+    ro?.observe(el);
+
+    return () => ro?.disconnect();
   }, [draft]);
   const commit = () => {
     if (draft !== value && (multiline || draft.trim())) onSave(multiline ? draft : draft.trim());

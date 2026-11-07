@@ -178,8 +178,8 @@ export function useUiLanguage(): string {
   return useSyncExternalStore(subscribe, () => language);
 }
 
-/** The AI reply language that goes with an interface language: English keeps Auto, so Scout follows the conversation. */
-export const replyLanguageFor = (id: string) => (id === 'English' ? 'auto' : id);
+/** The AI reply language that goes with an interface language: matches the chosen language so the model is explicitly told which language to speak in. */
+export const replyLanguageFor = (id: string) => id;
 
 /** Translates a key into the given language with optional template parameter replacements. */
 export function translate(

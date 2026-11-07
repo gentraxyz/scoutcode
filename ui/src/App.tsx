@@ -5,6 +5,7 @@ import { act, invoke } from './api';
 import { Composer, PermissionBody } from './Composer';
 import { Dock } from './Dock';
 import { closeGame, FloatingGame, gameShowing, openGame, useGameAutomation } from './Games';
+import { closeMusic, FloatingMusic, openMusic, useMusicPlaying } from './Music';
 import { Onboarding } from './Onboarding';
 import { Settings, restartBlocker } from './Settings';
 import { addProject, Sidebar } from './Sidebar';
@@ -12,6 +13,8 @@ import { Hideable, HideMenu } from './Hideable';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Transcript } from './Transcript';
 import { DeltaPage } from './DeltaPage';
+import { DeltaTabsBar } from './delta/DeltaTabsBar';
+import { deltaTabs } from './delta/tabs';
 import { FolderPicker } from './FolderPicker';
 import { Icon, IconButton, Modal } from './widgets';
 
@@ -80,6 +83,21 @@ function GameButton() {
   return <IconButton icon="game" tip={showing ? 'Close the game' : 'Play 2048 while Scout works'} active={showing} onClick={() => (showing ? closeGame() : openGame(games, true))} />;
 }
 
+function MusicButton() {
+  const { music } = useView('cfg');
+  const showing = useUi((u) => u.musicOpen);
+  const playing = useMusicPlaying();
+  if (!music.on) return null;
+  return (
+    <IconButton
+      icon="music"
+      tip={showing ? 'Close music player' : playing ? 'Music playing — open player' : 'Open music player'}
+      active={showing || playing}
+      onClick={() => (showing ? closeMusic() : openMusic())}
+    />
+  );
+}
+
 function TopBar() {
   const sidebar = useUi((u) => u.sidebar);
   const dockOpen = useUi((u) => u.dockOpen);
@@ -88,9 +106,9 @@ function TopBar() {
   const page = useUi((u) => u.page);
   if (page === 'delta') {
     return (
-      <header className="top-bar" data-tauri-drag-region>
+      <header className="top-bar delta-top-bar" data-tauri-drag-region>
         {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
-        <b className="chat-title ellipsis" data-tauri-drag-region>Delta</b>
+        <DeltaTabsBar />
         <span className="grow" data-tauri-drag-region />
         <UpdatePill />
         <IconButton icon="chat" tip="Back to the chat" onClick={() => ui.set({ page: 'chat' })} />
@@ -106,6 +124,7 @@ function TopBar() {
       {/* The sidebar shows the folder; without it, the bar does. */}
       {!sidebar && <Hideable id="top.project"><button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button></Hideable>}
       <UpdatePill />
+      <Hideable id="top.music"><MusicButton /></Hideable>
       <Hideable id="top.game"><GameButton /></Hideable>
       <Hideable id="top.panel"><IconButton icon="panel" tip={dockOpen ? 'Hide panel' : 'Show panel'} active={dockOpen} onClick={() => ui.set({ dockOpen: !dockOpen })} /></Hideable>
       <Hideable id="top.terminal"><IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} /></Hideable>
@@ -181,6 +200,28 @@ function useShortcuts() {
           e.preventDefault();
           ui.set({ page: 'chat' });
           act('newChat');
+          return;
+        }
+        if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 't') {
+          e.preventDefault();
+          deltaTabs.addTab();
+          return;
+        }
+        if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'w') {
+          e.preventDefault();
+          deltaTabs.closeActiveTab();
+          return;
+        }
+        if (e.ctrlKey && e.key === 'Tab') {
+          e.preventDefault();
+          if (e.shiftKey) deltaTabs.prevTab();
+          else deltaTabs.nextTab();
+          return;
+        }
+        if (e.ctrlKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
+          e.preventDefault();
+          deltaTabs.switchToIndex(parseInt(e.key, 10) - 1);
+          return;
         }
         return;
       }
@@ -276,6 +317,7 @@ export function App() {
         )}
       </div>
       <FloatingGame />
+      <FloatingMusic />
       <Settings />
       <DeleteDialog />
       <HideMenu />

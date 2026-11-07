@@ -34,6 +34,8 @@ pub struct Session {
     /// The permission mode last told to the model in the messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 pub fn now_ms() -> u64 {
@@ -50,7 +52,7 @@ pub fn new_session(cwd: &str, model: &str) -> Session {
     let mut rnd = [0u8; 2];
     let _ = getrandom::fill(&mut rnd);
     let id = format!("{y:04}{mo:02}{d:02}{h:02}{mi:02}{s:02}-{:04x}", u16::from_le_bytes(rnd));
-    Session { id, cwd: cwd.to_string(), created: now_ms(), updated: now_ms(), title: String::new(), model: model.to_string(), messages: vec![], totals: Totals::default(), mode: None }
+    Session { id, cwd: cwd.to_string(), created: now_ms(), updated: now_ms(), title: String::new(), model: model.to_string(), messages: vec![], totals: Totals::default(), mode: None, provider: None }
 }
 
 /// UTC date and time from Unix seconds.
@@ -274,7 +276,7 @@ fn push_turn(messages: &mut Vec<Message>, role: &str, text: String) {
             }
         }
         ("user", _) => messages.push(Message::User { content: Content::Text(text.to_string()) }),
-        ("assistant", _) => messages.push(Message::Assistant { content: Some(text.to_string()), reasoning_content: None, tool_calls: None }),
+        ("assistant", _) => messages.push(Message::Assistant { content: Some(text.to_string()), reasoning_content: None, tool_calls: None, model: None, provider: None }),
         _ => {}
     }
 }
@@ -383,6 +385,7 @@ fn parse_external_file(source: &str, file: &Path) -> Option<Session> {
         messages,
         totals: Totals::default(),
         mode: None,
+        provider: if source == "claude" { Some("claude".into()) } else { Some("codex".into()) },
     })
 }
 

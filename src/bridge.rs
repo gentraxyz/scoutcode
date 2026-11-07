@@ -2,9 +2,9 @@
 //! rest ask for something and answer directly. Commands that wait (dialogs, the network) run off the main thread.
 
 use crate::agent::{PermissionAnswer, PlanAnswer, QuestionAnswer};
-use crate::config::{Fallbacks, ModelRef};
+use crate::config::{AgentRouter, Fallbacks, ModelRef};
 use crate::core::Core;
-use crate::{attach, dock, mcp_client, session, skills};
+use crate::{attach, dock, mcp_client, music, session, skills};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -63,6 +63,10 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         delta_local_write,
         delta_local_delete,
         delta_cloud,
+        music_list,
+        music_upload,
+        music_remove,
+        music_soundcloud_add,
     ]
 }
 
@@ -84,6 +88,7 @@ enum Action {
     RetryTurn { key: Option<String>, provider: Option<String> },
     SetupFallbacks { failed: ModelRef, all: Vec<ModelRef>, own: Vec<ModelRef>, off: bool },
     SetFallbacks { fallbacks: Fallbacks },
+    SetAgentRouters { agent_routers: Vec<AgentRouter> },
     ChangeProject { dir: String },
     RenameProject { path: String, name: String },
     RemoveProject { path: String },
@@ -121,6 +126,7 @@ enum Action {
     SetDiscord { presence: bool, project: bool },
     SetImages { on: bool, model: Option<String> },
     SetGames { games: crate::config::Games },
+    SetMusic { music: crate::config::Music },
     UsageRefresh,
     QuotaRefresh,
     UsageChange { body: Value, said: String },
@@ -171,6 +177,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::RetryTurn { key, provider } => c.retry(key.zip(provider)),
         Action::SetupFallbacks { failed, all, own, off } => c.setup_fallbacks(failed, all, own, off),
         Action::SetFallbacks { fallbacks } => c.set_fallbacks(fallbacks),
+        Action::SetAgentRouters { agent_routers } => c.set_agent_routers(agent_routers),
         Action::ChangeProject { dir } => c.change_project(dir),
         Action::RenameProject { path, name } => c.rename_project(&path, &name),
         Action::RemoveProject { path } => c.remove_project(&path),
@@ -228,6 +235,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::SetDiscord { presence, project } => c.set_discord(presence, project),
         Action::SetImages { on, model } => c.set_images(on, model),
         Action::SetGames { games } => c.set_games(games),
+        Action::SetMusic { music } => c.set_music(music),
         Action::TestNotification => crate::notify::toast("Scout", "This is how Scout will tell you it's done."),
         Action::UsageRefresh => c.usage_request(None),
         Action::QuotaRefresh => c.quota_refresh(),
@@ -409,12 +417,156 @@ fn set_material<R: Runtime>(window: tauri::WebviewWindow<R>, material: String) -
     }
 }
 
+#[cfg(windows)]
+static PREV_TASKBAR_ICON: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+
+#[cfg(windows)]
+fn create_hicon_from_rgba(
+    rgba: &[u8],
+    size: u32,
+) -> Result<windows::Win32::UI::WindowsAndMessaging::HICON, String> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateBitmap, CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, HGDIOBJ, RGBQUAD,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, ICONINFO};
+
+    if size == 0 || size > 512 || rgba.len() != (size * size * 4) as usize {
+        return Err("The icon must be square RGBA.".into());
+    }
+
+    // Convert RGBA to BGRA for 32-bit DIB section
+    let mut bgra = rgba.to_vec();
+    for chunk in bgra.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+
+    let bi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size as i32,
+            biHeight: -(size as i32), // Negative height specifies a top-down DIB
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        },
+        bmiColors: [RGBQUAD::default()],
+    };
+
+    unsafe {
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let color_bmp = CreateDIBSection(None, &bi, DIB_RGB_COLORS, &mut bits, None, 0)
+            .map_err(|e| format!("CreateDIBSection failed: {e}"))?;
+
+        if !bits.is_null() {
+            std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, bgra.len());
+        }
+
+        let stride = ((size + 15) / 16 * 2) as usize;
+        let mask_bytes = vec![0u8; stride * size as usize];
+        let mask_bmp = CreateBitmap(
+            size as i32,
+            size as i32,
+            1,
+            1,
+            Some(mask_bytes.as_ptr() as *const _),
+        );
+
+        if mask_bmp.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ::from(color_bmp));
+            return Err("CreateBitmap for mask failed".into());
+        }
+
+        let icon_info = ICONINFO {
+            fIcon: true.into(),
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask_bmp,
+            hbmColor: color_bmp,
+        };
+
+        let hicon = match CreateIconIndirect(&icon_info) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = DeleteObject(HGDIOBJ::from(mask_bmp));
+                let _ = DeleteObject(HGDIOBJ::from(color_bmp));
+                return Err(format!("CreateIconIndirect failed: {e}"));
+            }
+        };
+
+        let _ = DeleteObject(HGDIOBJ::from(mask_bmp));
+        let _ = DeleteObject(HGDIOBJ::from(color_bmp));
+
+        Ok(hicon)
+    }
+}
+
+#[cfg(windows)]
+fn set_windows_taskbar_icon<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    rgba: &[u8],
+    size: u32,
+) -> Result<(), String> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DestroyIcon, SendMessageW, SetWindowPos, HICON, ICON_BIG, ICON_SMALL, SWP_FRAMECHANGED,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_SETICON,
+    };
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let hicon = create_hicon_from_rgba(rgba, size)?;
+
+    unsafe {
+        // Set both ICON_BIG (Windows taskbar, Alt+Tab) and ICON_SMALL (title bar)
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            Some(WPARAM(ICON_BIG as usize)),
+            Some(LPARAM(hicon.0 as isize)),
+        );
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            Some(WPARAM(ICON_SMALL as usize)),
+            Some(LPARAM(hicon.0 as isize)),
+        );
+
+        // Notify shell/taskbar to redraw immediately
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        );
+
+        let mut prev = PREV_TASKBAR_ICON.lock().unwrap();
+        let old = prev.replace(hicon.0 as usize);
+        if let Some(old_hicon) = old {
+            let _ = DestroyIcon(HICON(old_hicon as *mut _));
+        }
+    }
+
+    Ok(())
+}
+
 /// The taskbar and title icon, drawn by the UI from the logo picked in Settings > Appearance: `size`×`size` RGBA.
 #[tauri::command]
 fn set_app_icon<R: Runtime>(window: tauri::WebviewWindow<R>, rgba: Vec<u8>, size: u32) -> Result<(), String> {
     if size == 0 || size > 512 || rgba.len() != (size * size * 4) as usize {
         return Err("The icon must be square RGBA.".into());
     }
+
+    #[cfg(windows)]
+    set_windows_taskbar_icon(&window, &rgba, size)?;
+
     window.set_icon(tauri::image::Image::new_owned(rgba, size, size)).map_err(|e| e.to_string())
 }
 
@@ -688,5 +840,59 @@ fn terminal_resize(terminal: State<dock::Terminal>, rows: u16, cols: u16) {
 #[tauri::command]
 fn terminal_stop(terminal: State<dock::Terminal>) {
     terminal.stop();
+}
+
+// ---------- music ----------
+
+#[tauri::command]
+fn music_list() -> Vec<music::MusicTrack> {
+    music::list()
+}
+
+#[tauri::command(async)]
+fn music_upload() -> Result<Option<Vec<music::MusicTrack>>, String> {
+    music::upload_files()
+}
+
+#[tauri::command]
+fn music_remove(id: String) -> Result<Vec<music::MusicTrack>, String> {
+    music::remove_track(&id)
+}
+
+#[tauri::command(async)]
+fn music_soundcloud_add(url: String) -> Result<music::Added, String> {
+    music::soundcloud_add(&url)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn test_create_hicon_from_rgba() {
+        use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+        let size = 32u32;
+        let mut rgba = vec![0u8; (size * size * 4) as usize];
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[0] = 0xf5; // R
+            pixel[1] = 0xa6; // G
+            pixel[2] = 0x23; // B
+            pixel[3] = 0xff; // A
+        }
+        let hicon = create_hicon_from_rgba(&rgba, size).expect("create HICON");
+        assert!(!hicon.is_invalid());
+        unsafe {
+            let _ = DestroyIcon(hicon);
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_create_hicon_invalid_size() {
+        assert!(create_hicon_from_rgba(&[], 0).is_err());
+        assert!(create_hicon_from_rgba(&[0; 10], 32).is_err());
+    }
 }
 

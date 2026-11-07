@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { act, tokens, type Model, type ModelRef } from './api';
-import { AdditionalOptions, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { act, tokens, type AgentRouteStep, type AgentRouter, type Model, type ModelRef } from './api';
+import { AdditionalOptions, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ChatbotsPanel } from './Chatbots';
 import { core, useCore, useView } from './store';
-import { Icon, IconButton, Link, Popover, Star } from './widgets';
+import { Icon, IconButton, Link, Popover, Star, Switch } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
-type Tab = 'starred' | 'scoutcode' | 'claude' | 'codex' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'additional' | 'chatbots';
-const TABS: [Tab, string][] = [['starred', 'Starred'], ['chatbots', 'MCP chatbots'], ['scoutcode', 'ScoutCode'], ['claude', 'Claude Code'], ['codex', 'Codex'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['hermes', 'Hermes'], ['additional', 'Additional Providers']];
+type Tab = 'starred' | 'router' | 'scoutcode' | 'claude' | 'codex' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'additional' | 'chatbots';
+const TABS: [Tab, string][] = [['starred', 'Starred'], ['router', 'Agent Router'], ['chatbots', 'MCP chatbots'], ['scoutcode', 'ScoutCode'], ['claude', 'Claude Code'], ['codex', 'Codex'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['hermes', 'Hermes'], ['additional', 'Additional Providers']];
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
 type ModelRow = { key: string; provider: string; name: string; star: string; model: Model };
@@ -151,9 +151,10 @@ function runsOn(id: string): string {
 
 function RailIcon({ tab }: { tab: Tab }) {
   if (tab === 'starred') return <Star on={false} />;
+  if (tab === 'router') return <Icon name="route" />;
   if (tab === 'additional') return <Icon name="plus" />;
   if (tab === 'chatbots') return <Icon name="chat" />;
-  const file = { scoutcode: '', claude: 'claude', codex: 'codex', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes' }[tab];
+  const file = { scoutcode: 'scoutcode', claude: 'claude', codex: 'codex', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes' }[tab];
   if (!file) return <img className="logo" src={scoutLogo} width={16} height={16} alt="" />;
   return <img className="logo" src={logo(file)} width={16} height={16} alt="" />;
 }
@@ -181,9 +182,13 @@ function ModelCard({ m, top, left }: { m: Model; top: number; left: number }) {
 function SignedOut({ tab }: { tab: Tab }) {
   if (tab === 'additional') return <AdditionalOptions />;
   const name = TABS.find(([t]) => t === tab)![1];
+  const status = providerStatus(tab);
   return (
     <div className="stack">
-      <b className="strong">{tab === 'opencode' ? 'Set up OpenCode' : `You must sign in to use ${name}`}</b>
+      <div className="row">
+        <b className="strong grow">{tab === 'opencode' ? 'Set up OpenCode' : `You must sign in to use ${name}`}</b>
+        <span className={`badge ${status === 'Paid' ? 'paid' : ''}`}>{status}</span>
+      </div>
       {tab === 'scoutcode' && (
         <>
           <div className="small dim">No key needed: uses your account's monthly desktop credit.</div>
@@ -261,8 +266,8 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   // A team's member sees what the team runs, and the providers on this PC it allows.
   const team = cfg.team;
   const teamRuns = (t: Tab) => !!team && (team.providers.includes(t) || (t === 'additional' && additionalProviders.some((a) => team.providers.includes(a.id))));
-  const shownTab = (t: Tab) => !team || t === 'starred' || t === 'chatbots' || teamRuns(t) || team.acp.includes(t);
-  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, additional: cfg.additional.length > 0, starred: true, kilo: true, chatbots: link.on })[t];
+  const shownTab = (t: Tab) => (!onPick || (t !== 'router' && t !== 'chatbots')) && (!team || t === 'starred' || t === 'router' || t === 'chatbots' || teamRuns(t) || team.acp.includes(t));
+  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, additional: cfg.additional.length > 0, starred: true, router: true, kilo: true, chatbots: link.on })[t];
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => {
     const all = allRows(models);
@@ -281,29 +286,34 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const signIn = !q && tab !== 'scoutcode' && (!signedIn(tab) || (tab === 'additional' && adding));
   // Chatbots bring their own model, so the tab shows the link instead of a list.
   const chatbots = !q && tab === 'chatbots';
+  const routerTab = !q && tab === 'router';
   const empty = loading > 0 ? 'Loading models…' : q ? 'No models match.' : tab === 'starred' ? 'Star a model to keep it here.' : 'No models here yet.';
   return (
     <div className="model-menu" ref={menuRef}>
       <div className="rail">
-        {TABS.filter(([t]) => shownTab(t) && !hidden.includes(t)).map(([t, name]) => (
-          <button
-            key={t}
-            type="button"
-            title={signedIn(t) ? name : `${name} (not connected)`}
-            aria-label={signedIn(t) ? name : `${name} (not connected)`}
-            className={`rail-tab ${tab === t && !q ? 'on' : ''} ${signedIn(t) ? '' : 'off'}`}
-            onClick={() => { setTab(t); setSearch(''); setAdding(false); }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              if (t === 'starred') return;
-              const box = menuRef.current!.getBoundingClientRect();
-              setCtx({ tab: t, x: e.clientX - box.left, y: e.clientY - box.top });
-              if (tip) dismissTip();
-            }}
-          >
-            <RailIcon tab={t} />
-          </button>
-        ))}
+        {TABS.filter(([t]) => shownTab(t) && !hidden.includes(t)).map(([t, name]) => {
+          const unlinked = !signedIn(t) && t !== 'starred' && t !== 'router' && t !== 'chatbots';
+          const status = unlinked ? providerStatus(t) : null;
+          return (
+            <button
+              key={t}
+              type="button"
+              title={signedIn(t) ? name : `${name} (${status})`}
+              aria-label={signedIn(t) ? name : `${name} (${status})`}
+              className={`rail-tab ${tab === t && !q ? 'on' : ''} ${signedIn(t) ? '' : 'off'}`}
+              onClick={() => { setTab(t); setSearch(''); setAdding(false); }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                if (t === 'starred') return;
+                const box = menuRef.current!.getBoundingClientRect();
+                setCtx({ tab: t, x: e.clientX - box.left, y: e.clientY - box.top });
+                if (tip) dismissTip();
+              }}
+            >
+              <RailIcon tab={t} />
+            </button>
+          );
+        })}
         {hidden.length > 0 && (
           <button type="button" className="rail-tab" title={`Show hidden providers (${hidden.length})`} aria-label={`Show hidden providers (${hidden.length})`} onClick={(e) => {
             const box = menuRef.current!.getBoundingClientRect();
@@ -325,7 +335,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
             const name = TABS.find(([id]) => id === t)![1];
             return (
               <>
-                <div className="tiny dim rail-menu-head">{name}</div>
+                <div className="tiny dim rail-menu-head">{name}{!signedIn(t) && t !== 'chatbots' ? ` · ${providerStatus(t)}` : ''}</div>
                 {!signedIn(t) && (
                   <button type="button" className="menu-item" onClick={() => { setTab(t); setSearch(''); setAdding(false); setCtx(null); }}>
                     <Icon name="user" /><span className="grow">{t === 'opencode' ? 'Set up OpenCode' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : `Sign in to ${name}`}</span>
@@ -354,7 +364,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
             <div className="small dim">Right-click a provider on the left to hide it, or to sign in if it needs an account. The bars by each model are its Intelligence Index: the more bars, the smarter.</div>
           </div>
         )}
-        {!chatbots && !signIn && (
+        {!chatbots && !routerTab && !signIn && (
           <div className="model-sort">
             <select className="input select compact" aria-label="Sort models" title="Sort models" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               {SORTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
@@ -399,7 +409,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
           </>
         )}
         <div className="model-list" onMouseLeave={() => setHover(null)}>
-          {chatbots ? <ChatbotsPanel close={close} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
+          {routerTab ? <AgentRouterPanel compact close={close} /> : chatbots ? <ChatbotsPanel close={close} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
             const m = r.model;
             // NIM's list has no prices, and what another provider charges says nothing about it.
             const free = rowFree(r);
@@ -426,10 +436,433 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
               </div>
             );
           })}
-          {!signIn && !chatbots && rows.length === 0 && <div className="small dim pad">{empty}</div>}
+          {!signIn && !chatbots && !routerTab && rows.length === 0 && <div className="small dim pad">{empty}</div>}
         </div>
       </div>
       {hover && createPortal(<ModelCard {...hover} />, document.body)}
+    </div>
+  );
+}
+
+const newRouterId = () => `router-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+/** A one-line description of a router's route, for its row. */
+function routeSummary(r: AgentRouter): string {
+  if (r.steps.length === 0) return 'No models yet';
+  const n = `${r.steps.length} model${r.steps.length === 1 ? '' : 's'}`;
+  return r.useJev ? `${n} · Jev picks by difficulty` : `${n} · in order`;
+}
+
+/**
+ * The Agent Routers: a list to pick from like models, each with an edit button, and a button to make another.
+ * Shared by the Model Menu tab and Settings > Agent Router.
+ */
+export function AgentRouterPanel({ compact = false, close }: { compact?: boolean; close?: () => void }) {
+  const cfg = useView('cfg');
+  const current = useView('model');
+  const routers: AgentRouter[] = cfg.agentRouters ?? [];
+  const [editing, setEditing] = useState<string | null>(null);
+  const editingRouter = editing ? routers.find((r) => r.id === editing) : undefined;
+  const saveAll = (next: AgentRouter[]) => act('setAgentRouters', { agentRouters: next });
+  const activeId = current.provider === 'router' ? (routers.some((r) => r.id === current.key) ? current.key : routers[0]?.id) : null;
+
+  const create = () => {
+    const used = new Set(routers.map((r) => r.name));
+    let n = routers.length + 1;
+    while (used.has(`Router ${n}`)) n++;
+    const r: AgentRouter = { id: newRouterId(), name: `Router ${n}`, useJev: false, steps: [], lastProvider: null };
+    saveAll([...routers, r]);
+    setEditing(r.id);
+  };
+
+  const choose = (id: string) => {
+    act('chooseModel', { key: id, provider: 'router' });
+    close?.();
+  };
+
+  if (editingRouter) {
+    return (
+      <AgentRouterEditor
+        compact={compact}
+        router={editingRouter}
+        active={activeId === editingRouter.id}
+        onSave={(next) => saveAll(routers.map((r) => (r.id === next.id ? next : r)))}
+        onDelete={() => { saveAll(routers.filter((r) => r.id !== editingRouter.id)); setEditing(null); }}
+        onUse={() => choose(editingRouter.id)}
+        onBack={() => setEditing(null)}
+      />
+    );
+  }
+
+  return (
+    <div className={`router-panel stack ${compact ? 'compact' : ''}`}>
+      <div className="row">
+        <span className="tiny dim strong grow">AGENT ROUTERS</span>
+        <button type="button" className="button compact" title="Make a new Agent Router" onClick={create}>+ New router</button>
+      </div>
+      {routers.length === 0 ? (
+        <div className="small dim pad router-empty">
+          No Agent Routers yet. Click <b>+ New router</b> to build a route of providers and models (for example Opus 4.6 → Haiku 4.5 → DeepSeek).
+        </div>
+      ) : (
+        <div className="stack" style={{ gap: 2 }}>
+          {routers.map((r) => (
+            <div
+              key={r.id}
+              className={`model-row router-row ${activeId === r.id ? 'selected' : ''}`}
+              title={`Use ${r.name}`}
+              onClick={() => choose(r.id)}
+            >
+              <Icon name="route" size={14} />
+              <span className="grow ellipsis">
+                {r.name}
+                <span className="tiny dim"> · {routeSummary(r)}</span>
+              </span>
+              {activeId === r.id && <Icon name="check" size={14} />}
+              <IconButton icon="pencil" tip={`Edit ${r.name}`} size={24} onClick={(e) => { e.stopPropagation(); setEditing(r.id); }} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One Agent Router's name, Jev switch and route, saved as they change. */
+function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, onBack }: {
+  compact: boolean;
+  router: AgentRouter;
+  active: boolean;
+  onSave: (next: AgentRouter) => void;
+  onDelete: () => void;
+  onUse: () => void;
+  onBack: () => void;
+}) {
+  const models = useCore((s) => s.models);
+  const cfg = useView('cfg');
+  const current = useView('model');
+  const { additionalProviders } = useCore((s) => s.statics);
+  const [name, setName] = useState(router.name);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  useEffect(() => setName(router.name), [router.id]);
+
+  const rows = useMemo(() => allRows(models), [models]);
+
+  const providers = useMemo(() => {
+    const base: { id: string; name: string }[] = [
+      { id: 'scoutcode', name: 'ScoutCode' },
+      { id: 'claude', name: 'Claude Code' },
+      { id: 'codex', name: 'Codex' },
+      { id: 'openrouter', name: 'OpenRouter' },
+      { id: 'nvidia', name: 'NVIDIA NIM' },
+      { id: 'opencode', name: 'OpenCode' },
+      { id: 'kilo', name: 'Kilo Code' },
+      { id: 'copilot', name: 'GitHub Copilot' },
+      { id: 'devin', name: 'Devin' },
+      { id: 'kiro', name: 'Kiro' },
+      { id: 'grok', name: 'Grok Build' },
+      { id: 'hermes', name: 'Hermes' },
+    ];
+    for (const a of additionalProviders) {
+      if (cfg.additional.some((l) => l.id === a.id) || rows.some((r) => r.provider === a.id)) {
+        base.push({ id: a.id, name: a.name });
+      }
+    }
+    return base;
+  }, [additionalProviders, cfg.additional, rows]);
+
+  const defaultProvider = useMemo(() => {
+    if (router.lastProvider && providers.some((p) => p.id === router.lastProvider)) return router.lastProvider;
+    const lastStep = router.steps[router.steps.length - 1];
+    if (lastStep && providers.some((p) => p.id === lastStep.provider)) return lastStep.provider;
+    if (current.provider !== 'router' && providers.some((p) => p.id === current.provider)) return current.provider;
+    return 'scoutcode';
+  }, [router.lastProvider, router.steps, current.provider, providers]);
+
+  // A new router opens straight on adding its first model.
+  const [adding, setAdding] = useState(router.steps.length === 0);
+  const [addProvider, setAddProvider] = useState(defaultProvider);
+  const [addSearch, setAddSearch] = useState('');
+  const [addKey, setAddKey] = useState('');
+
+  const providerRows = useMemo(() => {
+    const q = addSearch.trim().toLowerCase();
+    return rows
+      .filter((r) => r.provider === addProvider && r.key !== 'auto' && (!q || [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q))))
+      .sort((a, b) => compare('smart', a, b));
+  }, [rows, addProvider, addSearch]);
+
+  useEffect(() => {
+    if (providerRows.length > 0 && !providerRows.some((r) => r.key === addKey)) {
+      setAddKey(providerRows[0].key);
+    } else if (providerRows.length === 0) {
+      setAddKey('');
+    }
+  }, [providerRows, addKey]);
+
+  const save = onSave;
+
+  const commitName = () => {
+    const n = name.trim();
+    if (!n) setName(router.name);
+    else if (n !== router.name) save({ ...router, name: n });
+  };
+
+  const openAdd = () => {
+    setAddProvider(defaultProvider);
+    setAddSearch('');
+    setAdding(true);
+  };
+
+  const addStep = (key: string, provider: string) => {
+    if (!key) return;
+    const found = rows.find((r) => r.provider === provider && r.key === key)?.model ?? models.find((m) => m.id === key);
+    const intel = (found ? intelligence(found) : null) ?? 2;
+    const nextStep: AgentRouteStep = { key, provider, intelligence: intel, retryRateLimit: false };
+    save({ ...router, lastProvider: provider, steps: [...router.steps, nextStep] });
+    setAdding(false);
+    setAddSearch('');
+  };
+
+  const updateStep = (idx: number, patch: Partial<AgentRouteStep>) => {
+    save({ ...router, steps: router.steps.map((s, i) => (i === idx ? { ...s, ...patch } : s)) });
+  };
+
+  const moveStep = (idx: number, dir: -1 | 1) => {
+    const target = idx + dir;
+    if (target < 0 || target >= router.steps.length) return;
+    const next = [...router.steps];
+    const [item] = next.splice(idx, 1);
+    next.splice(target, 0, item);
+    save({ ...router, steps: next });
+  };
+
+  const removeStep = (idx: number) => {
+    save({ ...router, steps: router.steps.filter((_, i) => i !== idx) });
+  };
+
+  return (
+    <div className={`router-panel stack ${compact ? 'compact' : ''}`}>
+      <div className="router-header row">
+        <IconButton icon="back" tip="All routers" size={24} onClick={() => { commitName(); onBack(); }} />
+        <input
+          className="input compact grow"
+          aria-label="Router name"
+          placeholder="Router name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={commitName}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+        />
+        <button type="button" className={`button compact ${active ? '' : 'primary'}`} disabled={active && !compact} onClick={() => { commitName(); onUse(); }}>
+          {active ? 'In use' : 'Use'}
+        </button>
+      </div>
+
+      <div className="router-option row">
+        <div className="grow">
+          <div className="small strong">Use Jev</div>
+          <div className="tiny dim">
+            Rank each model's intelligence (Light, Capable, Frontier). Jev rates prompt difficulty and sends it to the needed model.
+          </div>
+        </div>
+        <Switch on={router.useJev} onChange={(v) => save({ ...router, useJev: v })} label="Use Jev" />
+      </div>
+
+      <div className="router-steps stack">
+        <div className="row">
+          <span className="tiny dim strong grow">
+            {router.useJev ? 'MODELS IN ROUTE (RANKED BY INTELLIGENCE, THEN ORDER)' : 'ROUTE ORDER (PROVIDER BY PROVIDER)'}
+          </span>
+          <button type="button" className="button compact" title="Add a provider and model to the route" onClick={() => (adding ? setAdding(false) : openAdd())}>
+            {adding ? 'Cancel' : '+ Add to route'}
+          </button>
+        </div>
+
+        {adding && (
+          <div className="router-add stack">
+            <div className="row" style={{ gap: 8 }}>
+              <label className="stack grow" style={{ gap: 4 }}>
+                <span className="tiny dim">Provider</span>
+                <select
+                  className="input select compact"
+                  value={addProvider}
+                  onChange={(e) => {
+                    setAddProvider(e.target.value);
+                    save({ ...router, lastProvider: e.target.value });
+                  }}
+                >
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="stack grow" style={{ gap: 4 }}>
+                <span className="tiny dim">Filter models</span>
+                <input
+                  className="input compact"
+                  placeholder={`Search ${runsOn(addProvider)} models…`}
+                  value={addSearch}
+                  onChange={(e) => setAddSearch(e.target.value)}
+                />
+              </label>
+            </div>
+
+            {providerRows.length > 0 ? (
+              <>
+                <div className="row" style={{ gap: 8 }}>
+                  <select
+                    className="input select compact grow"
+                    aria-label="Model"
+                    value={addKey}
+                    onChange={(e) => setAddKey(e.target.value)}
+                  >
+                    {providerRows.map((r) => {
+                      const lvl = intelligence(r.model);
+                      const tag = lvl ? ` · ${INTEL_NAMES[lvl]}` : '';
+                      return (
+                        <option key={r.key} value={r.key}>
+                          {r.name}{tag}{rowFree(r) ? ' (Free)' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <button type="button" className="button primary compact" onClick={() => addStep(addKey, addProvider)}>
+                    Add
+                  </button>
+                </div>
+                <div className="router-add-list">
+                  {providerRows.slice(0, 25).map((r) => (
+                    <div
+                      key={`${r.provider}:${r.key}`}
+                      className={`model-row compact ${addKey === r.key ? 'selected' : ''}`}
+                      onClick={() => addStep(r.key, r.provider)}
+                    >
+                      {logo(r.provider) && <img className="logo row-logo" src={logo(r.provider)} width={13} height={13} alt="" />}
+                      <span className="grow ellipsis small">{r.name}</span>
+                      <IntelBars level={intelligence(r.model)} />
+                      {rowFree(r) && <span className="badge">Free</span>}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="tiny dim pad">No models available for {runsOn(addProvider)}. Make sure this provider is signed in or linked.</div>
+            )}
+          </div>
+        )}
+
+        {router.steps.length === 0 ? (
+          <div className="small dim pad router-empty">
+            No models in this route yet. Click <b>+ Add to route</b> to add your first provider and model.
+          </div>
+        ) : (
+          router.steps.map((step, i) => (
+            <AgentRouteStepRow
+              key={`${i}:${step.provider}:${step.key}`}
+              step={step}
+              index={i}
+              total={router.steps.length}
+              useJev={router.useJev}
+              onUpdate={(patch) => updateStep(i, patch)}
+              onMove={(dir) => moveStep(i, dir)}
+              onRemove={() => removeStep(i)}
+            />
+          ))
+        )}
+      </div>
+
+      <div className="row" style={{ gap: 6 }}>
+        <div className="grow" />
+        {confirmDelete ? (
+          <>
+            <button type="button" className="button compact" onClick={() => setConfirmDelete(false)}>Keep it</button>
+            <button type="button" className="button compact danger" onClick={onDelete}>Delete “{router.name}”</button>
+          </>
+        ) : (
+          <button type="button" className="button compact" onClick={() => setConfirmDelete(true)}>Delete router</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AgentRouteStepRow({
+  step,
+  index,
+  total,
+  useJev,
+  onUpdate,
+  onMove,
+  onRemove,
+}: {
+  step: AgentRouteStep;
+  index: number;
+  total: number;
+  useJev: boolean;
+  onUpdate: (patch: Partial<AgentRouteStep>) => void;
+  onMove: (dir: -1 | 1) => void;
+  onRemove: () => void;
+}) {
+  const models = useCore((s) => s.models);
+  const found = models.find(
+    (x) =>
+      x.id === step.key ||
+      x.openrouterId === step.key ||
+      x.nvidiaId === step.key ||
+      x.opencodeId === step.key ||
+      x.kiloId === step.key ||
+      x.copilotId === step.key ||
+      x.devinId === step.key ||
+      x.kiroId === step.key ||
+      x.codexId === step.key ||
+      x.claudeId === step.key ||
+      x.grokId === step.key ||
+      x.hermesId === step.key
+  );
+  const modelLabel = found?.label ?? (step.key.split('/').pop()?.split(':')[0] ?? step.key);
+  const providerLabel = runsOn(step.provider);
+  const level: 1 | 2 | 3 = step.intelligence === 1 || step.intelligence === 3 ? step.intelligence : 2;
+
+  return (
+    <div className="router-step">
+      <div className="row" style={{ gap: 6 }}>
+        <span className="dim small mono">{index + 1}.</span>
+        {logo(step.provider) && <img className="logo row-logo" src={logo(step.provider)} width={14} height={14} alt="" />}
+        <span className="grow ellipsis strong small">{modelLabel}</span>
+        <span className="badge">{providerLabel}</span>
+        <IconButton icon="chevronUp" tip="Move up" size={20} disabled={index === 0} onClick={() => onMove(-1)} />
+        <IconButton icon="chevronDown" tip="Move down" size={20} disabled={index === total - 1} onClick={() => onMove(1)} />
+        <IconButton icon="close" tip="Remove from route" size={20} onClick={onRemove} />
+      </div>
+      <div className="row router-step-controls">
+        <label className="row" style={{ gap: 6 }} title="Intelligence rank used when Jev rates prompt difficulty">
+          <IntelBars level={level} />
+          <span className="tiny dim">{useJev ? 'Jev rank:' : 'Intelligence:'}</span>
+          <select
+            className="input select compact tiny-select"
+            value={level}
+            onChange={(e) => onUpdate({ intelligence: Number(e.target.value) as 1 | 2 | 3 })}
+          >
+            <option value={1}>1 · Light</option>
+            <option value={2}>2 · Capable</option>
+            <option value={3}>3 · Frontier</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          className={`chip tiny-chip ${step.retryRateLimit ? 'on' : ''}`}
+          aria-pressed={step.retryRateLimit}
+          title={
+            step.retryRateLimit
+              ? 'When rate-limited (429), wait and retry this provider before moving to the next step'
+              : 'When rate-limited (429), immediately move to the next step in the router'
+          }
+          onClick={() => onUpdate({ retryRateLimit: !step.retryRateLimit })}
+        >
+          {step.retryRateLimit ? 'Retry on rate limit: On' : 'Retry on rate limit: Off'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -448,11 +881,12 @@ export function ModelChip() {
   const current = useView('model');
   const models = useCore((s) => s.models);
   const { additionalProviders } = useCore((s) => s.statics);
-  const label = models.find((m) => m.id === current.key)?.label ?? current.short;
+  const isRouter = current.provider === 'router';
+  const label = isRouter ? current.short || 'Agent Router' : models.find((m) => m.id === current.key)?.label ?? current.short;
   const shown = label.length > 26 ? `${label.slice(0, 25)}…` : label;
   const onAdditional = additionalProviders.some((a) => a.id === current.provider);
-  const hint = current.provider === 'scoutcode' ? 'Model' : `Model · running on ${runsOn(current.provider)}`;
-  const start: Tab = onAdditional ? 'additional' : TABS.some(([t]) => t === current.provider) ? (current.provider as Tab) : 'scoutcode';
+  const hint = isRouter ? `Agent Router · ${current.short}` : current.provider === 'scoutcode' ? 'Model' : `Model · running on ${runsOn(current.provider)}`;
+  const start: Tab = isRouter ? 'router' : onAdditional ? 'additional' : TABS.some(([t]) => t === current.provider) ? (current.provider as Tab) : 'scoutcode';
   const [key, setKey] = useState(0);
   return (
     <Popover align="end" side="top" className="model-popover" onOpen={() => setKey(key + 1)} trigger={(open, toggle) => (
@@ -465,10 +899,33 @@ export function ModelChip() {
 
 
 /** A model's name and, off ScoutCode, where it runs. */
-export function useModelName(m: ModelRef): string {
+export function useModelName(m?: Partial<ModelRef> | null): string {
   const models = useCore((s) => s.models);
-  const label = models.find((x) => x.id === m.key)?.label ?? m.key;
-  return m.provider === 'scoutcode' ? label : `${label} · ${runsOn(m.provider)}`;
+  if (!m?.key) return '';
+  if (m.provider === 'router' || m.key === 'router') return 'Agent Router';
+  const key = m.key;
+  const found = models.find(
+    (x) =>
+      x.id === key ||
+      x.openrouterId === key ||
+      x.nvidiaId === key ||
+      x.opencodeId === key ||
+      x.kiloId === key ||
+      x.copilotId === key ||
+      x.devinId === key ||
+      x.kiroId === key ||
+      x.codexId === key ||
+      x.claudeId === key ||
+      x.grokId === key ||
+      x.hermesId === key
+  );
+  let label = found?.label;
+  if (!label) {
+    const s = key.split('/').pop()?.split(':')[0] ?? key;
+    label = s === 'auto' ? 'Auto' : s;
+  }
+  if (!m.provider || m.provider === 'scoutcode') return label;
+  return `${label} · ${runsOn(m.provider)}`;
 }
 
 function FallbackRow({ m, n, onRemove }: { m: ModelRef; n: number; onRemove: () => void }) {

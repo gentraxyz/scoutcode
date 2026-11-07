@@ -61,6 +61,7 @@ function duplicatePage(c: DeltaCtx, p: Page) {
 export function pageMenu(c: DeltaCtx, p: Page): CtxItem[] {
   return [
     { label: 'Open', icon: <Icon name="doc" size={14} />, onClick: () => c.go({ view: 'doc', id: p.id }) },
+    ...(c.openTab ? [{ label: 'Open in new tab', icon: <Icon name="plus" size={14} />, onClick: () => c.openTab?.({ view: 'doc', id: p.id }) }] : []),
     { label: 'Add a sub-page', icon: <Icon name="plus" size={14} />, onClick: () => newPage(c, p.id) },
     { label: 'Duplicate', icon: <Icon name="copy" size={14} />, onClick: () => duplicatePage(c, p) },
     ...(p.parentId ? [{ label: 'Move to the top level', icon: <Icon name="back" size={14} />, onClick: () => movePage(c, p.id, rootOf(c.s.doc, p).id, 'after') }] : []),
@@ -121,7 +122,20 @@ export function DocTree() {
           className={`d-nav-item d-tree-row ${here === p.id ? 'on' : ''} ${z ? `drop-${z}` : ''}`}
           style={{ paddingLeft: 6 + depth * 14 }}
           draggable
-          onClick={() => c.go({ view: 'doc', id: p.id })}
+          onClick={(e) => {
+            if (c.openTab && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              c.openTab({ view: 'doc', id: p.id });
+            } else {
+              c.go({ view: 'doc', id: p.id });
+            }
+          }}
+          onAuxClick={(e) => {
+            if (e.button === 1 && c.openTab) {
+              e.preventDefault();
+              c.openTab({ view: 'doc', id: p.id });
+            }
+          }}
           onKeyDown={(e) => { if (e.key === 'Enter') c.go({ view: 'doc', id: p.id }); }}
           onContextMenu={(e) => openContextMenu(e, pageMenu(c, p))}
           onDragStart={(e) => { e.dataTransfer.setData('text/delta-page', p.id); e.dataTransfer.effectAllowed = 'move'; }}
@@ -201,7 +215,26 @@ export function DocsView() {
               const path = ancestors(s.doc, p.id).map(pageTitle).join(' / ');
               const text = pageText(p.body).replace(/\s+/g, ' ').trim().slice(0, 160);
               return (
-                <button type="button" key={p.id} className="d-doc-card" onClick={() => c.go({ view: 'doc', id: p.id })} onContextMenu={(e) => openContextMenu(e, pageMenu(c, p))}>
+                <button
+                  type="button"
+                  key={p.id}
+                  className="d-doc-card"
+                  onClick={(e) => {
+                    if (c.openTab && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault();
+                      c.openTab({ view: 'doc', id: p.id });
+                    } else {
+                      c.go({ view: 'doc', id: p.id });
+                    }
+                  }}
+                  onAuxClick={(e) => {
+                    if (e.button === 1 && c.openTab) {
+                      e.preventDefault();
+                      c.openTab({ view: 'doc', id: p.id });
+                    }
+                  }}
+                  onContextMenu={(e) => openContextMenu(e, pageMenu(c, p))}
+                >
                   <span className="d-doc-card-icon">{p.icon || <Icon name="doc" size={22} />}</span>
                   <b className="d-ellipsis">{pageTitle(p)}</b>
                   {path && <span className="d-tiny d-dim d-ellipsis">{path}</span>}
@@ -293,7 +326,26 @@ export function DocView({ id }: { id: string }) {
             <div className="d-doc-kids">
               <div className="d-section-label">Sub-pages</div>
               {kids.map((k) => (
-                <button type="button" key={k.id} className="d-doc-kid" onClick={() => go({ view: 'doc', id: k.id })} onContextMenu={(e) => openContextMenu(e, pageMenu(c, k))}>
+                <button
+                  type="button"
+                  key={k.id}
+                  className="d-doc-kid"
+                  onClick={(e) => {
+                    if (c.openTab && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault();
+                      c.openTab({ view: 'doc', id: k.id });
+                    } else {
+                      go({ view: 'doc', id: k.id });
+                    }
+                  }}
+                  onAuxClick={(e) => {
+                    if (e.button === 1 && c.openTab) {
+                      e.preventDefault();
+                      c.openTab({ view: 'doc', id: k.id });
+                    }
+                  }}
+                  onContextMenu={(e) => openContextMenu(e, pageMenu(c, k))}
+                >
                   <PageIcon p={k} />
                   <span className="d-ellipsis">{pageTitle(k)}</span>
                 </button>
@@ -331,10 +383,36 @@ function TitleField({ page, onEnter }: { page: Page; onEnter: () => void }) {
   useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); save(ref.current?.value ?? draft); } }, []);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el) {
-      el.style.height = '0px';
+    if (!el) return;
+
+    const adjust = () => {
+      if (typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content')) {
+        el.style.height = '';
+        return;
+      }
+      el.style.height = 'auto';
       el.style.height = `${el.scrollHeight}px`;
+    };
+
+    adjust();
+
+    if (typeof document !== 'undefined' && 'fonts' in document) {
+      document.fonts.ready.then(adjust);
     }
+
+    let lastWidth = el.clientWidth;
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w && w !== lastWidth) {
+          lastWidth = w;
+          adjust();
+        }
+      }
+    }) : null;
+    ro?.observe(el);
+
+    return () => ro?.disconnect();
   }, [draft]);
   // A new page starts in its title.
   useEffect(() => {

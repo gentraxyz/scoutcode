@@ -1,10 +1,11 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { act, openExternal, type Item, type ModelRef } from './api';
+import { logo } from './Accounts';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { core, focusComposer, ui, useCore, useUi, useView } from './store';
-import { CodeBlock, Icon, IconButton, MenuItem, Popover, SectionLabel, ShowDisplay, Spinner } from './widgets';
+import { CodeBlock, CopyIconButton, Icon, IconButton, MenuItem, Modal, Popover, SectionLabel, ShowDisplay, Spinner } from './widgets';
 import { ScoutLogo } from './logo';
 import { addProject } from './Sidebar';
 
@@ -14,6 +15,7 @@ export function toolTitle(name: string): string {
   const titles: Record<string, string> = {
     view: 'Read', write_file: 'Write', edit_file: 'Edit', multi_edit: 'Edit', apply_patch: 'Patch', list_dir: 'List', glob: 'Find', grep: 'Search', bash: 'Run',
     shell_output: 'Output', kill_shell: 'Stop', web_fetch: 'Fetch', web_search: 'Web search', todo_write: 'Todos', task: 'Task', present_plan: 'Plan', ask_questions: 'Ask', update_memory: 'Memory', generate_image: 'Image',
+    claude: 'Claude Code', codex: 'Codex', kiro: 'Kiro', opencode: 'OpenCode', grok: 'Grok Build',
   };
   return titles[name] ?? name.replace(/^mcp__/, '');
 }
@@ -107,7 +109,7 @@ function FileChip({ path }: { path: string }) {
   return <span className="file-chip" title={path}><Icon name="file" size={13} /><span className="ellipsis">{path.split(/[\\/]/).pop()}</span></span>;
 }
 
-function UserMessage({ item, at, editable }: { item: Extract<Item, { kind: 'user' }>; at: number; editable: boolean }) {
+function UserMessage({ item, at, editable, onRetry }: { item: Extract<Item, { kind: 'user' }>; at: number; editable: boolean; onRetry: () => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   if (draft !== null) {
     const send = () => {
@@ -136,7 +138,15 @@ function UserMessage({ item, at, editable }: { item: Extract<Item, { kind: 'user
   }
   return (
     <div className="user-row">
-      {editable && <IconButton icon="pencil" tip="Edit and send again" size={26} className="edit-pencil" onClick={() => setDraft(item.text)} />}
+      <div className="user-actions">
+        {item.text && <CopyIconButton text={item.text} size={26} />}
+        {editable && (
+          <>
+            <IconButton icon="refresh" tip="Retry" size={26} onClick={onRetry} />
+            <IconButton icon="pencil" tip="Edit and send again" size={26} onClick={() => setDraft(item.text)} />
+          </>
+        )}
+      </div>
       <div className="user-bubble">
         {item.text && <div className="pre-wrap">{item.text}</div>}
         {item.files.length > 0 && <div className="chips">{item.files.map((f) => <FileChip key={f} path={f} />)}</div>}
@@ -145,9 +155,21 @@ function UserMessage({ item, at, editable }: { item: Extract<Item, { kind: 'user
   );
 }
 
-function Assistant({ item }: { item: Extract<Item, { kind: 'assistant' }> }) {
+function Assistant({ item, at, editable, onRetry }: { item: Extract<Item, { kind: 'assistant' }>; at: number; editable: boolean; onRetry: () => void }) {
   const [show, setShow] = useState(false);
   const latest = useMemo(() => item.reasoning.trim().split('\n').reverse().find((l) => l.trim())?.trim() ?? '', [item.reasoning]);
+  const canRetry = useMemo(() => {
+    const all = core.get()?.items ?? [];
+    for (let i = at - 1; i >= 0; i--) {
+      if (all[i]?.kind === 'user') return true;
+    }
+    return false;
+  }, [at]);
+
+  const modelRef = useMemo(() => (item.model ? { key: item.model, provider: item.provider ?? 'scoutcode' } : null), [item.model, item.provider]);
+  const modelName = useModelName(modelRef);
+  const provLogo = modelRef?.provider ? logo(modelRef.provider) : '';
+
   return (
     <div className="assistant">
       {item.reasoning && (
@@ -161,6 +183,24 @@ function Assistant({ item }: { item: Extract<Item, { kind: 'assistant' }> }) {
         </>
       )}
       <Markdown text={item.text} />
+      {(item.text || item.reasoning) && (
+        <div className="assistant-foot">
+          {modelName ? (
+            <div className="assistant-model tiny dim" title={modelName}>
+              {provLogo && <img className="logo" src={provLogo} width={12} height={12} alt="" />}
+              <span>{modelName}</span>
+            </div>
+          ) : <div />}
+          {item.text && (
+            <div className="assistant-actions">
+              <CopyIconButton text={item.text} size={24} />
+              {editable && canRetry && (
+                <IconButton icon="refresh" tip="Retry" size={24} onClick={onRetry} />
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -169,12 +209,13 @@ function ToolRow({ item }: { item: ToolItem }) {
   const [opened, setOpened] = useState<boolean | null>(null);
   const r = item.result;
   const open = r ? opened ?? OPEN_BY_DEFAULT.has(item.name) : false;
+  const label = item.label || (item.name === 'bash' ? (r ? 'Command' : 'Terminal…') : '');
   return (
     <div className="tool">
       <button type="button" className={`tool-row ${r ? 'can-open' : ''}`} onClick={() => r && setOpened(!open)}>
         {!r ? <span className="tool-status"><Spinner /></span> : <span className={`tool-status ${r.isError ? 'bad' : 'good'}`}><Icon name={r.isError ? 'close' : 'check'} size={12} /></span>}
         <b>{toolTitle(item.name)}</b>
-        <span className="mono muted ellipsis tool-label">{item.label.split('\n')[0].slice(0, 160)}</span>
+        {label && <span className="mono muted ellipsis tool-label">{label.split('\n')[0].slice(0, 160)}</span>}
         {r?.summary && <span className={`tool-summary ellipsis ${r.isError ? 'red' : 'dim'}`}>· {r.summary}</span>}
         <span className="grow" />
         {r && <span className="tool-chevron"><Icon name={open ? 'chevronDown' : 'chevronRight'} /></span>}
@@ -282,14 +323,14 @@ function FallbackSetup({ item }: { item: Extract<Item, { kind: 'fallbackSetup' }
   );
 }
 
-const Row = memo(function Row({ item, at, editable, hit }: { item: Item; at: number; editable: boolean; hit: boolean }) {
+const Row = memo(function Row({ item, at, editable, hit, onRetry }: { item: Item; at: number; editable: boolean; hit: boolean; onRetry: (at: number) => void }) {
   let body: ReactNode;
   switch (item.kind) {
     case 'user':
-      body = <UserMessage item={item} at={at} editable={editable} />;
+      body = <UserMessage item={item} at={at} editable={editable} onRetry={() => onRetry(at)} />;
       break;
     case 'assistant':
-      body = <Assistant item={item} />;
+      body = <Assistant item={item} at={at} editable={editable} onRetry={() => onRetry(at)} />;
       break;
     case 'tool':
       body = item.name === 'update_memory' && item.result && !item.result.isError ? <MemoryNote item={item} /> : <ToolRow item={item} />;
@@ -311,7 +352,7 @@ const Row = memo(function Row({ item, at, editable, hit }: { item: Item; at: num
 });
 
 /** A run of two or more tool calls the model has moved on from, under one header. */
-function ToolGroup({ items, first, hit }: { items: ToolItem[]; first: number; hit: number | null }) {
+function ToolGroup({ items, first, hit, onRetry }: { items: ToolItem[]; first: number; hit: number | null; onRetry: (at: number) => void }) {
   const [open, setOpen] = useState(false);
   const counts = new Map<string, number>();
   for (const i of items) counts.set(toolTitle(i.name), (counts.get(toolTitle(i.name)) ?? 0) + 1);
@@ -331,7 +372,7 @@ function ToolGroup({ items, first, hit }: { items: ToolItem[]; first: number; hi
           <span className="tool-chevron"><Icon name={shown ? 'chevronDown' : 'chevronRight'} /></span>
         </button>
       </div>
-      {shown && items.map((item, n) => <Row key={item.id} item={item} at={first + n} editable={false} hit={hit === first + n} />)}
+      {shown && items.map((item, n) => <Row key={item.id} item={item} at={first + n} editable={false} hit={hit === first + n} onRetry={onRetry} />)}
     </>
   );
 }
@@ -448,6 +489,24 @@ export function Transcript() {
   const stick = useRef(true);
   const [hit, setHit] = useState<number | null>(null);
   const chatEpoch = useView('chat').epoch;
+  const [retryTarget, setRetryTarget] = useState<{ at: number; text: string } | null>(null);
+
+  const handleRetry = useCallback((at: number) => {
+    const all = core.get()?.items ?? [];
+    const target = all[at];
+    if (!target) return;
+    if (target.kind === 'user') {
+      setRetryTarget({ at, text: target.text });
+    } else if (target.kind === 'assistant') {
+      for (let i = at - 1; i >= 0; i--) {
+        if (all[i]?.kind === 'user') {
+          const u = all[i] as Extract<Item, { kind: 'user' }>;
+          setRetryTarget({ at: i, text: u.text });
+          return;
+        }
+      }
+    }
+  }, []);
 
   useEffect(() => { stick.current = true; }, [chatEpoch]);
   // Stays at the bottom while the reply grows, unless the reader has scrolled up.
@@ -477,7 +536,7 @@ export function Transcript() {
     const out: ReactNode[] = [];
     for (let i = 0; i < items.length; ) {
       if (items[i].kind !== 'tool') {
-        out.push(<Row key={items[i].id} item={items[i]} at={i} editable={!running} hit={hit === i} />);
+        out.push(<Row key={items[i].id} item={items[i]} at={i} editable={!running} hit={hit === i} onRetry={handleRetry} />);
         i += 1;
         continue;
       }
@@ -485,11 +544,11 @@ export function Transcript() {
       while (i < items.length && items[i].kind === 'tool') i += 1;
       const run = items.slice(start, i) as ToolItem[];
       // The last run stays unfolded while Scout may still add to it.
-      if (run.length < 2 || (i === items.length && running)) run.forEach((it, n) => out.push(<Row key={it.id} item={it} at={start + n} editable={false} hit={hit === start + n} />));
-      else out.push(<ToolGroup key={run[0].id} items={run} first={start} hit={hit} />);
+      if (run.length < 2 || (i === items.length && running)) run.forEach((it, n) => out.push(<Row key={it.id} item={it} at={start + n} editable={false} hit={hit === start + n} onRetry={handleRetry} />));
+      else out.push(<ToolGroup key={run[0].id} items={run} first={start} hit={hit} onRetry={handleRetry} />);
     }
     return out;
-  }, [items, running, hit]);
+  }, [items, running, hit, handleRetry]);
 
   if (items.length === 0) return <div className="transcript"><EmptyState /></div>;
   return (
@@ -501,6 +560,24 @@ export function Transcript() {
       }}>
         <div className="column">{rows}</div>
       </div>
+      {retryTarget && (
+        <Modal onClose={() => setRetryTarget(null)}>
+          <b className="strong big">Retry from this message?</b>
+          {retryTarget.text && (
+            <div className="ellipsis muted small" style={{ maxWidth: '100%' }}>
+              {retryTarget.text.split('\n')[0]}
+            </div>
+          )}
+          <p className="small dim">This will reset files back to where it was before this message and run it again.</p>
+          <div className="row end">
+            <button type="button" className="button ghost" onClick={() => setRetryTarget(null)}>Cancel</button>
+            <button type="button" className="button primary" onClick={() => {
+              act('resend', { at: retryTarget.at, text: retryTarget.text });
+              setRetryTarget(null);
+            }}>Retry</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

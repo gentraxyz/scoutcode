@@ -11,16 +11,17 @@ import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, u
 import { cycleName, cycleStatus, findByKey, isDone, issueKey, newId, PRIORITIES, PROJECT_STATUSES, SCOUT, STATE_TYPES, teamStates, today, type Issue, type StateType } from './model';
 import { createWorkspace, listWorkspaces, message, Session, type Host, type Storage, type WorkspaceInfo } from './sync';
 import { issueMenu } from './menus';
-import { Avatar, ContextMenuHost, LightboxHost, Icon, LabelDot, openContextMenu, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, shortDay, StateIcon, stateOptions, useLinger } from './ui';
+import { AnimatedStateIcon, Avatar, ContextMenuHost, LightboxHost, Icon, LabelDot, openContextMenu, labelOptions, Menu, MenuItem, Modal, peopleOptions, personName, Picker, PriorityIcon, priorityOptions, shortDay, StateIcon, stateOptions, useLinger } from './ui';
 import { IssueDetail } from './IssueDetail';
 import { CycleView, CyclesView, ProjectsView, ProjectView, RoadmapView, SettingsView } from './views';
 import { DocTree, DocsView, DocView, newPage } from './Docs';
 import { imageHandlers } from './images';
 import { pageText, pageTitle } from './model';
+import { deltaTabs, useDeltaTabs } from './tabs';
 import './delta.css';
 
 export type Route =
-  | { view: 'my' }
+  | { view: 'my'; tab?: 'all' | 'active' | 'backlog' }
   | { view: 'team'; teamId: string; tab?: 'all' | 'active' | 'backlog' }
   | { view: 'cycles'; teamId: string }
   | { view: 'cycle'; id: string }
@@ -40,6 +41,7 @@ export interface DeltaCtx {
   go: (r: Route) => void;
   open: (id: string | null) => void;
   create: (defaults?: Partial<Issue>) => void;
+  openTab?: (r: Route, openId?: string | null) => void;
 }
 
 const Ctx = createContext<DeltaCtx | null>(null);
@@ -318,8 +320,53 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
 }) {
   const v = useSyncExternalStore(s.subscribe, s.getVersion);
   const firstTeam = Object.values(s.doc.team).sort((a, b) => a.createdAt - b.createdAt)[0];
-  const [route, setRoute] = useState<Route>(() => (firstTeam ? { view: 'team', teamId: firstTeam.id, tab: 'all' } : { view: 'my' }));
-  const [openId, setOpenId] = useState<string | null>(null);
+  const defaultRoute: Route = useMemo(() => (firstTeam ? { view: 'team', teamId: firstTeam.id, tab: 'all' } : { view: 'my', tab: 'all' }), [firstTeam]);
+
+  const isDesktop = host.kind === 'desktop';
+  const wsKey = `${s.info.storage}:${s.info.id}`;
+
+  useEffect(() => {
+    if (isDesktop) {
+      deltaTabs.init(wsKey, s.doc, defaultRoute);
+    }
+  }, [isDesktop, wsKey, defaultRoute]);
+
+  useEffect(() => {
+    if (isDesktop) {
+      deltaTabs.setDoc(s.doc);
+    }
+  }, [isDesktop, v, s.doc]);
+
+  const tabsState = useDeltaTabs((st) => st);
+  const activeTab = tabsState.tabs.find((t) => t.id === tabsState.activeId);
+
+  const [localRoute, setLocalRoute] = useState<Route>(() => defaultRoute);
+  const [localOpenId, setLocalOpenId] = useState<string | null>(null);
+
+  const route = isDesktop ? (activeTab?.route ?? defaultRoute) : localRoute;
+  const openId = isDesktop ? (activeTab?.openId ?? null) : localOpenId;
+
+  const setRoute = useCallback((r: Route) => {
+    if (isDesktop) {
+      deltaTabs.setRoute(r);
+    } else {
+      setLocalRoute(r);
+      setLocalOpenId(null);
+    }
+  }, [isDesktop]);
+
+  const setOpenId = useCallback((id: string | null) => {
+    if (isDesktop) {
+      deltaTabs.setOpenId(id);
+    } else {
+      setLocalOpenId(id);
+    }
+  }, [isDesktop]);
+
+  const openTab = useCallback((r: Route, tabOpenId?: string | null) => {
+    deltaTabs.addTab(r, tabOpenId ?? null);
+  }, []);
+
   const [creating, setCreating] = useState<Partial<Issue> | null>(null);
   const [palette, setPalette] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
@@ -331,7 +378,7 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
       (route.view === 'project' && !s.doc.project[route.id]) ||
       (route.view === 'cycle' && !s.doc.cycle[route.id]) ||
       (route.view === 'doc' && !s.doc.page[route.id]);
-    if (gone) setRoute(route.view === 'doc' ? { view: 'docs' } : firstTeam ? { view: 'team', teamId: firstTeam.id, tab: 'all' } : { view: 'my' });
+    if (gone) setRoute(route.view === 'doc' ? { view: 'docs' } : firstTeam ? { view: 'team', teamId: firstTeam.id, tab: 'all' } : { view: 'my', tab: 'all' });
     if (openId && !s.doc.issue[openId]) setOpenId(null);
   }, [v]);
 
@@ -345,6 +392,7 @@ function Workspace({ s, host, list, cloudError, onSwitch, onNew, onExit, onGone,
       setNavOpen(false);
     },
     open: setOpenId,
+    openTab,
     create: (d) => setCreating(d ?? {}),
   };
 
@@ -471,10 +519,10 @@ function Nav({ list, cloudError, onSwitch, onNew, onExit, onSearch }: {
         <button type="button" className="d-icon-btn" onClick={onSearch} title="Search and commands (Ctrl+K)"><Icon name="search" size={15} /></button>
       </div>
       <div className="d-nav-scroll">
-        <NavItem icon="inbox" label="My issues" count={myCount} on={here({ view: 'my' })} onClick={() => go({ view: 'my' })} />
-        <NavItem icon="project" label="Projects" on={route.view === 'projects' || route.view === 'project'} onClick={() => go({ view: 'projects' })} />
-        <NavItem icon="roadmap" label="Roadmap" on={here({ view: 'roadmap' })} onClick={() => go({ view: 'roadmap' })} />
-        <NavItem icon="doc" label="Docs" on={route.view === 'docs'} onClick={() => go({ view: 'docs' })} />
+        <NavItem icon="inbox" label="My issues" count={myCount} on={here({ view: 'my' })} onClick={() => go({ view: 'my', tab: 'all' })} onOpenNewTab={() => c.openTab?.({ view: 'my', tab: 'all' })} />
+        <NavItem icon="project" label="Projects" on={route.view === 'projects' || route.view === 'project'} onClick={() => go({ view: 'projects' })} onOpenNewTab={() => c.openTab?.({ view: 'projects' })} />
+        <NavItem icon="roadmap" label="Roadmap" on={here({ view: 'roadmap' })} onClick={() => go({ view: 'roadmap' })} onOpenNewTab={() => c.openTab?.({ view: 'roadmap' })} />
+        <NavItem icon="doc" label="Docs" on={route.view === 'docs'} onClick={() => go({ view: 'docs' })} onOpenNewTab={() => c.openTab?.({ view: 'docs' })} />
         <div className="d-section-label d-nav-label">Your teams</div>
         {teams.map((t) => {
           const open = !shut.has(t.id);
@@ -488,8 +536,8 @@ function Nav({ list, cloudError, onSwitch, onNew, onExit, onSearch }: {
               </button>
               {open && (
                 <div className="d-nav-sub">
-                  <NavItem icon="issues" label="Issues" on={route.view === 'team' && route.teamId === t.id} onClick={() => go({ view: 'team', teamId: t.id, tab: 'all' })} />
-                  <NavItem icon="cycle" label="Cycles" on={(route.view === 'cycles' && route.teamId === t.id) || (route.view === 'cycle' && s.doc.cycle[route.id]?.teamId === t.id)} onClick={() => go(cycle ? { view: 'cycle', id: cycle.id } : { view: 'cycles', teamId: t.id })} hint={cycle ? cycleName(cycle) : undefined} />
+                  <NavItem icon="issues" label="Issues" on={route.view === 'team' && route.teamId === t.id} onClick={() => go({ view: 'team', teamId: t.id, tab: 'all' })} onOpenNewTab={() => c.openTab?.({ view: 'team', teamId: t.id, tab: 'all' })} />
+                  <NavItem icon="cycle" label="Cycles" on={(route.view === 'cycles' && route.teamId === t.id) || (route.view === 'cycle' && s.doc.cycle[route.id]?.teamId === t.id)} onClick={() => go(cycle ? { view: 'cycle', id: cycle.id } : { view: 'cycles', teamId: t.id })} onOpenNewTab={() => c.openTab?.(cycle ? { view: 'cycle', id: cycle.id } : { view: 'cycles', teamId: t.id })} hint={cycle ? cycleName(cycle) : undefined} />
                 </div>
               )}
             </div>
@@ -511,9 +559,26 @@ function Nav({ list, cloudError, onSwitch, onNew, onExit, onSearch }: {
   );
 }
 
-function NavItem({ icon, label, on, onClick, count, hint }: { icon: string; label: string; on: boolean; onClick: () => void; count?: number; hint?: string }) {
+function NavItem({ icon, label, on, onClick, onOpenNewTab, count, hint }: { icon: string; label: string; on: boolean; onClick: () => void; onOpenNewTab?: () => void; count?: number; hint?: string }) {
   return (
-    <button type="button" className={`d-nav-item ${on ? 'on' : ''}`} onClick={onClick}>
+    <button
+      type="button"
+      className={`d-nav-item ${on ? 'on' : ''}`}
+      onClick={(e) => {
+        if (onOpenNewTab && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          onOpenNewTab();
+        } else {
+          onClick();
+        }
+      }}
+      onAuxClick={(e) => {
+        if (e.button === 1 && onOpenNewTab) {
+          e.preventDefault();
+          onOpenNewTab();
+        }
+      }}
+    >
       <Icon name={icon} size={15} />
       <span className="d-grow d-ellipsis">{label}</span>
       {hint && <span className="d-tiny d-dim d-ellipsis">{hint}</span>}
@@ -560,8 +625,8 @@ const NO_FILTERS: Filters = { q: '', states: [], assignees: [], priorities: [], 
 
 interface Group { key: string; label: string; icon: ReactNode; issues: Issue[]; patch: (i: Issue) => Partial<Issue> | null }
 
-const TYPE_NAMES: Record<StateType, string> = { unstarted: 'Todo', backlog: 'Backlog', started: 'In Progress', review: 'In Review', completed: 'Done', canceled: 'Canceled' };
-const TYPE_COLORS: Record<StateType, string> = { unstarted: '#b0b4ba', backlog: '#8b8d98', started: '#f5a524', review: '#3e9b4f', completed: '#5e6ad2', canceled: '#6f6e77' };
+const TYPE_NAMES: Record<StateType, string> = { started: 'In Progress', unstarted: 'Todo', backlog: 'Backlog', canceled: 'Canceled', completed: 'Done', review: 'In Review' };
+const TYPE_COLORS: Record<StateType, string> = { started: '#f5a524', unstarted: '#b0b4ba', backlog: '#8b8d98', canceled: '#6f6e77', completed: '#5e6ad2', review: '#3e9b4f' };
 
 export const byOrder = (a: Issue, b: Issue) => a.sortOrder - b.sortOrder || b.createdAt - a.createdAt;
 
@@ -573,7 +638,9 @@ function groupIssues(c: DeltaCtx, issues: Issue[], by: Grouping, teamId: string 
     if (teamId) {
       return teamStates(doc, teamId).map((st) => ({ key: st.id, label: st.name, icon: <StateIcon state={st} />, issues: sorted.filter((i) => i.stateId === st.id), patch: () => ({ stateId: st.id }) }));
     }
-    return STATE_TYPES.map((t) => ({
+    const activeTypes = [...STATE_TYPES];
+    const extraTypes = [...new Set(sorted.map((i) => doc.state[i.stateId]?.type).filter((t): t is StateType => !!t && !activeTypes.includes(t)))];
+    return [...activeTypes, ...extraTypes].map((t) => ({
       key: t,
       label: TYPE_NAMES[t],
       icon: <StateIcon state={{ type: t, color: TYPE_COLORS[t] }} />,
@@ -790,13 +857,34 @@ export function IssueRow({ i, compact, n = 0 }: { i: Issue; compact?: boolean; n
   const subs = Object.values(doc.issue).filter((x) => x.parentId === i.id);
   const overdue = i.dueDate && !isDone(st) && i.dueDate < today();
   return (
-    <div className="d-row-issue" style={{ ['--n' as string]: Math.min(n, 14) }} role="button" tabIndex={0} onClick={() => c.open(i.id)} onKeyDown={(e) => e.key === 'Enter' && c.open(i.id)} onContextMenu={(e) => openContextMenu(e, issueMenu(c, i))}>
+    <div
+      className="d-row-issue"
+      style={{ ['--n' as string]: Math.min(n, 14) }}
+      role="button"
+      tabIndex={0}
+      onClick={(e) => {
+        if (c.openTab && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          c.openTab({ view: 'team', teamId: i.teamId, tab: 'all' }, i.id);
+        } else {
+          c.open(i.id);
+        }
+      }}
+      onAuxClick={(e) => {
+        if (e.button === 1 && c.openTab) {
+          e.preventDefault();
+          c.openTab({ view: 'team', teamId: i.teamId, tab: 'all' }, i.id);
+        }
+      }}
+      onKeyDown={(e) => e.key === 'Enter' && c.open(i.id)}
+      onContextMenu={(e) => openContextMenu(e, issueMenu(c, i))}
+    >
       <span onClick={(e) => e.stopPropagation()}>
         <Picker options={priorityOptions()} value={i.priority} onPick={(p) => set({ priority: p })} width={190} trigger={(_, t) => <button type="button" className="d-icon-btn" title={PRIORITIES[i.priority]} onClick={t}><PriorityIcon p={i.priority} /></button>} />
       </span>
       <span className="d-key">{issueKey(doc, i)}</span>
       <span onClick={(e) => e.stopPropagation()}>
-        <Picker options={stateOptions(teamStates(doc, i.teamId))} value={i.stateId} onPick={(v) => set({ stateId: v })} width={200} trigger={(_, t) => <button type="button" className="d-icon-btn" title={st?.name} onClick={t}><StateIcon state={st} /></button>} />
+        <Picker options={stateOptions(teamStates(doc, i.teamId))} value={i.stateId} onPick={(v) => set({ stateId: v })} width={200} trigger={(_, t) => <button type="button" className="d-icon-btn" title={st?.name} onClick={t}><AnimatedStateIcon key={i.id} state={st} /></button>} />
       </span>
       <span className="d-title d-ellipsis">{i.title}</span>
       {subs.length > 0 && <span className="d-chip"><Icon name="parent" size={12} />{subs.filter((x) => isDone(doc.state[x.stateId])).length}/{subs.length}</span>}
@@ -876,7 +964,28 @@ function Card({ i, onDragStart, onDragOver }: { i: Issue; onDragStart: () => voi
   const doc = c.s.doc;
   const st = doc.state[i.stateId];
   return (
-    <div className="d-card" draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.id); const el = e.currentTarget; requestAnimationFrame(() => el.classList.add('dragging')); onDragStart(); }} onDragEnd={(e) => e.currentTarget.classList.remove('dragging')} onDragOver={onDragOver} onClick={() => c.open(i.id)} onContextMenu={(e) => openContextMenu(e, issueMenu(c, i))}>
+    <div
+      className="d-card"
+      draggable
+      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.id); const el = e.currentTarget; requestAnimationFrame(() => el.classList.add('dragging')); onDragStart(); }}
+      onDragEnd={(e) => e.currentTarget.classList.remove('dragging')}
+      onDragOver={onDragOver}
+      onClick={(e) => {
+        if (c.openTab && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          c.openTab({ view: 'team', teamId: i.teamId, tab: 'all' }, i.id);
+        } else {
+          c.open(i.id);
+        }
+      }}
+      onAuxClick={(e) => {
+        if (e.button === 1 && c.openTab) {
+          e.preventDefault();
+          c.openTab({ view: 'team', teamId: i.teamId, tab: 'all' }, i.id);
+        }
+      }}
+      onContextMenu={(e) => openContextMenu(e, issueMenu(c, i))}
+    >
       <div className="d-row">
         <span className="d-key">{issueKey(doc, i)}</span>
         <span className="d-grow" />
@@ -908,7 +1017,21 @@ function NewIssue({ defaults, onClose, closing }: { defaults: Partial<Issue>; on
   const states = teamStates(doc, teamId);
   const pickState = (id: string | undefined) => (id && doc.state[id]?.teamId === teamId ? id : (states.find((x) => x.type === 'unstarted') ?? states[0])?.id);
   const [d, setD] = useState<Partial<Issue>>({ priority: 0, assignee: null, labelIds: [], projectId: null, cycleId: null, estimate: null, dueDate: null, ...defaults });
-  const [title, setTitle] = useState('');
+  const [title, setTitle] = useState(defaults.title ?? '');
+  const titleBox = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Delta tasks should automatically start with the typing in the title box.
+    const focus = () => {
+      if (titleBox.current) {
+        titleBox.current.focus();
+        if (titleBox.current.value) titleBox.current.select();
+      }
+    };
+    focus();
+    const t = setTimeout(focus, 50);
+    return () => clearTimeout(t);
+  }, []);
   const [body, setBody] = useState('');
   const bodyBox = useRef<HTMLTextAreaElement>(null);
   const img = imageHandlers(s, bodyBox, setBody);
@@ -928,6 +1051,7 @@ function NewIssue({ defaults, onClose, closing }: { defaults: Partial<Issue>; on
     if (more) {
       setTitle('');
       setBody('');
+      setTimeout(() => titleBox.current?.focus(), 0);
     } else {
       onClose();
       open(id);
@@ -942,7 +1066,7 @@ function NewIssue({ defaults, onClose, closing }: { defaults: Partial<Issue>; on
         <span className="d-grow" />
         <button type="button" className="d-icon-btn" onClick={onClose} aria-label="Close"><Icon name="close" /></button>
       </div>
-      <input className="d-big-input" autoFocus placeholder="Issue title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }} />
+      <input ref={titleBox} className="d-big-input" autoFocus placeholder="Issue title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }} />
       <textarea ref={bodyBox} className="d-body-input" placeholder="Add a description… (paste or drop pictures)" onPaste={img.onPaste} onDrop={img.onDrop} onDragOver={img.onDragOver} value={body} onChange={(e) => setBody(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); }} />
       <div className="d-row d-wrap">
         <Picker options={stateOptions(states)} value={stateId ?? null} onPick={(v) => setD({ ...d, stateId: v ?? undefined })} trigger={(_, t) => <button type="button" className="d-chip-btn" onClick={t}><StateIcon state={st} />{st?.name}</button>} />
@@ -978,6 +1102,14 @@ function Palette({ onClose, closing }: { onClose: () => void; closing?: boolean 
   const doc = s.doc;
   const [q, setQ] = useState('');
   const [at, setAt] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const focus = () => inputRef.current?.focus();
+    focus();
+    const t = setTimeout(focus, 50);
+    return () => clearTimeout(t);
+  }, []);
   type Row = { key: string; icon: ReactNode; label: string; hint?: string; run: () => void };
   const rows = useMemo<Row[]>(() => {
     const t = q.trim().toLowerCase();
@@ -1022,6 +1154,7 @@ function Palette({ onClose, closing }: { onClose: () => void; closing?: boolean 
   return (
     <Modal onClose={onClose} closing={closing} className="d-palette">
       <input
+        ref={inputRef}
         className="d-palette-input"
         autoFocus
         placeholder="Search issues or type a command…"

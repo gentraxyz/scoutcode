@@ -10,8 +10,8 @@
 export type Kind = 'workspace' | 'team' | 'state' | 'label' | 'issue' | 'comment' | 'project' | 'cycle' | 'activity' | 'page' | 'image';
 export const KINDS: Kind[] = ['workspace', 'team', 'state', 'label', 'issue', 'comment', 'project', 'cycle', 'activity', 'page', 'image'];
 
-export type StateType = 'unstarted' | 'backlog' | 'started' | 'review' | 'completed' | 'canceled';
-export const STATE_TYPES: StateType[] = ['unstarted', 'backlog', 'started', 'review', 'completed', 'canceled'];
+export type StateType = 'started' | 'unstarted' | 'backlog' | 'canceled' | 'completed' | 'review';
+export const STATE_TYPES: StateType[] = ['started', 'unstarted', 'backlog', 'canceled', 'completed'];
 export type ProjectStatus = 'planned' | 'active' | 'paused' | 'completed' | 'canceled';
 export const PROJECT_STATUSES: ProjectStatus[] = ['planned', 'active', 'paused', 'completed', 'canceled'];
 
@@ -98,12 +98,11 @@ export function starterOps(teamName = 'Engineering', key = 'ENG'): Op[] {
 }
 
 const DEFAULT_STATES: [string, StateType, string][] = [
+  ['In Progress', 'started', '#f5a524'],
   ['Todo', 'unstarted', '#b0b4ba'],
   ['Backlog', 'backlog', '#8b8d98'],
-  ['In Progress', 'started', '#f5a524'],
-  ['In Review', 'review', '#3e9b4f'],
-  ['Done', 'completed', '#5e6ad2'],
   ['Canceled', 'canceled', '#6f6e77'],
+  ['Done', 'completed', '#5e6ad2'],
 ];
 
 // ---------- records <-> doc ----------
@@ -555,7 +554,11 @@ export function pageText(body: string): string {
 export const isDone = (s: State | undefined) => s?.type === 'completed' || s?.type === 'canceled';
 
 export function teamStates(doc: Doc, teamId: string): State[] {
-  return Object.values(doc.state).filter((s) => s.teamId === teamId).sort((a, b) => STATE_TYPES.indexOf(a.type) - STATE_TYPES.indexOf(b.type) || a.position - b.position);
+  const rank = (t: StateType) => {
+    const i = STATE_TYPES.indexOf(t);
+    return i === -1 ? 999 : i;
+  };
+  return Object.values(doc.state).filter((s) => s.teamId === teamId).sort((a, b) => rank(a.type) - rank(b.type) || a.position - b.position);
 }
 
 export const issueKey = (doc: Doc, i: Issue) => `${doc.team[i.teamId]?.key ?? '?'}-${i.number}`;

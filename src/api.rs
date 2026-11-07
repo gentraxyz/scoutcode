@@ -90,6 +90,10 @@ pub enum Message {
         tool_calls: Option<Vec<ToolCall>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
     Tool {
         tool_call_id: String,
@@ -957,6 +961,24 @@ pub struct DailyReward {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct DiscordLink {
+    pub linked: bool,
+    #[serde(default)]
+    pub reward: Option<f64>,
+    #[serde(default)]
+    pub discord_tag: Option<String>,
+    #[serde(default)]
+    pub linked_at: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub discord_url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ReferralEntry {
     pub username: String,
     pub created_at: String,
@@ -1027,6 +1049,8 @@ pub struct UsageInfo {
     pub daily_reward: Option<DailyReward>,
     #[serde(default)]
     pub referrals: Option<Referrals>,
+    #[serde(default)]
+    pub discord_link: Option<DiscordLink>,
     #[serde(default)]
     pub users: Vec<ManagedUser>,
 }
@@ -1150,6 +1174,50 @@ pub fn review_command(cfg: &Config, command: &str, cwd: &str, shell: &str) -> Re
     Ok(Some(body.get("reason").and_then(Value::as_str).unwrap_or("Flagged as dangerous.").to_string()))
 }
 
+/// Asks Jev how capable a model the user's request needs: 1 (Light), 2 (Capable) or 3 (Frontier). None when Jev can't be
+/// reached, so the Agent Router falls back to its list order.
+pub fn classify_with_jev(cfg: &Config, prompt: &str) -> Option<u8> {
+    if cfg.api_key.is_none() && !cfg.is_guest() {
+        return None;
+    }
+    let scout = cfg.for_provider("scoutcode");
+    let state: String = prompt.chars().take(4000).collect();
+    if state.trim().is_empty() {
+        return None;
+    }
+    let body = json!({
+        "model": "jev-latest",
+        "state": format!("Latest user coding request:\n{state}"),
+        "questions": {
+            "intelligence": {
+                "type": "choice",
+                "instructions": "How capable a model does answering this coding request well need?",
+                "criteria": {
+                    "light": "A fast, light model (tier 1) is enough: greetings, simple questions, small single-step edits, formatting, or reading/searching files",
+                    "capable": "A capable everyday model (tier 2) handles it: standard feature work, multi-step edits, debugging, tests, explanations, and plans",
+                    "frontier": "A frontier model (tier 3) is needed: complex architecture, subtle concurrency or security bugs, hard reasoning, or large multi-file refactors"
+                }
+            }
+        }
+    });
+    let req = http()
+        .post(&format!("{}/jev/systemone", scout.base_url))
+        .config()
+        .timeout_global(Some(Duration::from_secs(6)))
+        .build();
+    let res = auth(req, &scout).ok()?.send_json(body).ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    let data: Value = res.into_body().read_json().ok()?;
+    match data.pointer("/answers/intelligence/choice").and_then(Value::as_str)? {
+        "light" | "1" => Some(1),
+        "capable" | "2" => Some(2),
+        "frontier" | "3" => Some(3),
+        _ => None,
+    }
+}
+
 /// Speech to text (Deepgram, through the server): the transcript of a WAV recording.
 pub fn transcribe(cfg: &Config, wav: &[u8]) -> Result<String, ApiError> {
     let res = http()
@@ -1211,11 +1279,35 @@ pub struct ChatRequest<'a> {
     pub effort: Option<&'a str>,
 }
 
+fn canonical_call(mut c: ToolCall) -> ToolCall {
+    let raw = if c.function.arguments.is_empty() { "{}" } else { &c.function.arguments };
+    if let Ok(val) = serde_json::from_str::<Value>(raw) {
+        let (name, args) = crate::tools::canonical(&c.function.name, val.clone());
+        if name != c.function.name || args != val {
+            c.function.name = name;
+            c.function.arguments = args.to_string();
+        } else if c.function.arguments.is_empty() {
+            c.function.arguments = "{}".into();
+        }
+    }
+    c
+}
+
 /// Streams one chat completion, collecting text, reasoning and tool calls as they arrive. Checks `cancel` between chunks.
 pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), cancel: &AtomicBool) -> Result<StreamResult, ApiError> {
+    let api_messages: Vec<Value> = req.messages.iter().map(|m| match m {
+        Message::Assistant { content, tool_calls, reasoning_content, .. } => {
+            let mut obj = json!({ "role": "assistant" });
+            if let Some(c) = content { obj["content"] = json!(c); }
+            if let Some(t) = tool_calls { obj["tool_calls"] = json!(t); }
+            if let Some(r) = reasoning_content { obj["reasoning_content"] = json!(r); }
+            obj
+        }
+        _ => serde_json::to_value(m).unwrap_or_default(),
+    }).collect();
     let mut body = json!({
         "model": req.model,
-        "messages": req.messages,
+        "messages": api_messages,
         "stream": true,
         "stream_options": { "include_usage": true },
     });
@@ -1245,6 +1337,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     let meta = Meta { cost: num("x-scoutcode-cost"), balance: num("x-scoutcode-balance") };
     let event_stream = header(&res, "content-type").is_some_and(|t| t.contains("event-stream"));
     let mut out = StreamResult { meta, ..Default::default() };
+    let can_recover = !req.tool_choice_none && req.tools.is_some_and(|t| !t.is_empty());
 
     // Some upstreams ignore stream: true; accept a plain JSON answer as well.
     if !event_stream {
@@ -1252,9 +1345,30 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         let msg = data.pointer("/choices/0/message").cloned().unwrap_or(Value::Null);
         out.content = msg.get("content").and_then(Value::as_str).unwrap_or_default().to_string();
         out.reasoning = msg.get("reasoning_content").or_else(|| msg.get("reasoning")).and_then(Value::as_str).unwrap_or_default().to_string();
-        out.tool_calls = msg.get("tool_calls").and_then(|t| serde_json::from_value(t.clone()).ok()).unwrap_or_default();
+        out.tool_calls = msg
+            .get("tool_calls")
+            .and_then(|t| serde_json::from_value::<Vec<ToolCall>>(t.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(canonical_call)
+            .collect();
         out.finish_reason = data.pointer("/choices/0/finish_reason").and_then(Value::as_str).map(String::from);
         out.usage = data.get("usage").map(usage_from);
+        if out.tool_calls.is_empty() && can_recover {
+            if let Some((rest, recovered)) = crate::tools::recover_calls(&out.content, &out.reasoning, req.tools.unwrap_or_default()) {
+                out.content = rest;
+                out.tool_calls = recovered
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (name, args))| ToolCall {
+                        id: format!("call_{i}"),
+                        kind: "function".into(),
+                        extra_content: None,
+                        function: FunctionCall { name, arguments: args.to_string() },
+                    })
+                    .collect();
+            }
+        }
         if !out.reasoning.is_empty() {
             on(Delta::Reasoning(&out.reasoning));
         }
@@ -1271,6 +1385,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         extra: Option<Value>,
     }
     let mut calls: Vec<Option<Partial>> = Vec::new();
+    let mut held_text = can_recover;
     let mut reader = BufReader::with_capacity(16 * 1024, res.into_body().into_reader());
     let mut line = String::new();
     loop {
@@ -1313,7 +1428,14 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
             }
             if let Some(t) = d.get("content").and_then(Value::as_str).filter(|s| !s.is_empty()) {
                 out.content.push_str(t);
-                on(Delta::Text(t));
+                if held_text {
+                    if !crate::tools::might_be_tool_call(&out.content) {
+                        held_text = false;
+                        on(Delta::Text(&out.content));
+                    }
+                } else {
+                    on(Delta::Text(t));
+                }
             }
             for tc in d.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
                 let i = tc.get("index").and_then(Value::as_u64).map(|i| i as usize).unwrap_or(calls.len());
@@ -1345,12 +1467,32 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         .into_iter()
         .flatten()
         .filter(|c| !c.name.is_empty())
-        .map(|c| ToolCall {
-            id: c.id,
-            kind: "function".into(),
-            extra_content: c.extra,
-            function: FunctionCall { name: c.name, arguments: if c.args.is_empty() { "{}".into() } else { c.args } },
+        .map(|c| {
+            canonical_call(ToolCall {
+                id: c.id,
+                kind: "function".into(),
+                extra_content: c.extra,
+                function: FunctionCall { name: c.name, arguments: if c.args.is_empty() { "{}".into() } else { c.args } },
+            })
         })
         .collect();
+    if out.tool_calls.is_empty() && can_recover {
+        if let Some((rest, recovered)) = crate::tools::recover_calls(&out.content, &out.reasoning, req.tools.unwrap_or_default()) {
+            out.content = rest;
+            out.tool_calls = recovered
+                .into_iter()
+                .enumerate()
+                .map(|(i, (name, args))| ToolCall {
+                    id: format!("call_{i}"),
+                    kind: "function".into(),
+                    extra_content: None,
+                    function: FunctionCall { name, arguments: args.to_string() },
+                })
+                .collect();
+        }
+    }
+    if held_text && !out.content.is_empty() {
+        on(Delta::Text(&out.content));
+    }
     Ok(out)
 }

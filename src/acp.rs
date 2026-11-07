@@ -111,7 +111,19 @@ pub fn updates_of(u: &Value) -> Vec<Msg> {
         "agent_message_chunk" => vec![Msg::Text(text(u))],
         "agent_thought_chunk" => vec![Msg::Reasoning(text(u))],
         "tool_call" => std::iter::once(Msg::ToolStart { id: s("toolCallId"), kind: s("kind"), title: s("title"), input: u.get("rawInput").cloned().unwrap_or(json!({})) }).chain(end(u)).collect(),
-        "tool_call_update" => end(u).into_iter().collect(),
+        "tool_call_update" => {
+            let mut msgs = Vec::new();
+            let title = s("title");
+            let kind = s("kind");
+            let raw_input = u.get("rawInput");
+            if !title.is_empty() || !kind.is_empty() || raw_input.is_some() {
+                msgs.push(Msg::ToolStart { id: s("toolCallId"), kind, title, input: raw_input.cloned().unwrap_or(json!({})) });
+            }
+            if let Some(e) = end(u) {
+                msgs.push(e);
+            }
+            msgs
+        }
         "plan" => {
             let list = u.get("entries").and_then(Value::as_array).map_or(&[][..], |a| a.as_slice());
             vec![Msg::Todos(list.iter().map(|e| Todo { content: e.get("content").and_then(Value::as_str).unwrap_or("").to_string(), status: e.get("status").and_then(Value::as_str).unwrap_or("pending").to_string() }).collect())]
@@ -170,7 +182,19 @@ fn request(method: &str, id: Value, p: &Value, conn: &Conn, tx: &Sender<Msg>) {
     }
     let call = |k: &str| p.pointer(&format!("/toolCall/{k}")).and_then(Value::as_str).unwrap_or("").to_string();
     let options = p.get("options").and_then(Value::as_array).map(|a| a.iter().filter_map(|o| Some((o.get("optionId")?.as_str()?.to_string(), o.get("kind")?.as_str()?.to_string()))).collect()).unwrap_or_default();
-    let _ = tx.send(Msg::Permission { id, kind: call("kind"), title: call("title"), options });
+    let kind = call("kind");
+    let mut title = call("title");
+    if (title.is_empty() || title == "Terminal") && (kind == "execute" || kind.is_empty()) {
+        if let Some(cmd) = p.pointer("/toolCall/rawInput/command").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            title = cmd.to_string();
+        }
+    }
+    let tool_call_id = call("toolCallId");
+    if !tool_call_id.is_empty() {
+        let raw_input = p.pointer("/toolCall/rawInput").cloned().unwrap_or(json!({}));
+        let _ = tx.send(Msg::ToolStart { id: tool_call_id, kind: kind.clone(), title: title.clone(), input: raw_input });
+    }
+    let _ = tx.send(Msg::Permission { id, kind, title, options });
 }
 
 /// The newest settings the CLI has sent for a session, as (session, configOptions).
@@ -413,6 +437,8 @@ mod tests {
         let done_at_once = json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "Read a", "status": "completed", "rawOutput": "text"});
         assert!(matches!(&updates_of(&done_at_once)[..], [Msg::ToolStart { .. }, Msg::ToolEnd { failed: false, text, .. }] if text == "text"));
         assert!(updates_of(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "in_progress"})).is_empty());
+        let refined = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "title": "cargo test", "kind": "execute", "rawInput": {"command": "cargo test"}});
+        assert!(matches!(&updates_of(&refined)[..], [Msg::ToolStart { id, kind, title, input }] if id == "c1" && kind == "execute" && title == "cargo test" && input.get("command").and_then(Value::as_str) == Some("cargo test")));
         let end = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "failed", "content": [{"type": "content", "content": {"type": "text", "text": "no"}}]});
         assert!(matches!(&updates_of(&end)[..], [Msg::ToolEnd { failed: true, text, .. }] if text == "no"));
     }

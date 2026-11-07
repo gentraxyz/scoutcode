@@ -17,6 +17,7 @@ export function issueMenu(c: DeltaCtx, i: Issue): CtxItem[] {
   const people: (string | null)[] = [null, ...s.people, SCOUT];
   return [
     { label: 'Open', icon: <Icon name="external" size={14} />, onClick: () => c.open(i.id) },
+    ...(c.openTab ? [{ label: 'Open in new tab', icon: <Icon name="plus" size={14} />, onClick: () => c.openTab?.({ view: 'team', teamId: i.teamId, tab: 'all' }, i.id) }] : []),
     'sep',
     { label: 'Status', icon: <StateIcon state={doc.state[i.stateId]} />, sub: teamStates(doc, i.teamId).map((st) => ({ label: st.name, icon: <StateIcon state={st} />, selected: st.id === i.stateId, onClick: () => set({ stateId: st.id }) })) },
     { label: 'Priority', icon: <PriorityIcon p={i.priority} />, sub: PRIORITIES.map((name, p) => ({ label: name, icon: <PriorityIcon p={p} />, selected: p === i.priority, onClick: () => set({ priority: p }) })) },
@@ -43,6 +44,7 @@ export function projectMenu(c: DeltaCtx, p: Project): CtxItem[] {
   const { s } = c;
   return [
     { label: 'Open', icon: <Icon name="external" size={14} />, onClick: () => c.go({ view: 'project', id: p.id }) },
+    ...(c.openTab ? [{ label: 'Open in new tab', icon: <Icon name="plus" size={14} />, onClick: () => c.openTab?.({ view: 'project', id: p.id }) }] : []),
     { label: 'New issue in project', icon: <Icon name="plus" size={14} />, onClick: () => c.create({ projectId: p.id, ...(p.teamIds[0] ? { teamId: p.teamIds[0] } : {}) }) },
     'sep',
     { label: 'Status', icon: <ProjectStatusIcon status={p.status} />, sub: PROJECT_STATUSES.map((st) => ({ label: statusLabel(st), icon: <ProjectStatusIcon status={st} />, selected: st === p.status, onClick: () => s.dispatch({ type: 'update', kind: 'project', id: p.id, patch: { status: st } }) })) },
@@ -57,6 +59,7 @@ export function cycleMenu(c: DeltaCtx, x: Cycle): CtxItem[] {
   const name = cycleName(x);
   return [
     { label: 'Open', icon: <Icon name="external" size={14} />, onClick: () => c.go({ view: 'cycle', id: x.id }) },
+    ...(c.openTab ? [{ label: 'Open in new tab', icon: <Icon name="plus" size={14} />, onClick: () => c.openTab?.({ view: 'cycle', id: x.id }) }] : []),
     { label: 'New issue in cycle', icon: <Icon name="plus" size={14} />, onClick: () => c.create({ teamId: x.teamId, cycleId: x.id }) },
     'sep',
     { label: 'Delete cycle', danger: true, icon: <Icon name="trash" size={14} />, onClick: () => { if (confirm(`Delete ${name}? Its issues stay, without a cycle.`)) s.dispatch({ type: 'delete', kind: 'cycle', id: x.id }); } },

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { act } from './api';
 import { core, useView } from './store';
 import { Link, Spinner } from './widgets';
+import scoutClassic from '../../assets/icon.png';
 
 export const COPILOT_NOTE = "Uses your own GitHub account's Copilot plan, from this PC. Each request counts against that plan's allowance, so don't share an account or run it unattended at volume. Signing in downloads about 150 MB.";
 export const KIRO_NOTE = "Uses your own Kiro account and plan, from this PC, so your chats go to AWS and its model providers, and Kiro's free plan allows 50 credits a month. Don't share an account. Kiro runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. Signing in downloads about 330 MB and shares the sign-in with any other Kiro CLI on this PC.";
@@ -196,7 +197,13 @@ export { AdditionalKey };
 /** Logos for the additional providers, and for the model menu's rail. */
 const logos = import.meta.glob('../../assets/providers/*.svg', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;
 export function logo(id: string): string {
-  return logos[`../../assets/providers/${id}.svg`] ?? '';
+  const name = id === 'scout' ? 'scoutcode' : id;
+  return logos[`../../assets/providers/${name}.svg`] ?? (name === 'scoutcode' ? scoutClassic : '');
+}
+
+/** Whether an unlinked provider is Free or Paid. */
+export function providerStatus(id: string): 'Free' | 'Paid' {
+  return ['claude', 'codex', 'devin', 'grok'].includes(id) ? 'Paid' : 'Free';
 }
 
 /** Every additional provider not linked yet, and how to link it. */
@@ -205,15 +212,22 @@ export function AdditionalOptions() {
   const providers = core.get().statics.additionalProviders;
   return (
     <div className="stack">
-      {providers.filter((a) => !additional.some((l) => l.id === a.id)).map((a) => (
-        <div key={a.id} className="provider-card">
-          <div className="row"><img className="logo" src={logo(a.id)} width={18} height={18} alt="" /><b className="strong">{a.name}</b></div>
-          <div className="small dim">{a.note}</div>
-          {a.needsKey
-            ? <AdditionalKey id={a.id} />
-            : <button type="button" className="button wide" onClick={() => act('linkAdditional', { id: a.id, key: null })}>Use {a.name} for free</button>}
-        </div>
-      ))}
+      {providers.filter((a) => !additional.some((l) => l.id === a.id)).map((a) => {
+        const status = providerStatus(a.id);
+        return (
+          <div key={a.id} className="provider-card">
+            <div className="row">
+              <img className="logo" src={logo(a.id)} width={18} height={18} alt="" />
+              <b className="strong grow">{a.name}</b>
+              <span className={`badge ${status === 'Paid' ? 'paid' : ''}`}>{status}</span>
+            </div>
+            <div className="small dim">{a.note}</div>
+            {a.needsKey
+              ? <AdditionalKey id={a.id} />
+              : <button type="button" className="button wide" onClick={() => act('linkAdditional', { id: a.id, key: null })}>Use {a.name} for free</button>}
+          </div>
+        );
+      })}
     </div>
   );
 }

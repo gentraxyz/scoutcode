@@ -28,7 +28,7 @@ pub struct AdditionalProvider {
     pub default_model: &'static str,
 }
 
-pub static ADDITIONAL: [AdditionalProvider; 3] = [
+pub static ADDITIONAL: [AdditionalProvider; 4] = [
     AdditionalProvider {
         id: "ovh",
         name: "OVH Cloud",
@@ -62,7 +62,22 @@ pub static ADDITIONAL: [AdditionalProvider; 3] = [
         key_hint: "sk-…",
         default_model: "deepseek-chat",
     },
+    AdditionalProvider {
+        id: "cohere",
+        name: "Cohere",
+        url: COHERE_URL,
+        needs_key: true,
+        note: "Cohere's Command models, with your own key. A free trial key works, with lower rate limits and a monthly cap, and isn't for production use. Saved on this PC.",
+        key_url: "https://dashboard.cohere.com/api-keys",
+        key_link: "Make a key in Cohere's dashboard",
+        key_hint: "Cohere API key",
+        default_model: "command-a-03-2025",
+    },
 ];
+
+/// Cohere's OpenAI-compatible API. Its model list comes from Cohere's own API, at `COHERE_MODELS_URL`.
+pub const COHERE_URL: &str = "https://api.cohere.ai/compatibility/v1";
+pub const COHERE_MODELS_URL: &str = "https://api.cohere.com/v1/models?endpoint=chat&page_size=1000";
 
 pub fn additional_provider(id: &str) -> Option<&'static AdditionalProvider> {
     ADDITIONAL.iter().find(|a| a.id == id)
@@ -213,6 +228,13 @@ pub struct Config {
     pub scout_mote: bool,
     /// Desktop app only: what ScoutMote calls this computer on the site, kept so it stays the same PC.
     pub scout_mote_id: Option<String>,
+    /// Desktop app only: the link that lets web chatbots (claude.ai and others) use Scout here. On unless turned off,
+    /// and started again at every launch, so a restart or an update doesn't cut chatbots off.
+    pub chatbot_link: bool,
+    /// The permission mode the link runs under.
+    pub chatbot_link_mode: String,
+    /// Desktop app only: send anonymous usage analytics (see analytics.rs). On unless turned off.
+    pub usage_analytics: bool,
 }
 
 /// A model in the picker: its list key and where it runs.
@@ -397,7 +419,7 @@ fn file() -> PathBuf {
     home().join("config.json")
 }
 
-fn read_saved() -> Map<String, Value> {
+pub fn read_saved() -> Map<String, Value> {
     std::fs::read_to_string(file())
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -494,6 +516,9 @@ pub fn load_config() -> Config {
         team: s.get("team").and_then(|v| serde_json::from_value(v.clone()).ok()),
         scout_mote: s.get("scoutMote").and_then(Value::as_bool).unwrap_or(false),
         scout_mote_id: s.get("scoutMoteId").and_then(Value::as_str).filter(|v| !v.is_empty()).map(String::from),
+        chatbot_link: s.get("chatbotLink").and_then(Value::as_bool).unwrap_or(true),
+        chatbot_link_mode: s.get("chatbotLinkMode").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or("default").to_string(),
+        usage_analytics: s.get("usageAnalytics").and_then(Value::as_bool).unwrap_or(true),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {

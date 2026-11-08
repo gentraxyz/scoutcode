@@ -8,6 +8,7 @@ import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEV
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
+import { ClaudeSetup } from './ClaudeSetup';
 import { DeepSeekWebPanel, useDeepSeek } from './DeepSeek';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
@@ -29,6 +30,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
   { id: 'scoutmote', title: 'ScoutMote', icon: 'terminal', keywords: 'scoutmote remote control browser web phone away online computer pc' },
   { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 play puzzle fun waiting music mp3 soundcloud audio song player' },
+  { id: 'privacy', title: 'Privacy', icon: 'shield', keywords: 'privacy analytics telemetry usage data tracking posthog statistics opt out' },
   { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
 ];
 
@@ -1009,7 +1011,7 @@ function Providers() {
     },
     {
       id: 'deepseek-web', name: 'DeepSeek Web', linked: !!deepseek?.enabled,
-      status: !deepseek?.enabled ? providerStatus('deepseek-web') : `${deepseek.via === 'extension' ? 'Browser extension' : 'In Scout'} · ${deepseek.signedIn ? 'Signed in' : 'Not signed in'}`,
+      status: !deepseek?.enabled ? providerStatus('deepseek-web') : `Browser extension · ${deepseek.signedIn ? 'Signed in' : 'Not signed in'}`,
       body: <DeepSeekWebPanel />,
     },
     own('devin', 'Devin', DEVIN_NOTE, cfg.devin, "See Devin's plans"),
@@ -1225,7 +1227,7 @@ function Chatbots() {
   const link = useView('link');
   const cfg = useView('cfg');
   const { modes, exe } = useCore((s) => s.statics);
-  const [mode, setMode] = useState('default');
+  const [mode, setMode] = useState(link.mode ?? 'default');
   const canLink = cfg.hasKey && !!link.cwd;
   const status = link.status || (!cfg.hasKey ? 'This goes through your ScoutCode account, so sign in first.' : 'Off.');
   const address = `${cfg.baseUrl}/mcp`;
@@ -1235,7 +1237,7 @@ function Chatbots() {
       <Heading title="Chatbots" sub="Let a chatbot use Scout's tools on this computer over MCP: its model does the thinking, and it can reach the files and shell here, in the folder you choose. Nothing is spent on ScoutCode." />
       <SectionLabel>Web chatbots, like claude.ai and ChatGPT</SectionLabel>
       <SettingRow title="Folder" sub={link.cwd || 'Open a project first.'} />
-      <SettingRow title="What it may do without asking" sub="The rest waits for your OK here. Turn the link off and on to change this.">
+      <SettingRow title="What it may do without asking" sub="The rest waits for your OK here. Turn the link off and on to change this. The link is on unless you turn it off, comes back on when Scout starts, and follows the project you have open.">
         <select className="input select" disabled={link.on} value={mode} onChange={(e) => setMode(e.target.value)}>
           {modes.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
@@ -1244,6 +1246,8 @@ function Chatbots() {
       {mode === 'yolo' && <p className="small red">Yolo lets the chatbot run any command on this computer without asking.</p>}
       <SettingRow title="Connector address" sub={address}><CopyButton text={address} /></SettingRow>
       <p className="small dim">Add this to the chatbot as a connector and sign in when it asks. Unlink a chatbot from your account page.</p>
+      <ClaudeSetup address={address} disabled={!cfg.hasKey} />
+      <ClaudeSetup address={address} disabled={!cfg.hasKey} bot="gemini" />
       {link.log.length > 0 && (
         <div className="stack">
           <div className="small dim">Latest calls</div>
@@ -1281,6 +1285,21 @@ export function restartBlocker(running: boolean, dirty: boolean): string | null 
   if (running) return 'Scout is working. You can restart when it finishes.';
   if (dirty) return 'Save the file open in the editor first.';
   return null;
+}
+
+function Privacy() {
+  const { usageAnalytics } = useView('cfg');
+  return (
+    <>
+      <Heading title="Privacy" sub="What Scout sends to ScoutCode about how the app is used." />
+      <SettingRow
+        title="Send usage analytics"
+        sub="Scout's version, when it opens, and which provider and model each message ran on, so we know what to improve. Never your messages, files, folders or keys."
+      >
+        <Toggle label="Send usage analytics" on={usageAnalytics} onChange={(on) => act('setAnalytics', { on })} />
+      </SettingRow>
+    </>
+  );
 }
 
 function Updates() {
@@ -1372,6 +1391,7 @@ export function Settings() {
           {tab === 'chatbots' && <Chatbots />}
           {tab === 'scoutmote' && <ScoutMote />}
           {tab === 'experimental' && <Experimental />}
+          {tab === 'privacy' && <Privacy />}
           {tab === 'updates' && <Updates />}
         </div>
       </div>

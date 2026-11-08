@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "What Scout's own window may do.",
-  "windows": ["main"],
+  "windows": ["main", "setup-bar", "setup-cursor"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

@@ -8,8 +8,8 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-pub const PROJECT_TOKENS: usize = 1200;
-pub const USER_TOKENS: usize = 600;
+pub const PROJECT_TOKENS: usize = 4000;
+pub const USER_TOKENS: usize = 2000;
 
 const PROJECT_SECTIONS: &str = "Overview, Commands, Conventions, Decisions, Pitfalls, Open threads, Map";
 const USER_SECTIONS: &str = "Identity, Stack, Style, Pet peeves, Tools, Communication";

@@ -50,8 +50,13 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         mcp_show_file,
         deepseek_status,
         deepseek_set,
-        deepseek_open,
+        deepseek_pacing,
         deepseek_extension,
+        claude_setup_start,
+        claude_setup_status,
+        claude_setup_stop,
+        claude_setup_pause,
+        claude_setup_browsers,
         changes_load,
         changes_diff,
         dir_read,
@@ -143,6 +148,7 @@ enum Action {
     DismissWhatsNew,
     DownloadUpdate,
     SetAutoUpdate { on: bool },
+    SetAnalytics { on: bool },
     RefreshSkills,
 }
 
@@ -267,6 +273,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::DismissWhatsNew => c.dismiss_whats_new(),
         Action::DownloadUpdate => c.updater().download_now(),
         Action::SetAutoUpdate { on } => c.set_auto_update(on),
+        Action::SetAnalytics { on } => c.set_analytics(on),
         Action::RefreshSkills => c.refresh_skills(),
     }
     c.wake();
@@ -277,7 +284,11 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
 #[tauri::command]
 fn send(core: Shared, text: String, files: Vec<String>, steer: bool) -> bool {
     let mut c = core.lock().unwrap();
+    let message = !text.trim_start().starts_with('/');
     let taken = c.send(text, files, steer);
+    if taken && message {
+        c.track_sent(steer);
+    }
     c.wake();
     taken
 }
@@ -908,25 +919,51 @@ fn deepseek_status() -> Value {
     crate::deepseek::status()
 }
 
-/// Turns DeepSeek Web on or off, or moves it between Scout's window and the extension, and lists its models.
+/// Turns DeepSeek Web on or off, and lists its models.
 #[tauri::command(async)]
-fn deepseek_set(core: Shared, enabled: Option<bool>, via: Option<String>) -> Result<Value, String> {
+fn deepseek_set(core: Shared, enabled: Option<bool>) -> Result<Value, String> {
     let team = core.lock().unwrap().in_team();
     if team && enabled == Some(true) {
         return Err("Your Scout Enterprise team decides which providers you use.".into());
     }
-    crate::deepseek::set(enabled, via)?;
-    if crate::deepseek::settings().enabled && crate::deepseek::settings().via == "window" {
-        crate::deepseek::check_window();
-    }
+    crate::deepseek::set(enabled)?;
     core.lock().unwrap().fetch_models();
     Ok(crate::deepseek::status())
 }
 
-/// Shows Scout's DeepSeek window, to sign in.
-#[tauri::command(async)]
-fn deepseek_open() -> Result<(), String> {
-    crate::deepseek::open_window()
+/// Sets how hard Scout paces DeepSeek Web: passive, moderate or aggressive.
+#[tauri::command]
+fn deepseek_pacing(pacing: String) -> Result<Value, String> {
+    crate::deepseek::set_pacing(&pacing)?;
+    Ok(crate::deepseek::status())
+}
+
+/// Adds Scout's MCP address to claude.ai or Gemini (`bot`, Claude when not given) as a connector: Scout works the
+/// browser itself on Windows, with its own bar and Pause, or the Scout browser extension does. See claude_setup.rs.
+#[tauri::command]
+fn claude_setup_start<R: Runtime>(app: AppHandle<R>, bot: Option<String>, name: String, url: String, browser: Option<String>) -> Result<Value, String> {
+    crate::claude_setup::start(&app, bot.as_deref().unwrap_or("claude"), &name, &url, browser.as_deref())
+}
+
+/// The browsers the Claude setup can open, the default first.
+#[tauri::command]
+fn claude_setup_browsers() -> Vec<Value> {
+    crate::claude_setup::browsers()
+}
+
+#[tauri::command]
+fn claude_setup_pause(paused: bool) -> Value {
+    crate::claude_setup::pause(paused)
+}
+
+#[tauri::command]
+fn claude_setup_status() -> Value {
+    crate::claude_setup::status()
+}
+
+#[tauri::command]
+fn claude_setup_stop() -> Value {
+    crate::claude_setup::stop()
 }
 
 /// Writes the extension's folder and shows it, for Load unpacked.

@@ -4,6 +4,13 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.21
+Scout connects itself to Gemini, chatbots always see all of Scout's tools, and a new Privacy setting.
+
+- Scout can add itself to Gemini as a connector, as it already does for Claude: it creates the custom app, signs in and opens a new Gemini chat that's ready to use.
+- Chatbots linked to Scout now list every one of Scout's tools in every chat, even before the link is first turned on, and know those tools run on your computer.
+- Scout now sends usage analytics: its version, and which provider and model each message ran on, never your messages, files or keys. Turn it off in Settings > Privacy.
+
 ## 0.1.20
 DeepSeek as a provider, with a refreshed model menu and Settings.
 

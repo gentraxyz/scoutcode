@@ -162,6 +162,18 @@ all apply. The model menu lists Nous' public catalog, models with tools only, fr
 `cargo test -- --ignored live_hermes --nocapture` reads the real catalog. Neither can cover signing in or a real chat,
 which need an account.
 
+## Cohere
+
+**Cohere** is an additional provider like Google AI Studio: the user's own key from dashboard.cohere.com (a free trial key
+works, rate-limited with a monthly cap), sent to Cohere's OpenAI-compatible API at `https://api.cohere.ai/compatibility/v1`.
+
+- **The model list comes from Cohere's own API** (`GET https://api.cohere.com/v1/models?endpoint=chat`), which the
+  compatibility API doesn't document. `cohere_listing` keeps the models whose `features` include tool use.
+- **No `reasoning_effort`.** Cohere takes only `none` and `high` and refuses it on models that don't reason, so Scout
+  leaves it out there.
+
+**Testing:** `cargo test cohere` covers reading the list. A real chat needs a key.
+
 ## DeepSeek API and DeepSeek Web
 
 **DeepSeek API** is an additional provider like Google AI Studio: the user's own key from platform.deepseek.com, sent
@@ -190,6 +202,16 @@ desktop only, off until turned on in Settings > Providers, and its settings are 
     in the page's main world, `bridge.js` links them to the background worker, and the worker long-polls
     `POST http://127.0.0.1:47615/deepseek/sync` (or another free port, written to `scout.json`). The server answers only
     requests with the token in `X-Scout-Token` and no web-page `Origin`. It only starts while the extension mode is on.
+    The extension's `claude.js` is also the fallback for Claude's "Add to Claude for me" setup (claude_setup.rs). On
+    Windows that setup first runs without it (claude_native.rs): UI Automation finds claude.ai's buttons and fields by
+    name in the browser window in front. Scout's own cursor (`setup-cursor`, a click-through window) moves to each one,
+    and the real cursor hops there only for the click and straight back. Keys are typed with the real keyboard, and
+    buttons below the fold are scrolled to (the form's Add on its second page). Low-level input hooks hold back the
+    user's clicks, wheel and keys over the browser while it works (no admin needed); Esc, the `setup-bar` window's
+    Pause, or leaving the browser pauses it and gives the browser back. The setup card picks the browser: the default
+    one unless another is chosen, from those Windows lists under `StartMenuInternet` (Internet Explorer left out). A
+    chosen browser is started with the address, and only windows whose program is in its folder are worked. When no
+    browser with claude.ai comes to the front within 25 seconds, the job goes to the extension.
 - **The warning.** DeepSeek's terms don't allow automated use of the website, so the account could be limited or banned, and
   Settings says so before it can be turned on. It also breaks when DeepSeek changes the page or its stream format. The
   stream reader follows the formats seen so far (OpenAI-style `choices`, and the JSON-patch `{p, o, v}` updates with and

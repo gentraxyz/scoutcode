@@ -209,6 +209,9 @@ impl Shared {
     }
 }
 
+/// The files a user message's turn changed, as they were before it, so it can be undone. Saved beside the chat, so a
+/// chat reopened later (or made by a chatbot over MCP) can still be rewound.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Checkpoint {
     pub at: usize,
     pub label: String,
@@ -516,11 +519,11 @@ pub fn denied_display(name: &str, fb: &str) -> String {
 impl Agent {
     pub fn new(cfg: Config, session: Session, shared: Arc<Shared>) -> Self {
         Agent {
+            checkpoints: crate::session::load_checkpoints(&session.id).unwrap_or_default(),
             cfg,
             session,
             shared,
             read_files: HashSet::new(),
-            checkpoints: vec![],
             todos: vec![],
             last_prompt_tokens: 0,
             read_only_note: "Plan mode is read-only. Call present_plan with your plan first.",
@@ -658,7 +661,7 @@ impl Agent {
                     Delta::Reasoning(t) => h.send(Ev::Reasoning(t.to_string())),
                 }
             };
-            let r = crate::deepseek::chat(&model, messages, &tools, &mut on, &self.shared.cancel)?;
+            let r = crate::deepseek::chat(&model, messages, &tools, &mut on, &self.shared.cancel, !quiet)?;
             if !quiet {
                 self.last_request_at = Some(Instant::now());
             }
@@ -1740,6 +1743,7 @@ impl Agent {
         for cp in &mut self.checkpoints {
             cp.at = if cp.at >= cut { cp.at - cut + 2 } else { usize::MAX };
         }
+        self.save_checkpoints();
         // Files must be read again before editing, unless the kept turns still show them.
         self.read_files.clear();
         let calls: HashMap<String, ToolCall> = tail
@@ -1770,6 +1774,17 @@ impl Agent {
         }
         let before = std::fs::read_to_string(&abs).ok();
         cp.files.insert(abs, before);
+        self.save_checkpoints();
+    }
+
+    pub fn save_checkpoints(&self) {
+        crate::session::save_checkpoints(&self.session.id, &self.checkpoints);
+    }
+
+    /// Starts a user message's turn: what it changes from here on can be undone.
+    pub fn checkpoint(&mut self, label: String) {
+        self.checkpoints.push(Checkpoint { at: self.session.messages.len(), label, files: HashMap::new() });
+        self.save_checkpoints();
     }
 
     /// Puts back the files a checkpoint saw changed, returning the ones restored.
@@ -1798,6 +1813,7 @@ impl Agent {
         }
         self.session.mode = None;
         save_session(&mut self.session);
+        self.save_checkpoints();
         Some((cp.label, restored, in_conversation))
     }
 
@@ -1820,6 +1836,7 @@ impl Agent {
         self.session.messages.truncate(at);
         self.session.mode = None;
         save_session(&mut self.session);
+        self.save_checkpoints();
         (restored.into_iter().collect(), !changed_unknown)
     }
 
@@ -1851,7 +1868,7 @@ impl Agent {
         if self.should_compact() {
             self.compact("", h)?;
         }
-        self.checkpoints.push(Checkpoint { at: self.session.messages.len(), label: input.text(), files: HashMap::new() });
+        self.checkpoint(input.text());
         self.session.messages.push(Message::User { content: input });
         self.unsent = None;
         save_session(&mut self.session);
@@ -1950,6 +1967,7 @@ impl Agent {
                 }
                 return Ok(());
             }
+            let mut denied = false;
             for (i, c) in calls.iter().enumerate() {
                 if self.cancelled() {
                     for c in &calls[i..] {
@@ -1958,12 +1976,18 @@ impl Agent {
                     break;
                 }
                 let res = self.run_tool(c, h);
+                denied |= res.summary.as_deref() == Some("denied");
                 self.session.messages.push(Message::Tool { tool_call_id: c.id.clone(), content: cap_output(res.output) });
             }
             self.take_steer(h);
             save_session(&mut self.session);
             if self.cancelled() {
                 return Err(ApiError::aborted());
+            }
+            // DeepSeek Web's page doesn't reliably take a "don't retry" note, so after a denial the turn ends and the
+            // user decides what happens next, instead of asking the model to carry on.
+            if denied && self.session.provider.as_deref() == Some(crate::deepseek::PROVIDER) {
+                return Ok(());
             }
         }
         h.send(Ev::Notice("Stopped after 200 steps. Say \"continue\" to keep going.".into()));

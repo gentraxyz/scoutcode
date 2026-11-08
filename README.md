@@ -140,7 +140,8 @@ cd scoutcode
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-`install.ps1` builds the web UI and the release binary (with thin LTO, so it takes a few minutes), installs it to
+`install.ps1` builds the web UI and the release binary (with thin LTO, so it takes a minute or more; `-Quick` uses the
+`local` profile instead, without LTO and incremental, for quick rebuilds once its dependencies are built), installs it to
 `%LOCALAPPDATA%\Programs\Scout\Scout.exe` with a Start menu entry, and closes a running copy first. Run it again to
 update. `-Desktop` adds a desktop shortcut, and `-Uninstall` removes everything except `~/.scoutcode`.
 

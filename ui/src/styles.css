@@ -22,6 +22,11 @@ b { font-weight: 600; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
 button:disabled { cursor: default; opacity: 0.5; }
 input, textarea, select { font: inherit; color: var(--text); }
+/* A dropdown's list is drawn by WebView2, which ignores color-scheme there: light text on its white list. Its colors
+   come from the theme instead, for every select in the app. */
+option, optgroup { background-color: var(--surface); color: var(--text); }
+option:checked { background-color: var(--surface-hi); color: var(--strong); }
+option:disabled { color: var(--dim); }
 hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; width: 100%; }
 :focus-visible { outline: 1px solid var(--focus); outline-offset: 1px; }
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
@@ -1125,3 +1130,30 @@ html[data-material="glass"] ::-webkit-scrollbar-thumb { background: rgb(255 255 
 .ds-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--border-hi); }
 .ds-dot.on { background: var(--green); }
 .ds-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+
+/* Scout's bar over the browser while it adds the Claude connector itself (SetupBar.tsx, its own window). */
+.setup-bar { position: fixed; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 14px; color: var(--text); font-size: 13px; user-select: none; }
+.setup-bar .button.compact { align-self: center; }
+.setup-what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.setup-what span { color: var(--dim); font-size: 11.5px; }
+.setup-what b { color: var(--strong); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--green); }
+.setup-dot.live { animation: setup-pulse 1.2s ease-in-out infinite; }
+.setup-dot.amber { background: #f2b84b; }
+.setup-dot.red { background: var(--red); }
+@keyframes setup-pulse { 50% { opacity: .35; } }
+/* Scout's own cursor (SetupCursor.tsx): the window's top-left corner is the tip. */
+.setup-cursor { position: fixed; left: 0; top: 0; pointer-events: none; }
+.setup-cursor svg { display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.45)); transform-origin: 1px 1px; transition: transform 90ms; }
+.setup-cursor.down svg { transform: scale(.8); }
+.setup-cursor span { position: absolute; left: 16px; top: 18px; background: var(--primary); color: var(--primary-ink); font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; white-space: nowrap; }
+/* The Chatbots panel's two choices (Chatbots.tsx). */
+.chatbot-choice { gap: 8px; }
+.chatbot-choice .button { min-width: 0; }
+.chatbot-more summary { cursor: pointer; }
+.chatbot-more[open] { gap: 6px; }
+.chatbot-pick { gap: 6px; }
+.chatbot-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; font-size: 12.5px; border-radius: 99px; color: var(--muted); background: transparent; border: 1px solid var(--border-hi); }
+.chatbot-chip:hover { background: var(--hover); color: var(--strong); }
+.chatbot-chip.on { background: var(--surface-hi); color: var(--strong); border-color: var(--edge); }
+.chatbot-chip img { flex: none; }

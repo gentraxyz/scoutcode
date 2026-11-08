@@ -1,12 +1,10 @@
 //! DeepSeek Web: the user's own chat.deepseek.com account as a provider, with no API key.
 //!
 //! A driver script (`deepseek/driver.js`) runs inside chat.deepseek.com and sends each request through the page the way
-//! the user would, then streams the answer back. It runs in one of two places:
-//!
-//! - **Scout's DeepSeek window**, a hidden window of Scout's own, where the user signs in once. Scout starts jobs and
-//!   reads what came back by running small scripts in the page (`eval`), so the page gets no access to Scout's IPC.
-//! - **The Scout for DeepSeek extension**, in the user's own Chrome or Edge, on an open chat.deepseek.com tab. It reaches
-//!   Scout through a small server on 127.0.0.1 that only answers requests with this PC's token.
+//! the user would, then streams the answer back. It runs only in the **Scout for DeepSeek extension**, in the user's own
+//! Chrome or Edge, on an open chat.deepseek.com tab. The extension reaches Scout through a small server on 127.0.0.1
+//! that only answers requests with this PC's token. Scout waits a random few seconds before each request, so the
+//! account isn't driven at a steady rhythm.
 //!
 //! The website has no tool calling, so Scout runs the tool loop: the prompt lists Scout's tools (with the user's MCP
 //! servers) and asks for `<tool_call>` blocks, which `tools::recover_calls` reads back. Each Scout chat keeps one
@@ -23,17 +21,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry};
 
 pub const PROVIDER: &str = "deepseek-web";
-const SITE: &str = "https://chat.deepseek.com/";
-const WINDOW: &str = "deepseek";
 /// The extension's local server tries this port first.
 const PORT: u16 = 47615;
 
 pub const DRIVER: &str = include_str!("deepseek/driver.js");
-const EXTENSION: [(&str, &str); 7] = [
+/// The Scout browser extension: DeepSeek Web, and the Claude connector setup (claude_setup.rs).
+const EXTENSION: [(&str, &str); 8] = [
     ("manifest.json", include_str!("deepseek/extension/manifest.json")),
+    ("claude.js", include_str!("deepseek/extension/claude.js")),
     ("driver.js", DRIVER),
     ("main.js", include_str!("deepseek/extension/main.js")),
     ("bridge.js", include_str!("deepseek/extension/bridge.js")),
@@ -85,14 +82,23 @@ pub fn models() -> Vec<ModelInfo> {
 
 // ---------- settings ----------
 
+/// The pacing presets: the wait before each request is a random time between the two, in seconds.
+pub const PACINGS: [(&str, u32, u32); 3] = [("passive", 5, 9), ("moderate", 4, 6), ("aggressive", 2, 3)];
+const PACING_DEFAULT: &str = "passive";
+
 /// What's saved in ~/.scoutcode/deepseek-web.json.
 #[derive(Clone)]
 pub struct Settings {
     pub enabled: bool,
-    /// "window" (Scout's own DeepSeek window) or "extension".
-    pub via: String,
     /// What the extension has to send to the local server.
     pub token: String,
+    /// One of PACINGS' names.
+    pub pacing: String,
+}
+
+/// The wait range of a pacing preset, in seconds.
+fn pacing_range(name: &str) -> (u32, u32) {
+    PACINGS.iter().find(|p| p.0 == name).map_or((5, 9), |p| (p.1, p.2))
 }
 
 fn settings_file() -> PathBuf {
@@ -102,15 +108,12 @@ fn settings_file() -> PathBuf {
 pub fn settings() -> Settings {
     let s: Value = std::fs::read_to_string(settings_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
     let token = s.get("token").and_then(Value::as_str).filter(|t| t.len() >= 32).map(String::from).unwrap_or_else(new_token);
-    Settings {
-        enabled: s.get("enabled").and_then(Value::as_bool).unwrap_or(false),
-        via: if s.get("via").and_then(Value::as_str) == Some("extension") { "extension".into() } else { "window".into() },
-        token,
-    }
+    let pacing = s.get("pacing").and_then(Value::as_str).filter(|p| PACINGS.iter().any(|x| x.0 == *p)).unwrap_or(PACING_DEFAULT).to_string();
+    Settings { enabled: s.get("enabled").and_then(Value::as_bool).unwrap_or(false), token, pacing }
 }
 
 fn save(s: &Settings) -> Result<(), String> {
-    let body = json!({ "enabled": s.enabled, "via": s.via, "token": s.token });
+    let body = json!({ "enabled": s.enabled, "token": s.token, "pacing": s.pacing });
     std::fs::write(settings_file(), serde_json::to_string_pretty(&body).unwrap()).map_err(|e| format!("Couldn't save DeepSeek Web's settings: {e}"))
 }
 
@@ -124,41 +127,34 @@ pub fn enabled() -> bool {
     settings().enabled
 }
 
-/// Turns DeepSeek Web on or off, or changes where it runs.
-pub fn set(enabled: Option<bool>, via: Option<String>) -> Result<(), String> {
+/// Turns DeepSeek Web on or off. Turning it on starts the extension's server and writes the extension.
+pub fn set(enabled: Option<bool>) -> Result<(), String> {
     let mut s = settings();
     if let Some(e) = enabled {
         s.enabled = e;
     }
-    if let Some(v) = via {
-        s.via = if v == "extension" { "extension".into() } else { "window".into() };
-    }
     save(&s)?;
-    if s.enabled && s.via == "extension" {
+    if s.enabled {
         serve();
         write_extension(&s)?;
-    }
-    if !s.enabled {
-        if let Some(w) = app().and_then(|a| a.get_webview_window(WINDOW)) {
-            let _ = w.destroy();
-        }
     }
     Ok(())
 }
 
-// ---------- the app ----------
-
-static APP: OnceLock<AppHandle<Wry>> = OnceLock::new();
-
-fn app() -> Option<&'static AppHandle<Wry>> {
-    APP.get()
+/// Sets how hard Scout paces DeepSeek Web: passive, moderate or aggressive.
+pub fn set_pacing(name: &str) -> Result<(), String> {
+    if !PACINGS.iter().any(|p| p.0 == name) {
+        return Err("Pick passive, moderate or aggressive.".into());
+    }
+    let mut s = settings();
+    s.pacing = name.to_string();
+    save(&s)
 }
 
 /// Called once the app is up.
-pub fn init(app: AppHandle<Wry>) {
-    let _ = APP.set(app);
+pub fn init() {
     let s = settings();
-    if s.enabled && s.via == "extension" {
+    if s.enabled {
         serve();
         let _ = write_extension(&s);
     }
@@ -167,115 +163,21 @@ pub fn init(app: AppHandle<Wry>) {
 /// What Settings shows.
 pub fn status() -> Value {
     let s = settings();
-    // Asks the page itself, so a sign-in made in the window shows at once. Without the window, it's opened hidden to look.
-    if s.enabled && s.via == "window" {
-        match app().and_then(|a| a.get_webview_window(WINDOW)) {
-            Some(w) => {
-                if let Some(signed) = eval(&w, "window.__scoutDS ? JSON.stringify(window.__scoutDS.status()) : 'null'").and_then(|v| v.get("signedIn").and_then(Value::as_bool)) {
-                    *WINDOW_SIGNED_IN.lock().unwrap() = signed;
-                }
-            }
-            None => check_window(),
-        }
-    }
     let ext = EXT.lock().unwrap();
     let connected = ext.seen.is_some_and(|t| t.elapsed() < Duration::from_secs(20));
-    let window = app().and_then(|a| a.get_webview_window(WINDOW)).is_some();
-    let signed_in = if s.via == "extension" { connected && ext.status.get("signedIn").and_then(Value::as_bool).unwrap_or(false) } else { *WINDOW_SIGNED_IN.lock().unwrap() };
     json!({
         "enabled": s.enabled,
-        "via": s.via,
-        "signedIn": signed_in,
-        "windowOpen": window,
+        "signedIn": connected && ext.status.get("signedIn").and_then(Value::as_bool).unwrap_or(false),
         "extensionConnected": connected,
         "extensionTab": connected && ext.status.get("path").is_some(),
         "extensionPath": extension_dir().to_string_lossy(),
         "port": *SERVING.lock().unwrap(),
+        "pacing": s.pacing,
+        "challenge": ext.status.get("challenge").and_then(Value::as_bool).unwrap_or(false),
+        "sessionsToday": sessions_today().len(),
+        "sessionsPerDay": SESSIONS_PER_DAY,
         "warning": WARNING,
     })
-}
-
-/// Last thing the window said about signing in, so Settings can show it without asking the page.
-static WINDOW_SIGNED_IN: Mutex<bool> = Mutex::new(false);
-
-// ---------- Scout's DeepSeek window ----------
-
-fn window(show: bool) -> Result<WebviewWindow<Wry>, String> {
-    let app = app().ok_or("Scout isn't ready yet.")?;
-    if let Some(w) = app.get_webview_window(WINDOW) {
-        if show {
-            let _ = w.show();
-            let _ = w.unminimize();
-            let _ = w.set_focus();
-        }
-        return Ok(w);
-    }
-    WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::External(SITE.parse().unwrap()))
-        .title("DeepSeek · Scout")
-        .inner_size(1060.0, 820.0)
-        .center()
-        .visible(show)
-        .initialization_script(DRIVER)
-        // A hidden page's timers and streams slow down, which would stall the answer.
-        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
-        // DeepSeek and its sign-in providers. Everything is https.
-        .on_navigation(|url| url.scheme() == "https")
-        .build()
-        .map_err(|e| format!("Couldn't open DeepSeek's window: {e}"))
-}
-
-/// Shows the window, to sign in or to watch.
-pub fn open_window() -> Result<(), String> {
-    window(true).map(|_| ())
-}
-
-/// Runs a script in the window's page and returns what it returned.
-fn eval(w: &WebviewWindow<Wry>, js: &str) -> Option<Value> {
-    let (tx, rx) = channel();
-    w.eval_with_callback(js, move |s| {
-        let _ = tx.send(s);
-    })
-    .ok()?;
-    let raw = rx.recv_timeout(Duration::from_secs(5)).ok()?;
-    let v: Value = serde_json::from_str(&raw).ok()?;
-    // The script returns JSON text, which comes back as a JSON string.
-    match v {
-        Value::String(s) => serde_json::from_str(&s).ok(),
-        v => Some(v),
-    }
-}
-
-fn drain(w: &WebviewWindow<Wry>) -> Option<Value> {
-    let v = eval(w, "window.__scoutDS ? JSON.stringify(window.__scoutDS.drain()) : 'null'")?;
-    if let Some(s) = v.get("signedIn").and_then(Value::as_bool) {
-        *WINDOW_SIGNED_IN.lock().unwrap() = s;
-    }
-    (!v.is_null()).then_some(v)
-}
-
-/// Checks whether the window is signed in, opening it hidden if it isn't open, for Settings.
-pub fn check_window() {
-    static CHECKING: AtomicBool = AtomicBool::new(false);
-    if CHECKING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    std::thread::spawn(|| {
-        struct Done;
-        impl Drop for Done {
-            fn drop(&mut self) {
-                CHECKING.store(false, Ordering::SeqCst);
-            }
-        }
-        let _done = Done;
-        let Ok(w) = window(false) else { return };
-        let until = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < until {
-            if drain(&w).is_some() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        }
-    });
 }
 
 // ---------- the extension's server ----------
@@ -296,6 +198,10 @@ static SERVING: Mutex<Option<u16>> = Mutex::new(None);
 
 fn extension_dir() -> PathBuf {
     crate::config::home().join("deepseek-extension")
+}
+
+pub fn extension_path() -> String {
+    extension_dir().to_string_lossy().to_string()
 }
 
 /// Writes the extension's files where the user loads it from, with this PC's port and token.
@@ -364,12 +270,16 @@ fn answer(mut stream: TcpStream) -> std::io::Result<()> {
     // Only the extension: web pages can't send the token header without a preflight, which is never answered, and the
     // extension's own requests come from chrome-extension:// or with no origin.
     let from_page = !origin.is_empty() && !origin.starts_with("chrome-extension://") && !origin.starts_with("extension://");
-    if from_page || method != "POST" || path != "/deepseek/sync" || length > 8 << 20 || !same(&token, &settings().token) {
+    let known = path == "/deepseek/sync" || path == "/claude/sync";
+    if from_page || method != "POST" || !known || length > 8 << 20 || !same(&token, &settings().token) {
         return reply(&mut stream, "403 Forbidden", "{}");
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
     let msg: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    if path == "/claude/sync" {
+        return reply(&mut stream, "200 OK", &crate::claude_setup::sync(&msg).to_string());
+    }
     let commands = sync(&msg);
     reply(&mut stream, "200 OK", &json!({ "commands": commands }).to_string())
 }
@@ -382,6 +292,10 @@ fn same(a: &str, b: &str) -> bool {
 /// happening it waits a while for one, so a request starts at once.
 fn sync(msg: &Value) -> Vec<Value> {
     for e in msg.get("events").and_then(Value::as_array).into_iter().flatten() {
+        if e.get("kind").and_then(Value::as_str) == Some("shutdown") {
+            *SHUTDOWN.lock().unwrap_or_else(|e| e.into_inner()) = e.get("text").and_then(Value::as_str).map(str::to_string);
+            continue;
+        }
         deliver(e.clone());
     }
     let mut ext = EXT.lock().unwrap();
@@ -402,6 +316,41 @@ fn sync(msg: &Value) -> Vec<Value> {
 fn command(c: Value) {
     EXT.lock().unwrap().commands.push(c);
     EXT_WAKE.notify_all();
+}
+
+/// Whether the page is held under the overlay between requests.
+static HOLDING: AtomicBool = AtomicBool::new(false);
+
+/// Keeps the page's overlay up for the rest of the turn, through the pause and the tools, not just while a request runs.
+fn hold() {
+    HOLDING.store(true, Ordering::Relaxed);
+    command(json!({ "type": "hold", "on": true }));
+}
+
+/// Lets the page go when the agent's turn is over. Does nothing if DeepSeek Web wasn't used.
+pub fn release() {
+    *SHUTDOWN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if HOLDING.swap(false, Ordering::Relaxed) {
+        command(json!({ "type": "hold", "on": false }));
+    }
+}
+
+/// Why the page gave itself back mid-turn, if it did: "override" (the user pressed Take over) or "signin" (the
+/// account signed out). The rest of the turn's requests are refused until it ends.
+static SHUTDOWN: Mutex<Option<String>> = Mutex::new(None);
+
+/// The error that ends the turn, once the page has shut Scout out.
+fn shut_out() -> Option<ApiError> {
+    let why = SHUTDOWN.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    HOLDING.store(false, Ordering::Relaxed);
+    Some(shutdown_error(&why))
+}
+
+fn shutdown_error(why: &str) -> ApiError {
+    match why {
+        "signin" => ApiError::new("DeepSeek Web signed out, so Scout stopped this turn. Sign in again on chat.deepseek.com, then send a message to carry on.", 401),
+        _ => ApiError::new("You took over the DeepSeek tab, so Scout stopped this turn. Send a message when you want it to carry on.", 0),
+    }
 }
 
 // ---------- running a request ----------
@@ -458,31 +407,67 @@ fn remember(chat: &str, messages: &[Message]) {
 
 const TOOL_RULES: &str = "# Tools
 
-You're working through Scout, a coding agent on the user's computer, which runs tools for you. Call them in your own DSML function-call format, with arguments that match each tool's parameters:
+You're working through Scout, a coding agent on the user's computer, which runs tools for you. Call them in this XML format, with arguments that match each tool's parameters:
 
-<｜DSML｜function_calls>
-<｜DSML｜invoke name=\"tool_name\">
-<｜DSML｜parameter name=\"text_param\" string=\"true\">plain text, written as is</｜DSML｜parameter>
-<｜DSML｜parameter name=\"other_param\" string=\"false\">a JSON value: number, true/false, array or object</｜DSML｜parameter>
-</｜DSML｜invoke>
-</｜DSML｜function_calls>
+<action_calls>
+<invoke name=\"tool_name\">
+<parameter name=\"text_param\" string=\"true\">plain text, written as is</parameter>
+<parameter name=\"other_param\" string=\"false\">a JSON value: number, true/false, array or object</parameter>
+</invoke>
+</action_calls>
 
-- One function_calls block can hold several invokes. Stop writing after it: Scout runs them and replies with each result in a <tool_result> block.
+- One action_calls block can hold several invokes. Stop writing after it: Scout runs them and replies with each result in a <tool_result> block.
 - Never put the block in a code fence, and never write a <tool_result> yourself or guess what one will say.
 - When the work is done, or you need the user, answer in plain text with no function calls.
 - Use the tools to look at and change the user's files: you can't see them otherwise.
 
 The tools, as JSON:";
 
+/// The most MCP tools the first prompt lists, so a big MCP catalog doesn't crowd out the conversation.
+const MAX_MCP_TOOLS: usize = 25;
+/// The longest MCP tool description the prompt carries.
+const MAX_MCP_DESCRIPTION: usize = 400;
+/// The most of one tool result a DeepSeek Web turn carries, head and tail, to stay within what the page's composer takes.
+const MAX_TOOL_RESULT: usize = 7_500;
+
 fn tool_list(tools: &[Value]) -> String {
-    tools
+    let mut mcp = 0;
+    let mut left_out = 0;
+    let mut lines: Vec<String> = tools
         .iter()
         .filter_map(|t| {
             let f = t.get("function")?;
-            Some(json!({ "name": f.get("name")?, "description": f.get("description"), "parameters": f.get("parameters") }).to_string())
+            let name = f.get("name")?;
+            let mut description = f.get("description").cloned();
+            if name.as_str().is_some_and(|n| n.starts_with("mcp__")) {
+                mcp += 1;
+                if mcp > MAX_MCP_TOOLS {
+                    left_out += 1;
+                    return None;
+                }
+                if let Some(d) = description.as_ref().and_then(Value::as_str).filter(|d| d.chars().count() > MAX_MCP_DESCRIPTION) {
+                    description = Some(Value::String(format!("{}…", d.chars().take(MAX_MCP_DESCRIPTION).collect::<String>())));
+                }
+            }
+            Some(json!({ "name": name, "description": description, "parameters": f.get("parameters") }).to_string())
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    if left_out > 0 {
+        lines.push(format!("({left_out} more MCP tools aren't listed here.)"));
+    }
+    lines.join("\n")
+}
+
+/// A tool result cut to its head and tail when it's longer than a DeepSeek Web turn should carry.
+fn clip(s: &str) -> String {
+    let n = s.chars().count();
+    if n <= MAX_TOOL_RESULT {
+        return s.to_string();
+    }
+    let half = MAX_TOOL_RESULT / 2;
+    let head: String = s.chars().take(half).collect();
+    let tail: String = s.chars().skip(n - half).collect();
+    format!("{head}\n\n… [{} characters cut] …\n\n{tail}", n - MAX_TOOL_RESULT)
 }
 
 fn user_text(c: &crate::api::Content) -> String {
@@ -511,13 +496,13 @@ fn render(messages: &[Message], all: &[Message]) -> String {
                 let mut s = content.clone().unwrap_or_default();
                 if let Some(calls) = tool_calls.as_ref().filter(|c| !c.is_empty()) {
                     s.push('\n');
-                    s.push_str(&dsml(calls));
+                    s.push_str(&xml_calls(calls));
                 }
                 out.push(format!("[You]\n{}", s.trim()));
             }
             Message::Tool { tool_call_id, content } => {
                 let name = names.get(tool_call_id.as_str()).copied().unwrap_or("tool");
-                out.push(format!("<tool_result name=\"{name}\">\n{content}\n</tool_result>"));
+                out.push(format!("<tool_result name=\"{name}\">\n{}\n</tool_result>", clip(content)));
             }
         }
     }
@@ -547,7 +532,7 @@ fn first_prompt(messages: &[Message], tools: &[Value]) -> String {
 fn next_prompt(new: &[Message], all: &[Message], tools: &[Value]) -> String {
     let mut p = render(new, all);
     if !tools.is_empty() && new.iter().any(|m| matches!(m, Message::Tool { .. })) {
-        p.push_str("\n\nContinue. Use DSML function calls for any more tools, or answer in plain text when done.");
+        p.push_str("\n\nContinue. Use an <action_calls> block for any more tools, or answer in plain text when done.");
     }
     p
 }
@@ -564,7 +549,7 @@ fn display(new: &[Message]) -> String {
 
 /// How much of the text can be shown yet: none of a tool call, nor what may be the start of one.
 fn shown_len(s: &str) -> usize {
-    let start = [s.find("<tool_call"), dsml_start().find(s).map(|m| m.start())].into_iter().flatten().min();
+    let start = [s.find("<tool_call"), calls_start().find(s).map(|m| m.start())].into_iter().flatten().min();
     if let Some(i) = start {
         return i;
     }
@@ -575,46 +560,51 @@ fn shown_len(s: &str) -> usize {
     }
 }
 
-// ---------- DSML, DeepSeek's own tool-call format ----------
+// ---------- tool calls as XML ----------
+//
+// The prompt asks for plain ASCII tags (`<action_calls>`, `<invoke>`, `<parameter>`). DeepSeek may still write its
+// native DSML form (`<｜DSML｜function_calls>` …), so the parser reads both.
 
-/// Where a DSML block starts: `<｜DSML｜function_calls>`, with full-width or plain bars.
-fn dsml_start() -> &'static regex::Regex {
+/// Where a block of tool calls starts: `<action_calls>`, or DSML with full-width or plain bars.
+fn calls_start() -> &'static regex::Regex {
     static R: OnceLock<regex::Regex> = OnceLock::new();
-    R.get_or_init(|| regex::Regex::new(r"<[|｜\s]*DSML").unwrap())
+    R.get_or_init(|| regex::Regex::new(r"<\s*action_calls\s*>|<[|｜\s]*DSML").unwrap())
 }
 
-/// Tool calls written as DSML, for the conversation so far.
-fn dsml(calls: &[ToolCall]) -> String {
-    let mut s = String::from("<｜DSML｜function_calls>\n");
+/// Tool calls written in the prompt's XML format, for the conversation so far.
+fn xml_calls(calls: &[ToolCall]) -> String {
+    let mut s = String::from("<action_calls>\n");
     for c in calls {
-        s.push_str(&format!("<｜DSML｜invoke name=\"{}\">\n", c.function.name));
+        s.push_str(&format!("<invoke name=\"{}\">\n", c.function.name));
         let args: Value = serde_json::from_str(&c.function.arguments).unwrap_or(json!({}));
         for (k, v) in args.as_object().into_iter().flatten() {
             match v {
-                Value::String(t) => s.push_str(&format!("<｜DSML｜parameter name=\"{k}\" string=\"true\">{t}</｜DSML｜parameter>\n")),
-                v => s.push_str(&format!("<｜DSML｜parameter name=\"{k}\" string=\"false\">{v}</｜DSML｜parameter>\n")),
+                Value::String(t) => s.push_str(&format!("<parameter name=\"{k}\" string=\"true\">{t}</parameter>\n")),
+                v => s.push_str(&format!("<parameter name=\"{k}\" string=\"false\">{v}</parameter>\n")),
             }
         }
-        s.push_str("</｜DSML｜invoke>\n");
+        s.push_str("</invoke>\n");
     }
-    s.push_str("</｜DSML｜function_calls>");
+    s.push_str("</action_calls>");
     s
 }
 
-/// Reads DSML tool calls: `string="true"` values are text as written, the rest JSON. Returns the text before the
-/// calls, and the calls.
+/// Reads XML (or DSML) tool calls: `string="true"` values are text as written, the rest JSON. Returns the text before
+/// the calls, and the calls.
 ///
-/// Each call runs to its `</｜DSML｜invoke>`. DeepSeek sometimes drops the `invoke name="…"` line (writing
-/// `function_calls` twice instead), so a call without a name goes to the one tool its parameters fit.
-fn dsml_calls(content: &str, tools: &[Value]) -> Option<(String, Vec<(String, Value)>)> {
+/// Each call runs to its `</invoke>`. DeepSeek sometimes drops the `invoke name="…"` line (writing the opening tag
+/// twice instead), so a call without a name goes to the one tool its parameters fit.
+fn parse_calls(content: &str, tools: &[Value]) -> Option<(String, Vec<(String, Value)>)> {
     static NAME: OnceLock<regex::Regex> = OnceLock::new();
     static END: OnceLock<regex::Regex> = OnceLock::new();
     static PARAM: OnceLock<regex::Regex> = OnceLock::new();
     const BAR: &str = r"[|｜\s]*";
-    let name = NAME.get_or_init(|| regex::Regex::new(&format!(r#"<{BAR}DSML{BAR}invoke\s+name\s*=\s*"([^"]+)"\s*>"#)).unwrap());
-    let end = END.get_or_init(|| regex::Regex::new(&format!(r"<\s*/{BAR}DSML{BAR}invoke\s*>")).unwrap());
-    let param = PARAM.get_or_init(|| regex::Regex::new(&format!(r#"(?s)<{BAR}DSML{BAR}parameter\s+name\s*=\s*"([^"]+)"(?:\s+string\s*=\s*"(true|false)")?\s*>(.*?)<\s*/{BAR}DSML{BAR}parameter\s*>"#)).unwrap());
-    let start = dsml_start().find(content)?.start();
+    // An optional DSML prefix, so `<invoke` and `<｜DSML｜invoke` both match.
+    const PRE: &str = r"(?:[|｜\s]*DSML)?[|｜\s]*";
+    let name = NAME.get_or_init(|| regex::Regex::new(&format!(r#"<{PRE}invoke\s+name\s*=\s*"([^"]+)"\s*>"#)).unwrap());
+    let end = END.get_or_init(|| regex::Regex::new(&format!(r"<\s*/{PRE}invoke\s*>")).unwrap());
+    let param = PARAM.get_or_init(|| regex::Regex::new(&format!(r#"(?s)<{PRE}parameter\s+name\s*=\s*"([^"]+)"(?:\s+string\s*=\s*"(true|false)")?\s*>(.*?)<\s*/(?:{BAR}DSML{BAR}(?:parameter)?|\s*parameter)\s*>"#)).unwrap());
+    let start = calls_start().find(content)?.start();
     let mut calls = vec![];
     for part in end.split(&content[start..]) {
         let args: serde_json::Map<String, Value> = param
@@ -666,13 +656,111 @@ enum Outcome {
     ChatMissing,
 }
 
+/// When the last answer finished streaming.
+static LAST_DONE: Mutex<Option<Instant>> = Mutex::new(None);
+/// The shortest and longest gap after an answer before the next request, in milliseconds.
+const AFTER_DONE_MS: (u64, u64) = (2_800, 5_200);
+
+/// Waits a random time between the shortest and longest wait the user set, so requests don't come at a steady rhythm.
+/// Stops early when the request is cancelled.
+fn pause(s: &Settings, cancel: &AtomicBool) -> Result<(), ApiError> {
+    let mut b = [0u8; 8];
+    let seed = if getrandom::fill(&mut b).is_ok() {
+        u64::from_le_bytes(b)
+    } else {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::from(d.subsec_nanos()))
+    };
+    let (min, max) = pacing_range(&s.pacing);
+    let span_ms = u64::from(max - min) * 1000;
+    let wait = Duration::from_millis(u64::from(min) * 1000 + seed % (span_ms + 1));
+    let mut until = Instant::now() + wait;
+    // Whatever the preset, the next request leaves at least 2.8-5.2 s after the last answer finished, so a fast tool
+    // loop doesn't run into DeepSeek's rate limit.
+    if let Some(done) = *LAST_DONE.lock().unwrap_or_else(|e| e.into_inner()) {
+        let gap = Duration::from_millis(AFTER_DONE_MS.0 + (seed >> 32) % (AFTER_DONE_MS.1 - AFTER_DONE_MS.0 + 1));
+        until = until.max(done + gap);
+    }
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ApiError::aborted());
+        }
+        if let Some(e) = shut_out() {
+            return Err(e);
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(left.min(Duration::from_millis(100)));
+    }
+}
+
 /// One request: sends the conversation and streams the answer, with tool calls read out of its text.
-pub fn chat(model: &str, messages: &[Message], tools: &[Value], on: &mut dyn FnMut(Delta), cancel: &AtomicBool) -> Result<StreamResult, ApiError> {
+// ---------- the daily session limit ----------
+
+/// How many Scout chats can use DeepSeek Web a day. chat.deepseek.com rate-limits accounts, and a coding agent's many
+/// requests reach that quickly, so after this Scout asks the user to stop for the day.
+pub const SESSIONS_PER_DAY: usize = 2;
+
+fn sessions_file() -> PathBuf {
+    crate::config::home().join("deepseek-web-sessions.json")
+}
+
+/// The chats counted today (UTC), by a hash of each one's first message.
+fn sessions_today() -> Vec<String> {
+    let v: Value = std::fs::read_to_string(sessions_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    if v.get("day").and_then(Value::as_str) != Some(crate::usage::today().as_str()) {
+        return Vec::new();
+    }
+    v.get("chats").and_then(Value::as_array).into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect()
+}
+
+/// Which chat this is: its first user message stays the same for the whole chat.
+fn session_key(messages: &[Message]) -> String {
+    let mut h = DefaultHasher::new();
+    if let Some(first) = messages.iter().find(|m| matches!(m, Message::User { .. })) {
+        serde_json::to_string(first).unwrap_or_default().hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// Counts this chat as one of today's sessions, or refuses it when the day's are used up. A chat already counted
+/// carries on.
+fn take_session(messages: &[Message]) -> Result<(), ApiError> {
+    let key = session_key(messages);
+    let mut chats = sessions_today();
+    if chats.contains(&key) {
+        return Ok(());
+    }
+    if chats.len() >= SESSIONS_PER_DAY {
+        return Err(ApiError::new(
+            format!(
+                "That's {SESSIONS_PER_DAY} DeepSeek Web sessions today, so it's time to stop for the day. DeepSeek's website limits how much one account can do, and Scout's requests use that up fast. Give the account a rest: have a few normal chats with DeepSeek on chat.deepseek.com, then come back tomorrow. You can keep going in today's DeepSeek Web chats, or pick another model."
+            ),
+            403,
+        ));
+    }
+    chats.push(key);
+    let body = json!({ "day": crate::usage::today(), "chats": chats });
+    let _ = std::fs::write(sessions_file(), body.to_string());
+    Ok(())
+}
+
+/// `main` is the chat's own request, which counts toward the day's sessions; sub-agents and compaction ride along on it.
+pub fn chat(model: &str, messages: &[Message], tools: &[Value], on: &mut dyn FnMut(Delta), cancel: &AtomicBool, main: bool) -> Result<StreamResult, ApiError> {
     let s = settings();
     if !s.enabled {
         return Err(ApiError::new("DeepSeek Web is off. Turn it on in Settings > Providers.", 400));
     }
+    if main {
+        take_session(messages)?;
+    }
     let _one = BUSY.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = shut_out() {
+        return Err(e);
+    }
+    hold();
+    pause(&s, cancel)?;
     let m = mode(model);
     let mut resume = continuing(messages);
     for _ in 0..2 {
@@ -683,13 +771,14 @@ pub fn chat(model: &str, messages: &[Message], tools: &[Value], on: &mut dyn FnM
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let job = json!({ "id": id, "prompt": prompt, "display": shown, "thinking": m.thinking, "search": m.search, "chat": chat });
         let mut out = StreamResult::default();
-        match run(&s, id, &job, &mut out, on, cancel)? {
+        match run(id, &job, &mut out, on, cancel)? {
             (Outcome::ChatMissing, _) if resume.is_some() => {
                 resume = None;
                 continue;
             }
             (Outcome::ChatMissing, _) => return Err(ApiError::new("DeepSeek didn't open a new chat.", 0)),
             (Outcome::Done, chat_id) => {
+                *LAST_DONE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 if let Some(c) = chat_id.or(chat) {
                     remember(&c, messages);
                 }
@@ -702,8 +791,8 @@ pub fn chat(model: &str, messages: &[Message], tools: &[Value], on: &mut dyn FnM
 
 fn finish(mut out: StreamResult, tools: &[Value], on: &mut dyn FnMut(Delta)) -> StreamResult {
     let streamed = shown_len(&out.content);
-    // DSML, which it's asked for, or else Scout's own <tool_call> blocks.
-    let found = dsml_calls(&out.content, tools).or_else(|| crate::tools::recover_calls(&out.content, &out.reasoning, tools));
+    // The XML calls it's asked for (or DSML), or else Scout's own <tool_call> blocks.
+    let found = parse_calls(&out.content, tools).or_else(|| crate::tools::recover_calls(&out.content, &out.reasoning, tools));
     if let Some((rest, calls)) = found {
         out.content = rest.trim().trim_end_matches("```xml").trim_end_matches("```").trim().to_string();
         let turn = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -724,7 +813,7 @@ fn finish(mut out: StreamResult, tools: &[Value], on: &mut dyn FnMut(Delta)) -> 
 }
 
 /// Sends a job and collects its answer. Returns how it ended and the DeepSeek chat it's in.
-fn run(s: &Settings, id: u64, job: &Value, out: &mut StreamResult, on: &mut dyn FnMut(Delta), cancel: &AtomicBool) -> Result<(Outcome, Option<String>), ApiError> {
+fn run(id: u64, job: &Value, out: &mut StreamResult, on: &mut dyn FnMut(Delta), cancel: &AtomicBool) -> Result<(Outcome, Option<String>), ApiError> {
     let (tx, rx): (Sender<Value>, Receiver<Value>) = channel();
     *CURRENT.lock().unwrap() = Some((id, tx));
     struct Clear;
@@ -734,60 +823,30 @@ fn run(s: &Settings, id: u64, job: &Value, out: &mut StreamResult, on: &mut dyn 
         }
     }
     let _clear = Clear;
-    let w = if s.via == "extension" {
+    {
         let ext = EXT.lock().unwrap();
         if !ext.seen.is_some_and(|t| t.elapsed() < Duration::from_secs(25)) {
-            return Err(ApiError::new("The Scout for DeepSeek extension isn't connected. Open chat.deepseek.com in the browser that has it, or switch DeepSeek Web to Scout's window in Settings > Providers.", 503));
+            return Err(ApiError::new("The Scout for DeepSeek extension isn't connected. Open chat.deepseek.com in the browser that has it, and keep the tab open.", 503));
         }
         if ext.status.is_null() {
             return Err(ApiError::new("Open chat.deepseek.com in the browser that has the Scout extension, and sign in.", 503));
         }
-        drop(ext);
-        command(json!({ "type": "start", "job": job }));
-        None
-    } else {
-        let w = window(false).map_err(|e| ApiError::new(e, 0))?;
-        let ready = Instant::now() + Duration::from_secs(40);
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(ApiError::aborted());
-            }
-            if let Some(st) = drain(&w) {
-                if st.get("signIn").and_then(Value::as_bool) == Some(true) {
-                    return Err(signin());
-                }
-                if st.get("busy").and_then(Value::as_bool) != Some(true) {
-                    break;
-                }
-                let _ = w.eval("window.__scoutDS && window.__scoutDS.stop()");
-            }
-            if Instant::now() > ready {
-                return Err(ApiError::new("DeepSeek's page didn't load. Check your connection, or open it from Settings > Providers > DeepSeek Web.", 0));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-        w.eval(format!("window.__scoutDS.start({job})")).map_err(|e| ApiError::new(e.to_string(), 0))?;
-        Some(w)
-    };
-    let stop = || match &w {
-        Some(w) => {
-            let _ = w.eval("window.__scoutDS && window.__scoutDS.stop()");
-        }
-        None => command(json!({ "type": "stop" })),
-    };
+    }
+    command(json!({ "type": "start", "job": job }));
+    let stop = || command(json!({ "type": "stop" }));
     let mut chat = None;
     let mut confirmed = false;
     let mut last = Instant::now();
     let mut shown = 0;
+    // While a CAPTCHA waits for the user, the request doesn't time out.
+    let mut challenge = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
             stop();
             return Err(ApiError::aborted());
         }
-        if let Some(w) = &w {
-            for e in drain(w).and_then(|v| v.get("events").and_then(Value::as_array).cloned()).into_iter().flatten() {
-                deliver(e);
-            }
+        if challenge {
+            last = Instant::now();
         }
         let event = match rx.recv_timeout(Duration::from_millis(120)) {
             Ok(e) => e,
@@ -816,10 +875,17 @@ fn run(s: &Settings, id: u64, job: &Value, out: &mut StreamResult, on: &mut dyn 
             }
             "chat" => chat = Some(text.to_string()),
             "sent" => confirmed = true,
+            // hCaptcha wants a person. Scout pings them, and waits while they solve it on the page.
+            "challenge" => {
+                challenge = true;
+                crate::notify::toast("Scout", "DeepSeek needs you to solve a CAPTCHA. Solve it on the chat.deepseek.com tab in your browser.");
+            }
+            "challenge-clear" => challenge = false,
             // An answer to the short line alone, without Scout's instructions and tools, would be no use.
             "done" if !confirmed => return Err(ApiError::new("DeepSeek Web: DeepSeek answered without Scout's prompt, so Scout didn't use the answer. The site may have changed; check for a Scout update.", 0)),
             "done" => return Ok((Outcome::Done, chat)),
             "error" if text == "chat-missing" => return Ok((Outcome::ChatMissing, None)),
+            "error" if text == "override" => return Err(shutdown_error("override")),
             "error" if text == "signin" => return Err(signin()),
             "error" => return Err(ApiError::new(format!("DeepSeek Web: {text}"), if text.contains("rate") || text.contains("busy") { 429 } else { 0 })),
             _ => {}
@@ -828,14 +894,7 @@ fn run(s: &Settings, id: u64, job: &Value, out: &mut StreamResult, on: &mut dyn 
 }
 
 fn signin() -> ApiError {
-    ApiError::new(
-        if settings().via == "extension" {
-            "DeepSeek Web isn't signed in. Sign in on chat.deepseek.com in the browser that has the Scout extension."
-        } else {
-            "DeepSeek Web isn't signed in. Open Settings > Providers > DeepSeek Web and sign in."
-        },
-        401,
-    )
+    ApiError::new("DeepSeek Web isn't signed in. Sign in on chat.deepseek.com in the browser that has the Scout extension.", 401)
 }
 
 #[cfg(test)]
@@ -871,16 +930,49 @@ mod tests {
     }
 
     #[test]
+    fn xml_calls_are_read() {
+        let text = "On it.\n<action_calls>\n<invoke name=\"view\">\n<parameter name=\"paths\" string=\"false\">[\"README.md\"]</parameter>\n</invoke>\n<invoke name=\"bash\">\n<parameter name=\"command\" string=\"true\">echo \"a < b\"</parameter>\n</invoke>\n</action_calls>";
+        let (rest, calls) = parse_calls(text, &[]).unwrap();
+        assert_eq!(rest, "On it.");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1["paths"], json!(["README.md"]));
+        assert_eq!(calls[1].1["command"], "echo \"a < b\"");
+        assert_eq!(shown_len(text), "On it.\n".len());
+    }
+
+    #[test]
+    fn long_tool_results_and_mcp_catalogs_are_cut() {
+        let long = "x".repeat(MAX_TOOL_RESULT * 3);
+        assert!(clip(&long).chars().count() < MAX_TOOL_RESULT + 100);
+        assert_eq!(clip("short"), "short");
+        let mut tools: Vec<Value> = (0..MAX_MCP_TOOLS + 5).map(|i| json!({"type":"function","function":{"name": format!("mcp__s__t{i}"), "description": "d".repeat(2000)}})).collect();
+        tools.push(json!({"type":"function","function":{"name":"bash","description":"run"}}));
+        let list = tool_list(&tools);
+        assert_eq!(list.lines().filter(|l| l.contains("mcp__")).count(), MAX_MCP_TOOLS);
+        assert!(list.contains("\"bash\"") && list.contains("5 more MCP tools"));
+        assert!(list.lines().all(|l| l.len() < 1000));
+    }
+
+    #[test]
     fn dsml_calls_are_read() {
         let text = "Let me look.\n<｜DSML｜function_calls>\n<｜DSML｜invoke name=\"view\">\n<｜DSML｜parameter name=\"paths\" string=\"false\">[\"README.md\", \"Cargo.toml\"]</｜DSML｜parameter>\n</｜DSML｜invoke>\n<｜DSML｜invoke name=\"list_dir\">\n<｜DSML｜parameter name=\"path\" string=\"true\">src</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜function_calls>";
-        let (rest, calls) = dsml_calls(text, &[]).unwrap();
+        let (rest, calls) = parse_calls(text, &[]).unwrap();
         assert_eq!(rest, "Let me look.");
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1], ("list_dir".to_string(), json!({"path": "src"})));
         assert_eq!(shown_len(text), "Let me look.\n".len());
         // Plain bars, as some outputs have them.
         let plain = "<|DSML|function_calls><|DSML|invoke name=\"bash\"><|DSML|parameter name=\"command\" string=\"true\">npm test</|DSML|parameter></|DSML|invoke></|DSML|function_calls>";
-        assert_eq!(dsml_calls(plain, &[]).unwrap().1[0].1["command"], "npm test");
+        assert_eq!(parse_calls(plain, &[]).unwrap().1[0].1["command"], "npm test");
+    }
+
+    #[test]
+    fn a_parameter_closed_without_its_word_is_still_read() {
+        // As DeepSeek wrote it: the closing tag is `</｜DSML｜｜>`, with no `parameter` in it.
+        let text = "<｜DSML｜function_calls><｜DSML｜invoke name=\"bash\"><｜DSML｜parameter name=\"command\" string=\"true\">cat src/deepseek/extension/manifest.json</｜DSML｜｜></｜DSML｜invoke></｜DSML｜function_calls>";
+        let (_, calls) = parse_calls(text, &[]).unwrap();
+        assert_eq!(calls[0].0, "bash");
+        assert_eq!(calls[0].1["command"], "cat src/deepseek/extension/manifest.json");
     }
 
     #[test]
@@ -888,16 +980,16 @@ mod tests {
         // As DeepSeek wrote it: function_calls twice, and no invoke name.
         let text = "<｜DSML｜function_calls><｜DSML｜function_calls><｜DSML｜parameter name=\"command\" string=\"true\">git diff --stat</｜DSML｜parameter><｜DSML｜parameter name=\"description\" string=\"true\">Summarize in-progress changes</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜function_calls>";
         let tools = crate::tools::specs(None, crate::tools::EditTool::StrReplace);
-        let (_, calls) = dsml_calls(text, &tools).unwrap();
+        let (_, calls) = parse_calls(text, &tools).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "bash");
         assert_eq!(calls[0].1["command"], "git diff --stat");
     }
 
     #[test]
-    fn earlier_calls_are_written_as_dsml_and_read_back() {
+    fn earlier_calls_are_written_as_xml_and_read_back() {
         let call = ToolCall { id: "1".into(), kind: "function".into(), extra_content: None, function: FunctionCall { name: "grep".into(), arguments: json!({"pattern": "fn main", "limit": 5}).to_string() } };
-        let (_, calls) = dsml_calls(&dsml(&[call]), &[]).unwrap();
+        let (_, calls) = parse_calls(&xml_calls(&[call]), &[]).unwrap();
         assert_eq!(calls[0].0, "grep");
         assert_eq!(calls[0].1["pattern"], "fn main");
         assert_eq!(calls[0].1["limit"], 5);

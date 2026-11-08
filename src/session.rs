@@ -99,7 +99,33 @@ pub fn load_session(id: &str) -> Option<Session> {
 }
 
 pub fn delete_session(id: &str) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(checkpoints_file(id));
     std::fs::remove_file(dir().join(format!("{id}.json")))
+}
+
+/// Kept apart from the chats, since they hold whole files and the sidebar reads every chat.
+fn checkpoints_file(id: &str) -> PathBuf {
+    home().join("checkpoints").join(format!("{id}.json"))
+}
+
+/// What a chat's turns changed, so it can be rewound after it's reopened. Removed when there's nothing to keep.
+pub fn save_checkpoints<T: Serialize>(id: &str, cps: &[T]) {
+    let file = checkpoints_file(id);
+    if cps.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return;
+    }
+    let _ = std::fs::create_dir_all(file.parent().unwrap());
+    let tmp = file.with_extension("json.tmp");
+    if let Ok(text) = serde_json::to_vec(cps) {
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &file);
+        }
+    }
+}
+
+pub fn load_checkpoints<T: serde::de::DeserializeOwned>(id: &str) -> Option<Vec<T>> {
+    serde_json::from_slice(&std::fs::read(checkpoints_file(id)).ok()?).ok()
 }
 
 /// Ids of the saved chats whose title or text contains `q`, ignoring case. Reads every file, so run it off the UI

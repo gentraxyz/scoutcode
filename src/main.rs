@@ -2,8 +2,12 @@
 
 mod acp;
 mod agent;
+mod analytics;
 mod attach;
 mod claude;
+#[cfg(windows)]
+mod claude_native;
+mod claude_setup;
 mod codex;
 mod api;
 mod bridge;
@@ -91,7 +95,7 @@ fn main() {
             let core = Arc::new(Mutex::new(core::Core::new(app.handle().clone(), tx, waker::Waker::new(wake_tx))));
             app.manage(core.clone());
             std::thread::Builder::new().name("scout-pump".into()).spawn(move || core::pump(core, rx, wake_rx))?;
-            deepseek::init(app.handle().clone());
+            deepseek::init();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Scout")
                 .inner_size(1180.0, 780.0)
@@ -112,19 +116,8 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // DeepSeek Web's window keeps its page (and sign-in) when closed, so it only hides. It goes when Scout does.
-            if window.label() == "deepseek" {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-                return;
-            }
-            // Scout ends with its main window, even with DeepSeek's window hidden, so no copy stays running unseen.
+            // Scout ends with its main window, so no copy stays running unseen.
             if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
-                if let Some(w) = window.app_handle().get_webview_window("deepseek") {
-                    let _ = w.destroy();
-                }
                 window.app_handle().exit(0);
             }
             // Files dropped anywhere on the window are attached to the message being typed.

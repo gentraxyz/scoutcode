@@ -122,7 +122,7 @@ export type View = {
   cfg: {
     loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; games: Games; music: Music;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; games: Games; music: Music;
   };
   mode: string;
   model: { id: string; provider: string; key: string; short: string };
@@ -155,7 +155,7 @@ export type View = {
   };
   skills: { name: string; about: string; source: string | null; dir: string }[];
   link: {
-    on: boolean; online: boolean; cwd: string; status: string; mode: string | null; since: number | null; running: string | null;
+    on: boolean; online: boolean; cwd: string; status: string; mode: string | null; wanted: boolean; since: number | null; running: string | null;
     log: LinkCall[]; edits: LinkEdit[]; chatbots: { name: string; seen: number | null }[]; permission: Permission | null;
   };
   scoutMote: { on: boolean; running: boolean; status: string; online: boolean; name: string };

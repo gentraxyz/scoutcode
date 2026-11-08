@@ -1,7 +1,9 @@
 # Builds Scout Desktop and installs it for the current user, with a Start menu entry so Windows search finds it.
-#   powershell -ExecutionPolicy Bypass -File install.ps1            install or update
+#   powershell -ExecutionPolicy Bypass -File install.ps1            install or update (the `release` build users get)
+#   powershell -ExecutionPolicy Bypass -File install.ps1 -Quick     the `local` profile: no LTO, quick rebuilds (its first
+#                                                                   build needs a big page file: about 8 GB of free memory)
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
-param([switch]$Uninstall, [switch]$Desktop)
+param([switch]$Uninstall, [switch]$Desktop, [switch]$Quick)
 $ErrorActionPreference = 'Stop'
 
 $dest = Join-Path $env:LOCALAPPDATA 'Programs\Scout'
@@ -23,12 +25,17 @@ if ($Uninstall) {
 
 Push-Location $PSScriptRoot
 try {
-    # The web UI goes into the exe, so it's built first.
-    npm --prefix ui ci
-    if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+    # The web UI goes into the exe, so it's built first. Its packages are only reinstalled when the lock file changed.
+    $lock = 'ui\package-lock.json'
+    $installed = 'ui\node_modules\.package-lock.json'
+    if (-not (Test-Path $installed) -or (Get-Item $lock).LastWriteTime -gt (Get-Item $installed).LastWriteTime) {
+        npm --prefix ui ci
+        if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+    }
     npm --prefix ui run build
     if ($LASTEXITCODE -ne 0) { throw 'the UI build failed' }
-    cargo build --release
+    $cargoProfile = if ($Quick) { 'local' } else { 'release' }
+    cargo build --profile $cargoProfile
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 } finally { Pop-Location }
 
@@ -37,7 +44,7 @@ Get-ChildItem $dest -Filter 'Scout.exe.*.old' -ErrorAction SilentlyContinue | Re
 if (Test-Path $exe) {
     Move-Item $exe "$exe.$([guid]::NewGuid().ToString('N').Substring(0, 8)).old" -Force -ErrorAction SilentlyContinue
 }
-Copy-Item (Join-Path $PSScriptRoot 'target\release\scout-desktop.exe') $exe -Force
+Copy-Item (Join-Path $PSScriptRoot "target\$cargoProfile\scout-desktop.exe") $exe -Force
 Copy-Item $PSCommandPath (Join-Path $dest 'install.ps1') -Force
 
 $shell = New-Object -ComObject WScript.Shell

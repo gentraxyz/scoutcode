@@ -282,6 +282,9 @@ pub struct Core {
     link_edits: Vec<crate::mcp::LinkEdit>,
     link_chatbots: Vec<crate::mcp::Chatbot>,
     link_permission: Option<PendingPermission>,
+    /// The link ended by itself (another computer took it, or the sign-in was refused): it stays off until turned on
+    /// again or the next sign-in, so two computers don't keep taking it from each other.
+    link_held: bool,
     usage: Usage,
     voice: Voice,
     updater: crate::update::Updater,
@@ -674,6 +677,7 @@ impl Core {
             cfg.mode = "default".into();
         }
         let hooks = Hooks { chat: None, tx, ctx: waker.clone() };
+        crate::analytics::init(cfg.usage_analytics, cfg.username.clone());
         let shared = Arc::new(Shared {
             mode: Mutex::new(cfg.mode.clone()),
             model: Mutex::new(cfg.model.clone()),
@@ -728,6 +732,7 @@ impl Core {
             link_edits: vec![],
             link_chatbots: vec![],
             link_permission: None,
+            link_held: false,
             usage: Usage::default(),
             voice: Voice::Idle,
             updater,
@@ -747,8 +752,10 @@ impl Core {
             core.set_models(assemble(&model_sources(&core.cfg), &cached));
         }
         core.fetch_models();
+        crate::analytics::track("app opened", json!({ "provider": core.cfg.provider }));
         core.check_updated();
         core.start_remote();
+        core.sync_link();
         // `scout-desktop [folder] --resume <id>` reopens a saved conversation.
         let args: Vec<String> = std::env::args().collect();
         if let Some(s) = args.iter().position(|a| a == "--resume").and_then(|i| args.get(i + 1)).and_then(|id| session::load_session(id)) {
@@ -1142,10 +1149,21 @@ impl Core {
                         None => self.link_edits.push(e.clone()),
                     }
                 }
+                // Its chat is saved as it goes: show it in the sidebar, and on screen if it's the one open there.
+                if let Some(id) = &c.chat {
+                    self.refresh_sessions();
+                    if self.chat.session_id == *id && !self.chat.running {
+                        if let Some(s) = session::load_session(id) {
+                            self.open_session(s);
+                        }
+                    }
+                }
                 self.link_log.push(c);
                 if self.link_log.len() > 20 {
                     self.link_log.remove(0);
                 }
+                // A project switch waits for the call in progress; it's done now.
+                self.sync_link();
             }
             Ev::Link(crate::mcp::LinkEvent::Chatbots(b)) => self.link_chatbots = b,
             Ev::Remote(crate::remote::RemoteEvent::Status(s, online)) => {
@@ -1155,13 +1173,20 @@ impl Core {
             Ev::Remote(crate::remote::RemoteEvent::Command(c)) => self.remote_command(&c),
             Ev::Remote(crate::remote::RemoteEvent::Ended(s)) => self.stop_remote(&s),
             Ev::Link(crate::mcp::LinkEvent::Ask(req, reply)) => {
-                self.alert("A chatbot wants to use Scout", req.label.lines().next().unwrap_or(""));
+                let what = req.label.lines().next().unwrap_or("").to_string();
+                self.alert("A chatbot wants to use Scout", &what);
+                // The person is in their browser with the chatbot, not here: always say so, whatever the toast setting.
+                let in_front = self.handle.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false);
+                if !in_front && !self.cfg.notify_toast.unwrap_or(false) {
+                    crate::notify::toast("A chatbot is waiting for your OK in Scout", &what.chars().take(200).collect::<String>());
+                }
                 self.link_permission = Some(PendingPermission { req, reply });
             }
             Ev::Link(crate::mcp::LinkEvent::Ended(s)) => {
                 self.link = None;
                 self.link_permission = None;
                 self.link_status = s;
+                self.link_held = true;
             }
             Ev::Voice(crate::voice::Update::Busy(s)) => self.voice = Voice::Busy(s),
             Ev::Voice(crate::voice::Update::Done(r)) => {
@@ -1212,6 +1237,7 @@ impl Core {
     fn set_user(&mut self, user: Option<String>) {
         if self.cfg.username != user {
             config::save_one("username", json!(user));
+            crate::analytics::set_user(user.clone());
             self.cfg.username = user;
         }
     }
@@ -1247,6 +1273,9 @@ impl Core {
         // ScoutMote goes with the account, so it starts again on the new one.
         self.stop_remote("");
         self.start_remote();
+        // So does the chatbot link: off without an account, on again with one.
+        self.link_held = false;
+        self.sync_link();
         if self.cfg.only_kilo() && self.chat.provider == "scoutcode" {
             self.choose_model(config::KILO_DEFAULT_MODEL, "kilo");
         }
@@ -2314,6 +2343,7 @@ impl Core {
             .name("scout-agent".into())
             .spawn(move || {
                 let r = work(&mut agent, &h);
+                crate::deepseek::release();
                 h.send(Ev::Finished(Box::new(agent), r));
             })
             .expect("spawn agent thread");
@@ -2382,6 +2412,8 @@ impl Core {
         self.chat_epoch += 1;
         let cwd = self.chat.cwd.clone();
         self.enter_project(&cwd);
+        // Chatbots work in the project that's open.
+        self.sync_link();
         self.update_discord();
         self.files_epoch += 1;
         self.focus_epoch += 1;
@@ -2594,6 +2626,7 @@ impl Core {
         }
         config::save_one("desktopLastVersion", json!(crate::update::VERSION));
         let Some(last) = last.filter(|l| crate::update::is_newer(crate::update::VERSION, l)) else { return };
+        crate::analytics::track("app updated", json!({ "from_version": last }));
         let h = self.hooks.clone();
         std::thread::spawn(move || {
             if let Ok(notes) = crate::update::notes_since(&last) {
@@ -2606,6 +2639,21 @@ impl Core {
 
     pub fn dismiss_whats_new(&mut self) {
         self.whats_new.clear();
+    }
+
+    /// Turns anonymous usage analytics on or off. Turning it off is the last event sent.
+    pub fn set_analytics(&mut self, on: bool) {
+        if !on {
+            crate::analytics::track("analytics turned off", json!({}));
+        }
+        self.cfg.usage_analytics = on;
+        config::save_one("usageAnalytics", json!(on));
+        crate::analytics::set_enabled(on);
+    }
+
+    /// Counts a message the user sent: only where it ran, never what it said.
+    pub fn track_sent(&self, steer: bool) {
+        crate::analytics::track("message sent", json!({ "provider": self.chat.provider, "model": self.current_key(), "steer": steer }));
     }
 
     pub fn set_auto_update(&mut self, on: bool) {
@@ -2767,21 +2815,55 @@ impl Core {
         self.link_status = status.to_string();
     }
 
-    /// Turns the link for web chatbots on or off.
+    /// Turns the link for web chatbots on or off, and remembers it for the next launch.
     pub fn toggle_link(&mut self, mode: &str) {
-        if self.link.is_some() {
+        let on = self.link.is_none();
+        self.cfg.chatbot_link = on;
+        config::save_one("chatbotLink", json!(on));
+        if on && !mode.is_empty() {
+            self.cfg.chatbot_link_mode = mode.to_string();
+            config::save_one("chatbotLinkMode", json!(mode));
+        }
+        // Turning it on by hand also takes it back from another computer that had it.
+        self.link_held = false;
+        if !on {
             self.stop_link("Off.");
+        }
+        self.sync_link();
+    }
+
+    /// Brings the link in line with what it should be: on while it's wanted, the account is signed in and a folder is
+    /// open, for the folder that's open. Called at launch, on sign-in and on every change of folder, so chatbots keep
+    /// working through restarts, updates and project switches without anyone turning it on again.
+    fn sync_link(&mut self) {
+        let want = self.cfg.chatbot_link && !self.link_held && self.cfg.api_key.is_some();
+        if !want {
+            if self.link.is_some() && self.cfg.api_key.is_none() {
+                self.stop_link("Off until you sign in.");
+            }
             return;
         }
-        if self.cfg.api_key.is_none() || self.chat.cwd.is_empty() {
+        // With no folder open, a running link keeps the one it has.
+        if self.chat.cwd.is_empty() {
             return;
+        }
+        if let Some(l) = &self.link {
+            if session::same_dir(&l.cwd, &self.chat.cwd) {
+                return;
+            }
+            // Another project: move the link there, but not in the middle of a call, which would lose its result.
+            // It moves once the call is done (see Ev::Link).
+            if self.link_running.is_some() || self.link_permission.is_some() {
+                return;
+            }
+            self.stop_link("Moving to the open project…");
         }
         let h = self.hooks.clone();
         self.link_log.clear();
         self.link_edits.clear();
         self.link_since = session::now_ms();
         self.link_status = "Connecting…".into();
-        self.link = Some(crate::mcp::start_link(&self.cfg, &self.chat.cwd, mode, move |e| h.send(Ev::Link(e))));
+        self.link = Some(crate::mcp::start_link(&self.cfg, &self.chat.cwd, &self.cfg.chatbot_link_mode, move |e| h.send(Ev::Link(e))));
     }
 
     // ---------- ScoutMote: the website drives this Scout ----------
@@ -3095,6 +3177,7 @@ impl Core {
                 "discordPresence": cfg.discord_presence,
                 "discordProject": cfg.discord_project,
                 "autoUpdate": cfg.auto_update,
+                "usageAnalytics": cfg.usage_analytics,
                 "autoCompactTokens": cfg.auto_compact_tokens,
                 "fallbacks": cfg.fallbacks,
                 "agentRouters": cfg.agent_routers,
@@ -3158,7 +3241,8 @@ impl Core {
                 "cwd": self.link.as_ref().map(|l| l.cwd.clone()).unwrap_or_else(|| self.chat.cwd.clone()),
                 "status": self.link_status,
                 "online": self.link.is_some() && self.link_online,
-                "mode": self.link.as_ref().map(|l| l.mode()),
+                "mode": self.link.as_ref().map(|l| l.mode()).unwrap_or_else(|| self.cfg.chatbot_link_mode.clone()),
+                "wanted": self.cfg.chatbot_link,
                 "since": self.link.as_ref().map(|_| self.link_since),
                 "running": self.link_running,
                 "log": self.link_log.iter().map(|c| json!({
@@ -3344,6 +3428,9 @@ mod tests {
             team: None,
             scout_mote: false,
             scout_mote_id: None,
+            chatbot_link: false,
+            chatbot_link_mode: "default".into(),
+            usage_analytics: false,
             agent_routers: Default::default(),
         };
 

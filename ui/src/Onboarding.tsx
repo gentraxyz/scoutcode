@@ -17,8 +17,10 @@ import {
 } from './Accounts';
 import { isFull, replyLanguageFor, setUiLanguage, useTranslation, SUPPORTED_LANGUAGES, type TranslationKey } from './i18n';
 import { ScoutLogo, LOGOS, logoSvg } from './logo';
+import { WEB_BOTS, type WebBot } from './webbots';
 import { core, ui, useCore, useView } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
+import { ClaudeSetup } from './ClaudeSetup';
 import { WelcomeIntro } from './WelcomeIntro';
 import { CopyButton, Icon, Link, SectionLabel, Spinner, Toggle } from './widgets';
 import mcpGuidePlaceholder from '../../assets/mcp-guide-placeholder.png';
@@ -104,6 +106,7 @@ const PROVIDERS: Provider[] = [
   { id: 'openrouter', name: 'OpenRouter', group: 'login', tag: 'free', linked: (c) => c.openrouterKeys.length > 0 },
   { id: 'nvidia', name: 'NVIDIA NIM', group: 'login', tag: 'free', linked: (c) => !!c.nvidiaKey },
   { id: 'google', name: 'Google AI Studio', group: 'login', tag: 'free', linked: additional('google') },
+  { id: 'cohere', name: 'Cohere', group: 'login', tag: 'free', linked: additional('cohere') },
   { id: 'hermes', name: 'Hermes', group: 'login', tag: 'free', linked: (c) => c.hermesSignedIn || !!c.hermesKey },
   { id: 'claude', name: 'Claude Code', group: 'setup', tag: 'paid', linked: (c) => c.claude },
   { id: 'codex', name: 'Codex', group: 'setup', tag: 'paid', linked: (c) => c.codex },
@@ -115,77 +118,6 @@ const PROVIDERS: Provider[] = [
 
 const GROUPS: [Group, string][] = [['open', 'No login'], ['login', 'Login'], ['setup', 'Login with setup']];
 
-/** External chatbots that can use Scout's tools here through the MCP link. */
-interface WebBot {
-  id: string;
-  name: string;
-  logo: string;
-  url?: string;
-  aliases: string[];
-  steps: { title: string; detail: string; imageCaption: string }[];
-}
-
-const WEB_BOTS: WebBot[] = [
-  {
-    id: 'chatgpt',
-    name: 'ChatGPT',
-    logo: 'codex',
-    url: 'https://chatgpt.com',
-    aliases: ['chatgpt', 'openai'],
-    steps: [
-      { title: 'Enable Developer mode in ChatGPT', detail: 'Open Settings → Apps & Connectors → Advanced settings, and turn on Developer mode.', imageCaption: 'ChatGPT → Settings → Apps & Connectors' },
-      { title: 'Create a custom MCP connector', detail: 'Return to Apps & Connectors, click Create, and paste your Scout MCP address below.', imageCaption: 'Paste the Scout MCP URL into the connector dialog' },
-      { title: 'Sign in and approve Scout', detail: 'Complete the ScoutCode sign-in prompt in ChatGPT, then ask it to read or edit files in your project.', imageCaption: 'Approve ScoutCode OAuth in your browser' },
-    ],
-  },
-  {
-    id: 'gemini',
-    name: 'Gemini',
-    logo: 'gemini',
-    url: 'https://gemini.google.com',
-    aliases: ['gemini', 'google'],
-    steps: [
-      { title: 'Open Gemini connector settings', detail: 'In Gemini, open Extensions / Connectors and choose to add a custom remote MCP server.', imageCaption: 'Gemini → Extensions / Custom MCP connector' },
-      { title: 'Paste your Scout MCP address', detail: 'Name the connector Scout and paste the MCP endpoint URL shown below.', imageCaption: 'Add Scout MCP server URL' },
-      { title: 'Sign in and allow access', detail: 'Sign in with your ScoutCode account when prompted so Gemini can run tools here.', imageCaption: 'Authorize Gemini to use Scout' },
-    ],
-  },
-  {
-    id: 'grok-web',
-    name: 'Grok',
-    logo: 'grok',
-    url: 'https://grok.com',
-    aliases: ['grok', 'xai'],
-    steps: [
-      { title: 'Open Grok integrations', detail: 'In Grok, open Settings → Integrations / Connectors and add a custom MCP server.', imageCaption: 'Grok → Settings → Custom connector' },
-      { title: 'Paste your Scout MCP address', detail: 'Enter Scout as the name and paste the MCP endpoint URL below.', imageCaption: 'Configure Scout MCP endpoint in Grok' },
-      { title: 'Sign in and allow access', detail: 'Approve the ScoutCode sign-in prompt and start chatting with your local project.', imageCaption: 'Confirm ScoutCode access' },
-    ],
-  },
-  {
-    id: 'claude-web',
-    name: 'Claude',
-    logo: 'claude',
-    url: 'https://claude.ai',
-    aliases: ['claude', 'anthropic'],
-    steps: [
-      { title: 'Open Claude Connectors', detail: 'In claude.ai, open Settings → Connectors and click Add custom connector.', imageCaption: 'claude.ai → Settings → Connectors' },
-      { title: 'Add your Scout MCP URL', detail: 'Name it Scout, paste the MCP address below, and click Add.', imageCaption: 'Add custom connector modal in Claude' },
-      { title: 'Connect your ScoutCode account', detail: 'Click Connect next to Scout, sign in to ScoutCode, and allow access to your workspace.', imageCaption: 'Authorize Claude connector with ScoutCode' },
-    ],
-  },
-  {
-    id: 'any',
-    name: 'Any chatbot',
-    logo: 'mcp',
-    aliases: [],
-    steps: [
-      { title: 'Find custom MCP / connector settings', detail: 'Open your chatbot or client settings where remote MCP servers or custom connectors are added.', imageCaption: 'Custom MCP server settings in your client' },
-      { title: 'Add the Scout MCP endpoint', detail: 'Create a new connector and paste the Scout MCP URL below.', imageCaption: 'Enter the remote MCP server URL' },
-      { title: 'Sign in when prompted', detail: 'Sign in with your ScoutCode account over OAuth. For local apps like Cursor or Claude Desktop, see Settings → Chatbots.', imageCaption: 'Complete OAuth sign-in to link your project' },
-    ],
-  },
-];
 
 function TagPill({ tag }: { tag: Tag }) {
   return <span className={`ob-tag ${tag}`}>{tag === 'free' ? 'Free' : 'Paid'}</span>;
@@ -288,6 +220,9 @@ function Setup({ p, linked }: { p: Provider; linked: boolean }) {
     case 'google':
       if (linked) return done('Using your Google AI Studio key.');
       return <><div className="small dim">{note('google')}</div><AdditionalKey id="google" /></>;
+    case 'cohere':
+      if (linked) return done('Using your Cohere key.');
+      return <><div className="small dim">{note('cohere')}</div><AdditionalKey id="cohere" /></>;
     case 'hermes':
       if (linked) return done(cfg.hermesSignedIn ? 'Signed in to Nous Portal.' : 'Using your Nous Portal key.');
       return <><div className="small dim">{HERMES_NOTE}</div><HermesEntry /></>;
@@ -376,6 +311,8 @@ function BrowserSetup({ b }: { b: WebBot }) {
           </button>
         )}
       </div>
+
+      {(b.id === 'claude-web' || b.id === 'gemini') && <ClaudeSetup address={address} disabled={!cfg.hasKey} bot={b.id === 'gemini' ? 'gemini' : 'claude'} />}
 
       <ol className="ob-steps-list">
         {b.steps.map((step, i) => (

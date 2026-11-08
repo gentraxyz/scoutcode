@@ -678,12 +678,36 @@ fn additional_models(a: &crate::config::AdditionalProvider, keyed: bool, body: &
 /// The models of a linked additional provider.
 pub fn list_additional(cfg: &Config, a: &crate::config::AdditionalProvider) -> Result<Vec<ModelInfo>, ApiError> {
     let c = cfg.for_provider(a.id);
-    let res = auth(http().get(&format!("{}/models", c.base_url)), &c)?.call().map_err(transport)?;
+    let cohere = a.id == "cohere";
+    let url = if cohere { crate::config::COHERE_MODELS_URL.to_string() } else { format!("{}/models", c.base_url) };
+    let res = auth(http().get(&url), &c)?.call().map_err(transport)?;
     if !res.status().is_success() {
         return Err(error_from(res));
     }
     let body: Value = res.into_body().read_json().map_err(transport)?;
+    let body = if cohere { cohere_listing(&body) } else { body };
     Ok(additional_models(a, c.api_key.is_some(), &body))
+}
+
+/// Cohere's own model list, `{"models": [{"name", "features", "context_length"}]}`, as an OpenAI-style one. Models without
+/// tool use can't run Scout, so they're left out.
+fn cohere_listing(body: &Value) -> Value {
+    let data: Vec<Value> = body
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| {
+                    let features: Vec<&str> = m.get("features").and_then(Value::as_array).map(|f| f.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                    if !features.iter().any(|f| f.contains("tool")) {
+                        return None;
+                    }
+                    Some(json!({ "id": m.get("name")?, "context_length": m.get("context_length"), "tools": true, "vision": features.contains(&"vision") }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({ "data": data })
 }
 
 /// The entries of Nous Portal's catalog that can run Scout, with the free ones first.
@@ -818,6 +842,21 @@ mod tests {
         assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["google/gemini-2.5-flash"]);
         assert_eq!(listed[0].request_id("google"), "gemini-2.5-flash");
         assert_eq!(listed[0].request_id("scoutcode"), "google/gemini-2.5-flash");
+    }
+
+    #[test]
+    fn cohere_lists_only_models_with_tools() {
+        let cohere = crate::config::additional_provider("cohere").unwrap();
+        let body = json!({ "models": [
+            { "name": "command-a-03-2025", "endpoints": ["chat"], "features": ["tools", "strict_tools"], "context_length": 256000 },
+            { "name": "command-a-vision-07-2025", "endpoints": ["chat"], "features": ["vision"], "context_length": 128000 },
+            { "name": "c4ai-aya-expanse-32b", "endpoints": ["chat"], "features": null, "context_length": 128000 },
+        ] });
+        let listed = additional_models(cohere, true, &cohere_listing(&body));
+        assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["cohere/command-a-03-2025"]);
+        assert_eq!(listed[0].request_id("cohere"), "command-a-03-2025");
+        assert_eq!(listed[0].context, Some(256000));
+        assert_eq!(listed[0].tools, Some(true));
     }
 
     /// The ScoutCode key must never go to another provider, and OVH's free tier refuses nothing for lacking one.
@@ -1318,7 +1357,8 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
-    if let Some(e) = req.effort {
+    // Cohere takes only "none" and "high", and refuses it on models that don't reason, so it's left to the model there.
+    if let Some(e) = req.effort.filter(|_| cfg.base_url != crate::config::COHERE_URL) {
         body["reasoning_effort"] = json!(e);
     }
     let res = auth(http().post(&format!("{}/chat/completions", cfg.base_url)), cfg)?

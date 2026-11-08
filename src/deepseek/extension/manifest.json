@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Scout for DeepSeek",
-  "version": "1.0.0",
-  "description": "Lets the Scout desktop app use your chat.deepseek.com account as its model, with Scout's tools and MCP servers.",
-  "permissions": ["storage"],
+  "name": "Scout",
+  "version": "1.5.0",
+  "description": "Connects your browser to the Scout desktop app: DeepSeek Web, and adding Scout to Claude or Gemini as a connector, step by step.",
+  "permissions": ["storage", "debugger"],
   "host_permissions": ["http://127.0.0.1/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     { "matches": ["https://chat.deepseek.com/*"], "js": ["driver.js", "main.js"], "run_at": "document_start", "world": "MAIN" },
-    { "matches": ["https://chat.deepseek.com/*"], "js": ["bridge.js"], "run_at": "document_start" }
+    { "matches": ["https://chat.deepseek.com/*"], "js": ["bridge.js"], "run_at": "document_start" },
+    { "matches": ["https://claude.ai/*", "https://gemini.google.com/*", "https://scoutcode.dev/oauth/authorize*", "https://scoutcode.dev/login*"], "js": ["claude.js"], "run_at": "document_idle" }
   ],
-  "action": { "default_popup": "popup.html", "default_title": "Scout for DeepSeek" }
+  "action": { "default_popup": "popup.html", "default_title": "Scout" }
 }

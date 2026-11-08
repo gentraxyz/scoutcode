@@ -24,6 +24,7 @@
     if (m.type === 'start') api.start(m.job);
     else if (m.type === 'stop') api.stop();
     else if (m.type === 'tick') api.tick();
+    else if (m.type === 'hold' && api.hold) api.hold(m.on);
     status(m.type === 'hello');
   });
   status();

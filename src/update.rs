@@ -233,7 +233,8 @@ impl Updater {
     /// Installs the update and starts the new build with `args`. The caller closes this window.
     pub fn restart(&self, args: &[String]) -> Result<(), String> {
         self.install()?;
-        std::process::Command::new(exe_path()).args(args).spawn().map(|_| ()).map_err(|e| format!("Installed, but couldn't restart Scout: {e}"))
+        // The old copy is still closing, so the new one waits for it (see single_instance.rs) rather than handing off.
+        std::process::Command::new(exe_path()).args(args).env(crate::single_instance::RESTART_ENV, "1").spawn().map(|_| ()).map_err(|e| format!("Installed, but couldn't restart Scout: {e}"))
     }
 }
 

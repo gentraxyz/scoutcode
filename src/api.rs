@@ -2,10 +2,36 @@ use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
-use std::sync::{Mutex, OnceLock};
+use std::io::{BufRead, BufReader};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
+
+/// How often a waiting turn checks whether the user has stopped it.
+const STOP_POLL: Duration = Duration::from_millis(25);
+
+/// Runs a blocking network call on its own thread and gives up on it the moment `cancel` is set, so a stop never
+/// waits on a server that has gone quiet. The abandoned call sees the flag and ends by itself.
+pub fn abortable<T: Send + 'static>(cancel: &Arc<AtomicBool>, f: impl FnOnce() -> T + Send + 'static) -> Result<T, ApiError> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("scout-request".into())
+        .spawn(move || {
+            let _ = tx.send(f());
+        })
+        .map_err(|e| ApiError::new(e.to_string(), 0))?;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ApiError::aborted());
+        }
+        match rx.recv_timeout(STOP_POLL) {
+            Ok(v) => return Ok(v),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(ApiError::new("The request ended unexpectedly.", 0)),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ToolCall {
@@ -757,6 +783,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_stop_does_not_wait_for_a_call_that_never_answers() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stopper = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            stopper.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let r = abortable(&cancel, || std::thread::sleep(Duration::from_secs(30)));
+        assert!(r.is_err_and(|e| e.aborted));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_finished_call_hands_back_its_answer() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert_eq!(abortable(&cancel, || 7).ok(), Some(7));
+    }
+
+    #[test]
     fn saved_models_come_back_the_same() {
         let m = ModelInfo {
             id: "ovh/qwen".into(),
@@ -906,7 +952,7 @@ mod tests {
         let tools = [json!({ "type": "function", "function": { "name": "ping", "description": "Ping", "parameters": { "type": "object", "properties": {} } } })];
         let messages = [Message::User { content: Content::Text("Call the ping tool now.".into()) }];
         let req = ChatRequest { model: ovh.default_model, messages: &messages, tools: Some(&tools), tool_choice_none: false, temperature: None, effort: None };
-        let r = stream_chat(&cfg.for_provider("ovh"), req, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let r = stream_chat(&cfg.for_provider("ovh"), req, &mut |_| {}, &Arc::new(AtomicBool::new(false))).unwrap();
         assert_eq!(r.tool_calls.first().map(|c| c.function.name.as_str()), Some("ping"), "{r:?}");
     }
 
@@ -1022,13 +1068,14 @@ pub struct ReferralEntry {
     pub username: String,
     pub created_at: String,
     pub rewarded_at: Option<String>,
+    #[serde(default)]
+    pub payout: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Referrals {
     pub code: String,
-    pub max: u32,
     pub bonus: f64,
     pub credit: f64,
     pub expiry_days: u32,
@@ -1333,7 +1380,7 @@ fn canonical_call(mut c: ToolCall) -> ToolCall {
 }
 
 /// Streams one chat completion, collecting text, reasoning and tool calls as they arrive. Checks `cancel` between chunks.
-pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), cancel: &AtomicBool) -> Result<StreamResult, ApiError> {
+pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), cancel: &Arc<AtomicBool>) -> Result<StreamResult, ApiError> {
     let api_messages: Vec<Value> = req.messages.iter().map(|m| match m {
         Message::Assistant { content, tool_calls, reasoning_content, .. } => {
             let mut obj = json!({ "role": "assistant" });
@@ -1361,10 +1408,10 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     if let Some(e) = req.effort.filter(|_| cfg.base_url != crate::config::COHERE_URL) {
         body["reasoning_effort"] = json!(e);
     }
-    let res = auth(http().post(&format!("{}/chat/completions", cfg.base_url)), cfg)?
-        .header("Content-Type", "application/json")
-        .send(serde_json::to_vec(&body).unwrap_or_default())
-        .map_err(transport)?;
+    // Waiting for the headers can take a long while for a reasoning model, so a stop doesn't wait for them.
+    let request = auth(http().post(&format!("{}/chat/completions", cfg.base_url)), cfg)?.header("Content-Type", "application/json");
+    let payload = serde_json::to_vec(&body).unwrap_or_default();
+    let res = abortable(cancel, move || request.send(payload))?.map_err(transport)?;
     observe_quota(cfg, &res);
     if !res.status().is_success() {
         let mut e = error_from(res);
@@ -1426,23 +1473,49 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     }
     let mut calls: Vec<Option<Partial>> = Vec::new();
     let mut held_text = can_recover;
-    let mut reader = BufReader::with_capacity(16 * 1024, res.into_body().into_reader());
-    let mut line = String::new();
+    // The lines are read on their own thread, so a stop doesn't wait for the next one to arrive. The thread ends with
+    // the stream, or on its next line once this side has let go.
+    let (lines_tx, lines_rx) = mpsc::channel::<std::io::Result<Option<String>>>();
+    let body = res.into_body().into_reader();
+    std::thread::Builder::new()
+        .name("scout-stream".into())
+        .spawn(move || {
+            let mut reader = BufReader::with_capacity(16 * 1024, body);
+            loop {
+                let mut line = String::new();
+                let done = match reader.read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = lines_tx.send(Ok(None));
+                        true
+                    }
+                    Ok(_) => lines_tx.send(Ok(Some(line))).is_err(),
+                    Err(e) => {
+                        let _ = lines_tx.send(Err(e));
+                        true
+                    }
+                };
+                if done {
+                    break;
+                }
+            }
+        })
+        .map_err(|e| ApiError::new(e.to_string(), 0))?;
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(ApiError::aborted());
         }
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) => {
+        let line = match lines_rx.recv_timeout(STOP_POLL) {
+            Ok(Ok(Some(line))) => line,
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => {
                 if cancel.load(Ordering::Relaxed) {
                     return Err(ApiError::aborted());
                 }
                 return Err(ApiError::new(e.to_string(), 0));
             }
-        }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         // "[DONE]" doesn't parse, so it is skipped; ScoutCode's cost chunk comes after it, so read on to the end.
         let Some(data) = line.trim().strip_prefix("data:").map(str::trim) else { continue };
         let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
@@ -1501,8 +1574,6 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
             out.finish_reason = Some(f.to_string());
         }
     }
-    // Drain so the connection can go back to the pool.
-    let _ = reader.read_to_end(&mut Vec::new());
     out.tool_calls = calls
         .into_iter()
         .flatten()

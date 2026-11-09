@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { act, tokens, type AgentRouteStep, type AgentRouter, type Model, type ModelRef } from './api';
-import { AdditionalOptions, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
-import { ChatbotsPanel } from './Chatbots';
+import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { chatbotConnected, ChatbotPage, CHATBOT_ONLY_PAGES, isBotPage } from './Chatbots';
 import { DeepSeekWebPanel, useDeepSeek } from './DeepSeek';
 import { core, useCore, useView } from './store';
 import { Icon, IconButton, Link, Popover, Star, Switch } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
-type Tab = 'starred' | 'router' | 'scoutcode' | 'claude' | 'codex' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'deepseek-web' | 'additional' | 'chatbots';
-const TABS: [Tab, string][] = [['starred', 'Starred'], ['router', 'Agent Router'], ['chatbots', 'MCP chatbots'], ['scoutcode', 'ScoutCode'], ['claude', 'Claude Code'], ['codex', 'Codex'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['grok', 'Grok Build'], ['hermes', 'Hermes'], ['deepseek-web', 'DeepSeek Web'], ['additional', 'Additional Providers']];
+type Tab = 'starred' | 'router' | 'scoutcode' | 'claude' | 'codex' | 'gemini' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'deepseek-web' | 'additional' | 'chatbots';
+// ChatGPT and Claude are Codex and Claude Code too: their pages hold both the chatbot and its models.
+const TABS: [Tab, string][] = [['starred', 'Starred'], ['router', 'Agent Router'], ['codex', 'ChatGPT'], ['claude', 'Claude'], ['gemini', 'Gemini'], ['grok', 'Grok'], ['chatbots', 'Other chatbots'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'],['hermes', 'Hermes'], ['deepseek-web', 'DeepSeek Web'], ['additional', 'Additional Providers']];
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
 type ModelRow = { key: string; provider: string; name: string; star: string; model: Model };
@@ -156,7 +157,7 @@ function RailIcon({ tab }: { tab: Tab }) {
   if (tab === 'router') return <Icon name="route" />;
   if (tab === 'additional') return <Icon name="plus" />;
   if (tab === 'chatbots') return <Icon name="chat" />;
-  const file = { scoutcode: 'scoutcode', claude: 'claude', codex: 'codex', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes', 'deepseek-web': 'deepseek-web' }[tab];
+  const file = { scoutcode: 'scoutcode', claude: 'claude', codex: 'codex', gemini: 'gemini', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes', 'deepseek-web': 'deepseek-web' }[tab];
   if (!file) return <img className="logo" src={scoutLogo} width={16} height={16} alt="" />;
   return <img className="logo" src={logo(file)} width={16} height={16} alt="" />;
 }
@@ -217,9 +218,6 @@ function SignedOut({ tab }: { tab: Tab }) {
       {tab === 'copilot' && <><div className="small dim">{COPILOT_NOTE}</div><SignInEntry which="copilot" /></>}
       {tab === 'devin' && <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>}
       {tab === 'kiro' && <><div className="small dim">{KIRO_NOTE}</div><SignInEntry which="kiro" /></>}
-      {tab === 'claude' && <><div className="small dim">{CLAUDE_NOTE}</div><SignInEntry which="claude" /></>}
-      {tab === 'codex' && <><div className="small dim">{CODEX_NOTE}</div><SignInEntry which="codex" /></>}
-      {tab === 'grok' && <><div className="small dim">{GROK_NOTE}</div><GrokEntry /></>}
       {tab === 'hermes' && <><div className="small dim">{HERMES_NOTE}</div><HermesEntry /></>}
       {tab === 'deepseek-web' && <DeepSeekWebPanel />}
     </div>
@@ -270,8 +268,8 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const team = cfg.team;
   const deepseek = useDeepSeek();
   const teamRuns = (t: Tab) => !!team && (team.providers.includes(t) || (t === 'additional' && additionalProviders.some((a) => team.providers.includes(a.id))));
-  const shownTab = (t: Tab) => (!onPick || (t !== 'router' && t !== 'chatbots')) && (!team || t === 'starred' || t === 'router' || t === 'chatbots' || teamRuns(t) || team.acp.includes(t));
-  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, 'deepseek-web': !!deepseek?.enabled, additional: cfg.additional.length > 0, starred: true, router: true, kilo: true, chatbots: link.on })[t];
+  const shownTab = (t: Tab) => (!onPick || (t !== 'router' && !CHATBOT_ONLY_PAGES.includes(t))) && (!team || t === 'starred' || t === 'router' || CHATBOT_ONLY_PAGES.includes(t) || teamRuns(t) || team.acp.includes(t));
+  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, 'deepseek-web': !!deepseek?.enabled, additional: cfg.additional.length > 0, starred: true, router: true, kilo: true, chatbots: link.on, gemini: chatbotConnected('gemini', link.chatbots) })[t];
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => {
     const all = allRows(models);
@@ -287,16 +285,20 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
     return [...list].sort((a, b) => (pos(a) !== pos(b) ? pos(a) - pos(b) : compare(sort, a, b)));
   }, [models, q, tab, starred, additionalProviders, sort, freeOnly, hidden]);
   // ScoutCode always lists its free models; signing in only adds the rest and a banner suggests it.
-  const signIn = !q && tab !== 'scoutcode' && (!signedIn(tab) || (tab === 'additional' && adding));
-  // Chatbots bring their own model, so the tab shows the link instead of a list.
-  const chatbots = !q && tab === 'chatbots';
+  // A chatbot's page shows its own sign-in (ChatbotPage), so it never gets the plain sign-in screen.
+  const signIn = !q && !isBotPage(tab) && tab !== 'scoutcode' && (!signedIn(tab) || (tab === 'additional' && adding));
+  // A chatbot's page holds its link; ChatGPT and Claude also list their models under it. Chatbots bring their own model.
+  const botPage = !q && isBotPage(tab);
+  const chatbotOnly = !q && CHATBOT_ONLY_PAGES.includes(tab);
   const routerTab = !q && tab === 'router';
+  // Whether the model list shows: not for the sign-in, the router, or a chatbot-only page.
+  const listed = !routerTab && !signIn && !chatbotOnly && !(botPage && !signedIn(tab));
   const empty = loading > 0 ? 'Loading models…' : q ? 'No models match.' : tab === 'starred' ? 'Star a model to keep it here.' : 'No models here yet.';
   return (
     <div className="model-menu" ref={menuRef}>
       <div className="rail">
         {TABS.filter(([t]) => shownTab(t) && !hidden.includes(t)).map(([t, name]) => {
-          const unlinked = !signedIn(t) && t !== 'starred' && t !== 'router' && t !== 'chatbots';
+          const unlinked = !signedIn(t) && t !== 'starred' && t !== 'router' && !CHATBOT_ONLY_PAGES.includes(t);
           const status = unlinked ? providerStatus(t) : null;
           return (
             <button
@@ -339,10 +341,10 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
             const name = TABS.find(([id]) => id === t)![1];
             return (
               <>
-                <div className="tiny dim rail-menu-head">{name}{!signedIn(t) && t !== 'chatbots' ? ` · ${providerStatus(t)}` : ''}</div>
+                <div className="tiny dim rail-menu-head">{name}{!signedIn(t) && !CHATBOT_ONLY_PAGES.includes(t) ? ` · ${providerStatus(t)}` : ''}</div>
                 {!signedIn(t) && (
                   <button type="button" className="menu-item" onClick={() => { setTab(t); setSearch(''); setAdding(false); setCtx(null); }}>
-                    <Icon name="user" /><span className="grow">{t === 'opencode' ? 'Set up OpenCode' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : `Sign in to ${name}`}</span>
+                    <Icon name="user" /><span className="grow">{t === 'opencode' ? 'Set up OpenCode' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : CHATBOT_ONLY_PAGES.includes(t) ? `Connect ${name}` : `Sign in to ${name}`}</span>
                   </button>
                 )}
                 <button type="button" className="menu-item" onClick={() => {
@@ -368,7 +370,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
             <div className="small dim">Right-click a provider on the left to hide it, or to sign in if it needs an account. The bars by each model are its Intelligence Index: the more bars, the smarter.</div>
           </div>
         )}
-        {!chatbots && !routerTab && !signIn && (
+        {listed && (
           <div className="model-sort">
             <select className="input select compact" aria-label="Sort models" title="Sort models" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               {SORTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
@@ -414,7 +416,8 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
           </>
         )}
         <div className="model-list" onMouseLeave={() => setHover(null)}>
-          {routerTab ? <AgentRouterPanel compact close={close} /> : chatbots ? <ChatbotsPanel close={close} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
+          {botPage && <ChatbotPage key={tab} tab={tab} close={close} />}
+          {routerTab ? <AgentRouterPanel compact close={close} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
             const m = r.model;
             // NIM's list has no prices, and what another provider charges says nothing about it.
             const free = rowFree(r);
@@ -441,7 +444,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
               </div>
             );
           })}
-          {!signIn && !chatbots && !routerTab && rows.length === 0 && <div className="small dim pad">{empty}</div>}
+          {listed && rows.length === 0 && <div className="small dim pad">{empty}</div>}
         </div>
       </div>
       {hover && createPortal(<ModelCard {...hover} />, document.body)}

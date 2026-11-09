@@ -292,6 +292,8 @@ export function ShowDisplay({ d }: { d: Display }) {
       return <figure className="tool-image"><img src={d.preview} alt={d.path} /><figcaption className="mono small dim">{d.path}</figcaption></figure>;
     case 'diffs':
       return <div className="stack">{d.diffs.map((x, i) => <ShowDisplay key={i} d={x} />)}</div>;
+    case 'agent':
+      return <pre className="tool-text">{d.answer}</pre>;
     case 'diff':
       return (
         <div className="diff">

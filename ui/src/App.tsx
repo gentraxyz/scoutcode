@@ -16,6 +16,7 @@ import { DeltaPage } from './DeltaPage';
 import { DeltaTabsBar } from './delta/DeltaTabsBar';
 import { deltaTabs } from './delta/tabs';
 import { FolderPicker } from './FolderPicker';
+import { UsageAlert } from './UsageAlert';
 import { Icon, IconButton, Modal } from './widgets';
 
 const appWindow = getCurrentWindow();
@@ -80,7 +81,7 @@ function GameButton() {
   const { games } = useView('cfg');
   const showing = useUi(() => gameShowing(games));
   if (!games.on) return null;
-  return <IconButton icon="game" tip={showing ? 'Close the game' : 'Play 2048 while Scout works'} active={showing} onClick={() => (showing ? closeGame() : openGame(games, true))} />;
+  return <IconButton icon="game" tip={showing ? 'Close the game' : 'Play a game while Scout works'} active={showing} onClick={() => (showing ? closeGame() : openGame(games, true))} />;
 }
 
 function MusicButton() {
@@ -324,6 +325,7 @@ export function App() {
       <FolderPicker />
       <LinkPermission />
       <WhatsNew />
+      <UsageAlert />
       {dropping && <div className="drop-overlay"><div><Icon name="paperclip" /> Drop files to attach them</div></div>}
     </div>
   );

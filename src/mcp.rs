@@ -68,7 +68,7 @@ fn shared(cfg: &Config, mode: &str) -> Arc<Shared> {
         model: Mutex::new(cfg.model.clone()),
         provider: Mutex::new(cfg.provider.clone()),
         effort: Mutex::new("none".into()),
-        cancel: AtomicBool::new(false),
+        cancel: Arc::new(AtomicBool::new(false)),
         edit_tools: Default::default(),
         model_names: Default::default(),
         no_vision: Default::default(),
@@ -453,6 +453,15 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
             }
             res.into_body().read_json().map_err(|e| (0, e.to_string()))
         };
+        // A poll that doesn't wait shows the link is up at once. The first waiting poll below is held open for up to
+        // POLL_MS when no chatbot is calling, which would leave the window on "Connecting…" that long.
+        if let Ok(r) = post(json!({}), &chats.shared.mode()) {
+            tell(LinkEvent::Status("On. Chatbots on your account can use Scout here.".into(), true));
+            if let Some(list) = r["chatbots"].as_array() {
+                let bots = list.iter().map(|b| Chatbot { name: b["name"].as_str().unwrap_or("").to_string(), seen: b["seen"].as_u64() }).collect();
+                tell(LinkEvent::Chatbots(bots));
+            }
+        }
         let ended = loop {
             if stop.load(Ordering::Relaxed) {
                 break "Off.".to_string();

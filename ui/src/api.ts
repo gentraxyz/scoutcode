@@ -9,13 +9,16 @@ export type Display =
   | { type: 'diff'; path: string; created: boolean; add: number; del: number; lines: DiffLines }
   | { type: 'diffs'; diffs: Display[] }
   | { type: 'todos'; todos: Todo[] }
-  | { type: 'image'; path: string; preview: string };
+  | { type: 'image'; path: string; preview: string }
+  | { type: 'agent'; steps: AgentStep[]; answer: string };
+/** One thing a sub-agent did: a tool call (`tool` set) or what it said between calls (`text`). */
+export type AgentStep = { tool: string; label: string; text: string; summary: string | null; isError: boolean; done: boolean };
 
 export type ToolResult = { isError: boolean; summary: string | null; display: Display };
 export type Item =
   | { id: number; kind: 'user'; text: string; files: string[] }
   | { id: number; kind: 'assistant'; text: string; reasoning: string; model?: string | null; provider?: string | null }
-  | { id: number; kind: 'tool'; name: string; label: string; progress: string; result: ToolResult | null }
+  | { id: number; kind: 'tool'; name: string; label: string; progress: string; result: ToolResult | null; steps?: AgentStep[] }
   | { id: number; kind: 'notice' | 'error' | 'outOfCredit'; text: string }
   | { id: number; kind: 'fallbackSetup'; text: string; key: string; provider: string };
 
@@ -51,10 +54,10 @@ export type DailyReward = {
   streak: number; canClaim: boolean; nextDay: number; amount: number; claimedToday: number | null; resetsAt: string;
 };
 export type ReferralEntry = {
-  username: string; createdAt: string; rewardedAt: string | null;
+  username: string; createdAt: string; rewardedAt: string | null; payout: number;
 };
 export type Referrals = {
-  code: string; max: number; bonus: number; credit: number; expiryDays: number; earned: number;
+  code: string; bonus: number; credit: number; expiryDays: number; earned: number;
   referredBy: string | null; canRedeem?: boolean | null; referred: ReferralEntry[];
 };
 export const DISCORD_INVITE_URL = 'https://discord.gg/T9Ch9wVAUc';
@@ -136,7 +139,7 @@ export type View = {
   opencodeModelsError: string | null;
   grokModelsError: string | null;
   hermesModelsError: string | null;
-  run: { running: boolean; stopping: boolean; status: string; anyRunning: boolean };
+  run: { running: boolean; stopping: boolean; stopped: boolean; status: string; anyRunning: boolean };
   todos: Todo[];
   totals: { totals: { promptTokens: number; completionTokens: number; cost: number; requests: number; balance?: number; cachedTokens: number }; context: number };
   permission: Permission | null;

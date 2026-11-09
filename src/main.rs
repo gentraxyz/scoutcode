@@ -37,6 +37,7 @@ mod patch;
 mod prompt;
 mod remote;
 mod session;
+mod single_instance;
 mod skills;
 mod tools;
 mod update;
@@ -80,6 +81,10 @@ fn main() {
         return;
     }
     if webview_missing() {
+        return;
+    }
+    // A second start only brings the running window forward (see single_instance.rs).
+    if !single_instance::claim() {
         return;
     }
     let app = tauri::Builder::default()

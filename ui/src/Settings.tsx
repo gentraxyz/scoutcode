@@ -29,7 +29,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
   { id: 'scoutmote', title: 'ScoutMote', icon: 'terminal', keywords: 'scoutmote remote control browser web phone away online computer pc' },
-  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 play puzzle fun waiting music mp3 soundcloud audio song player' },
+  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 chess flappy bird play puzzle fun waiting music mp3 soundcloud audio song player' },
   { id: 'privacy', title: 'Privacy', icon: 'shield', keywords: 'privacy analytics telemetry usage data tracking posthog statistics opt out' },
   { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
 ];
@@ -342,7 +342,7 @@ function Experimental() {
           )}
         </SettingRow>
       )}
-      <SettingRow title="Games" sub="Something to play while Scout works: 2048 for now. Slide the tiles with the arrow keys, WASD or a swipe and join equal numbers to reach 2048. Open it with the gamepad at the top of the window. Your game is kept when it closes.">
+      <SettingRow title="Games" sub="Something to play while Scout works: 2048, chess against Scout, or Flappy Scout, where you flap a little bird through gaps in stacks of code. Open them with the gamepad at the top of the window and pick one. Every game keeps your progress when it closes.">
         <Toggle label="Games" on={games.on} onChange={(on) => setGames({ on })} />
       </SettingRow>
       {games.on && (
@@ -569,8 +569,8 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
       {ref && (
         <>
           <SettingRow
-            title={`Referrals (${ref.referred.length} / ${ref.max}${ref.earned > 0 ? ` · ${usd(ref.earned)} earned` : ''})`}
-            sub={`Your referral code is "${ref.code}". Friends you refer get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days, and you get ${usd(ref.bonus)} in balance once they sign in to Scout and send their first prompt.`}
+            title={`Partner Program (${ref.referred.length} referred${ref.earned > 0 ? ` · ${usd(ref.earned)} earned` : ''})`}
+            sub={`Your referral code is "${ref.code}". Refer as many friends as you like: they get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days, and you get ${usd(ref.bonus)} in balance once they sign in to Scout and send their first prompt.`}
           >
             <CopyButton text={ref.code} label="Copy code" />
             <CopyButton text={`${site}/signup?ref=${encodeURIComponent(ref.code)}`} label="Copy link" />
@@ -579,7 +579,7 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
             <SettingRow
               key={r.username}
               title={`Referred ${r.username}`}
-              sub={`${shortDate(r.createdAt.slice(0, 10))} · ${r.rewardedAt ? `+${usd(ref.bonus)} added to your balance` : 'Waiting for their first prompt in Scout'}`}
+              sub={`${shortDate(r.createdAt.slice(0, 10))} · ${r.rewardedAt ? `+${usd(r.payout)} added to your balance` : 'Waiting for their first prompt in Scout'}`}
             />
           ))}
           {ref.referredBy ? (

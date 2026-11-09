@@ -25,6 +25,19 @@ pub enum Display {
     Todos(Vec<Todo>),
     /// An image a tool made: where it was saved, and a small copy as a data: URL to show.
     Image { path: String, preview: String },
+    /// What a sub-agent did, step by step, and the answer it gave.
+    Agent { steps: Vec<AgentStep>, answer: String },
+}
+
+/// One thing a sub-agent did: a tool call (`tool` set) or something it said between calls (`text`).
+#[derive(Clone, Debug, Default)]
+pub struct AgentStep {
+    pub tool: String,
+    pub label: String,
+    pub text: String,
+    pub summary: Option<String>,
+    pub is_error: bool,
+    pub done: bool,
 }
 
 #[derive(Clone, Debug, Default)]

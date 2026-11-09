@@ -21,7 +21,7 @@ pub enum ItemKind {
     /// What the user typed, and the files they attached.
     User { text: String, files: Vec<String> },
     Assistant { text: String, reasoning: String, model: Option<String>, provider: Option<String> },
-    Tool { name: String, label: String, progress: String, result: Option<ToolResult> },
+    Tool { name: String, label: String, progress: String, result: Option<ToolResult>, steps: Vec<tools::AgentStep> },
     Notice(String),
     Error(String),
     /// The account can't pay for the model, so the turn stopped and the window asks what to do. Says why.
@@ -137,6 +137,8 @@ struct Chat {
     tool_index: HashMap<String, usize>,
     running: bool,
     stopping: bool,
+    /// The user stopped the turn and hasn't resumed or sent anything since. Resume carries on from where it stopped.
+    stopped: bool,
     status: String,
     todos: Vec<Todo>,
     totals: Totals,
@@ -198,6 +200,7 @@ impl Chat {
             tool_index: HashMap::new(),
             running: false,
             stopping: false,
+            stopped: false,
             status: String::new(),
             todos: vec![],
             totals,
@@ -529,7 +532,12 @@ fn display_json(d: &Display) -> Value {
         Display::Diffs(all) => json!({ "type": "diffs", "diffs": all.iter().map(display_json).collect::<Vec<_>>() }),
         Display::Todos(t) => json!({ "type": "todos", "todos": todos_json(t) }),
         Display::Image { path, preview } => json!({ "type": "image", "path": path, "preview": preview }),
+        Display::Agent { steps, answer } => json!({ "type": "agent", "steps": steps_json(steps), "answer": answer }),
     }
+}
+
+fn steps_json(steps: &[tools::AgentStep]) -> Value {
+    Value::Array(steps.iter().map(|s| json!({ "tool": s.tool, "label": s.label, "text": s.text, "summary": s.summary, "isError": s.is_error, "done": s.done })).collect())
 }
 
 fn todos_json(todos: &[Todo]) -> Value {
@@ -540,7 +548,7 @@ fn item_json(item: &Item) -> Value {
     match &item.kind {
         ItemKind::User { text, files } => json!({ "id": item.id, "kind": "user", "text": text, "files": files }),
         ItemKind::Assistant { text, reasoning, model, provider } => json!({ "id": item.id, "kind": "assistant", "text": text, "reasoning": reasoning, "model": model, "provider": provider }),
-        ItemKind::Tool { name, label, progress, result } => {
+        ItemKind::Tool { name, label, progress, result, steps } => {
             let result = result.as_ref().map(|r| {
                 let display = r.display.clone().unwrap_or_else(|| {
                     if r.output.starts_with("The user denied") || r.output.starts_with("You denied") {
@@ -556,7 +564,7 @@ fn item_json(item: &Item) -> Value {
                 });
                 json!({ "isError": r.is_error, "summary": r.summary, "display": display_json(&display) })
             });
-            json!({ "id": item.id, "kind": "tool", "name": name, "label": label, "progress": progress, "result": result })
+            json!({ "id": item.id, "kind": "tool", "name": name, "label": label, "progress": progress, "result": result, "steps": steps_json(steps) })
         }
         ItemKind::Notice(text) => json!({ "id": item.id, "kind": "notice", "text": text }),
         ItemKind::Error(text) => json!({ "id": item.id, "kind": "error", "text": text }),
@@ -649,6 +657,7 @@ fn rebuild(s: &Session, next_id: &mut u64) -> Vec<Item> {
                             output: out.unwrap_or_default(),
                             display,
                         }),
+                        steps: vec![],
                     });
                 }
             }
@@ -916,13 +925,25 @@ impl Core {
                     }
                 } else {
                     self.chat.tool_index.insert(id, self.chat.items.len());
-                    self.push(ItemKind::Tool { name, label, progress: String::new(), result: None });
+                    self.push(ItemKind::Tool { name, label, progress: String::new(), result: None, steps: vec![] });
                 }
             }
             Ev::ToolProgress { id, text } => {
                 if let Some(&i) = self.chat.tool_index.get(&id) {
                     if let Some(ItemKind::Tool { progress, .. }) = self.chat.items.get_mut(i).map(|i| &mut i.kind) {
                         *progress = text;
+                        self.chat.changed.insert(i);
+                    }
+                }
+            }
+            Ev::AgentStep { id, index, step } => {
+                if let Some(&i) = self.chat.tool_index.get(&id) {
+                    if let Some(ItemKind::Tool { steps, .. }) = self.chat.items.get_mut(i).map(|i| &mut i.kind) {
+                        if index < steps.len() {
+                            steps[index] = step;
+                        } else {
+                            steps.push(step);
+                        }
                         self.chat.changed.insert(i);
                     }
                 }
@@ -1033,6 +1054,7 @@ impl Core {
                 self.chat.agent = Some(*agent);
                 self.chat.running = false;
                 self.chat.stopping = false;
+                self.chat.stopped = stopped;
                 self.chat.streaming = None;
                 self.chat.partial.clear();
                 self.chat.status.clear();
@@ -2335,6 +2357,7 @@ impl Core {
         agent.rate_limit_retry = self.chat.fallback.as_ref().and_then(|r| r.current_retry_rate_limit);
         self.chat.running = true;
         self.chat.stopping = false;
+        self.chat.stopped = false;
         self.chat.shared.cancel.store(false, Ordering::Relaxed);
         self.refresh_sessions();
         let mut h = self.hooks.clone();
@@ -2366,6 +2389,14 @@ impl Core {
             let _ = p.reply.send(QuestionAnswer::Skipped);
         }
         self.chat.status = "Stopping…".into();
+    }
+
+    /// Carries on a turn the user stopped, from the conversation as it stands. Nothing new is added to the chat.
+    pub fn resume(&mut self) {
+        if self.chat.running || !self.chat.stopped || self.chat.agent.is_none() {
+            return;
+        }
+        self.start(|agent, h| agent.retry(h).map_err(|e| agent.failed(e)));
     }
 
     pub fn new_chat(&mut self) {
@@ -2934,6 +2965,7 @@ impl Core {
                 self.send(text, vec![], false);
             }
             "stop" => self.stop(),
+            "resume" => self.resume(),
             "open" => {
                 if let Some(id) = s("chatId") {
                     self.open_chat(&id);
@@ -3205,7 +3237,7 @@ impl Core {
             ("opencodeModelsError", json!(self.opencode_models_error)),
             ("grokModelsError", json!(self.grok_models_error)),
             ("hermesModelsError", json!(self.hermes_models_error)),
-            ("run", json!({ "running": self.chat.running, "stopping": self.chat.stopping, "status": self.chat.status, "anyRunning": self.any_running() })),
+            ("run", json!({ "running": self.chat.running, "stopping": self.chat.stopping, "stopped": self.chat.stopped && !self.chat.running, "status": self.chat.status, "anyRunning": self.any_running() })),
             ("todos", todos_json(&self.chat.todos)),
             ("totals", json!({ "totals": self.chat.totals, "context": self.chat.context })),
             ("permission", json!(self.chat.permission.as_ref().map(permission_json))),

@@ -1,6 +1,9 @@
-// Experimental: a game to play while Scout works. 2048 for now, in a card the user drags anywhere or a tab in the panel.
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
+// Experimental: games to play while Scout works (2048, chess and Flappy Scout), in a card the user drags anywhere or a tab in
+// the panel. Opening the games asks which one to play; every game keeps its own progress.
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { act, type Games } from './api';
+import { Chess, ChessPiece } from './Chess';
+import { FlappyIcon, FlappyScout } from './FlappyScout';
 import { core, focusComposer, ui, useUi, useView } from './store';
 import { IconButton } from './widgets';
 
@@ -107,7 +110,7 @@ let current: Board | null = null;
 /** The next game to mount takes the keyboard: true when the user opened it, false when Scout's work did. */
 let focusOnOpen = false;
 
-function Game2048({ onEscape }: { onEscape: () => void }) {
+function Game2048({ onEscape, autoFocus }: { onEscape: () => void; autoFocus: boolean }) {
   const [board, setBoard] = useState<Board>(() => (current ??= load()));
   const host = useRef<HTMLDivElement>(null);
   const grid = useRef<HTMLDivElement>(null);
@@ -118,8 +121,7 @@ function Game2048({ onEscape }: { onEscape: () => void }) {
     setBoard(b);
   };
   useEffect(() => {
-    if (focusOnOpen) host.current?.focus();
-    focusOnOpen = false;
+    if (autoFocus) host.current?.focus();
   }, []);
   useEffect(() => {
     if (!board.tiles.some((t) => t.gone)) return;
@@ -207,6 +209,65 @@ function Game2048({ onEscape }: { onEscape: () => void }) {
   );
 }
 
+// ---------- picking a game ----------
+
+type GameId = '2048' | 'chess' | 'flappy';
+const GAMES: { id: GameId; name: string; sub: string; art: ReactNode }[] = [
+  { id: '2048', name: '2048', sub: 'Slide and join tiles to reach 2048.', art: '2048' },
+  { id: 'chess', name: 'Chess', sub: 'You play white against Scout.', art: <ChessPiece piece="wn" /> },
+  { id: 'flappy', name: 'Flappy Scout', sub: 'Flap through the gaps in the code.', art: <FlappyIcon /> },
+];
+
+function GamePicker({ onPick, onEscape, autoFocus }: { onPick: (id: GameId) => void; onEscape: () => void; autoFocus: boolean }) {
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (autoFocus) list.current?.querySelector('button')?.focus();
+  }, []);
+  const key = (e: KeyboardEvent) => {
+    const buttons = [...(list.current?.querySelectorAll('button') ?? [])];
+    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onEscape();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      buttons[(i + (e.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+    }
+  };
+  return (
+    <div className="game-picker" ref={list} onKeyDown={key}>
+      <div className="small dim">What do you want to play?</div>
+      {GAMES.map((g) => (
+        <button key={g.id} type="button" className="game-choice" onClick={() => onPick(g.id)}>
+          <span className={`game-art art-${g.id}`} aria-hidden>{g.art}</span>
+          <span className="game-choice-text"><b className="strong">{g.name}</b><span className="small dim">{g.sub}</span></span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+type Pick = { id: GameId | null; focus: boolean };
+
+/** The picker until a game is picked, then that game. Every open starts at the picker. */
+function usePick() {
+  const [state, setState] = useState<Pick>(() => ({ id: null, focus: focusOnOpen }));
+  useEffect(() => {
+    focusOnOpen = false;
+  }, []);
+  // Picking is the user's doing, so the game takes the keyboard; going back gives it to the list.
+  const pick = (id: GameId | null) => setState({ id, focus: true });
+  return { ...state, pick };
+}
+
+function Play({ id, onEscape, autoFocus }: { id: GameId; onEscape: () => void; autoFocus: boolean }) {
+  if (id === 'chess') return <Chess onEscape={onEscape} autoFocus={autoFocus} />;
+  if (id === 'flappy') return <FlappyScout onEscape={onEscape} autoFocus={autoFocus} />;
+  return <Game2048 onEscape={onEscape} autoFocus={autoFocus} />;
+}
+
+const gameName = (id: GameId | null) => GAMES.find((g) => g.id === id)?.name ?? 'Games';
+
 // ---------- where the game shows ----------
 
 /** Opens the game where the settings put it. `byUser` gives it the keyboard; Scout's own work leaves the composer be. */
@@ -242,9 +303,22 @@ export function useGameAutomation() {
   }, [anyRunning]);
 }
 
-/** The game in the panel's Games tab. */
+/** The games in the panel's Games tab. */
 export function GamesTab() {
-  return <div className="dock-page game-page"><Game2048 onEscape={focusComposer} /></div>;
+  const { id, focus, pick } = usePick();
+  return (
+    <div className="dock-page game-page">
+      <div className="game-page-inner">
+        {id && (
+          <div className="row game-page-bar">
+            <IconButton icon="back" tip="All games" size={26} onClick={() => pick(null)} />
+            <b className="strong">{gameName(id)}</b>
+          </div>
+        )}
+        {id ? <Play key={id} id={id} onEscape={focusComposer} autoFocus={focus} /> : <GamePicker onPick={pick} onEscape={focusComposer} autoFocus={focus} />}
+      </div>
+    </div>
+  );
 }
 
 const CARD_W = 304;
@@ -259,9 +333,6 @@ function clamp(pos: [number, number], el: HTMLElement | null): [number, number] 
 export function FloatingGame() {
   const { games } = useView('cfg');
   const open = useUi((u) => u.gameOpen);
-  const card = useRef<HTMLDivElement>(null);
-  const [drag, setDrag] = useState<{ pos: [number, number]; dx: number; dy: number } | null>(null);
-  const [, setSize] = useState(0);
   // Stays up for its closing animation after it's closed.
   const [shown, setShown] = useState(open);
   useEffect(() => {
@@ -269,12 +340,21 @@ export function FloatingGame() {
     const t = setTimeout(() => setShown(false), 150);
     return () => clearTimeout(t);
   }, [open]);
+  if (!games.on || games.place !== 'float' || !(open || shown)) return null;
+  // Mounted afresh for every open, so each one asks again which game to play.
+  return <FloatingCard games={games} open={open} />;
+}
+
+function FloatingCard({ games, open }: { games: Games; open: boolean }) {
+  const card = useRef<HTMLDivElement>(null);
+  const [drag, setDrag] = useState<{ pos: [number, number]; dx: number; dy: number } | null>(null);
+  const { id, focus, pick } = usePick();
+  const [, setSize] = useState(0);
   useEffect(() => {
     const resized = () => setSize((n) => n + 1);
     window.addEventListener('resize', resized);
     return () => window.removeEventListener('resize', resized);
   }, []);
-  if (!games.on || games.place !== 'float' || !(open || shown)) return null;
 
   // Until it's dragged, it sits above the message box at the right.
   const pos = drag?.pos ?? clamp(games.pos ?? [Infinity, window.innerHeight - (card.current?.offsetHeight ?? 432) - 150], card.current);
@@ -299,12 +379,12 @@ export function FloatingGame() {
   return (
     <div className={`game-float ${drag ? 'dragging' : ''} ${open ? '' : 'leaving'}`} ref={card} style={{ left: pos[0], top: pos[1] }}>
       <div className="game-bar" onPointerDown={start} onPointerMove={moveTo} onPointerUp={end} onPointerCancel={end} title="Drag to move">
-        <span className="game-grip" aria-hidden />
-        <b className="strong">2048</b>
+        {id ? <IconButton icon="back" tip="All games" size={24} onClick={() => pick(null)} /> : <span className="game-grip" aria-hidden />}
+        <b className="strong">{gameName(id)}</b>
         <span className="grow" />
         <IconButton icon="close" tip="Close (Esc)" size={24} onClick={close} />
       </div>
-      <Game2048 onEscape={close} />
+      {id ? <Play key={id} id={id} onEscape={close} autoFocus={focus} /> : <GamePicker onPick={pick} onEscape={close} autoFocus={focus} />}
     </div>
   );
 }

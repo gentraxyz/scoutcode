@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { act, openExternal, type Item, type ModelRef } from './api';
+import { act, openExternal, type AgentStep, type Item, type ModelRef } from './api';
 import { logo } from './Accounts';
 import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { core, focusComposer, ui, useCore, useUi, useView } from './store';
@@ -208,20 +208,66 @@ function Assistant({ item, at, editable, onRetry }: { item: Extract<Item, { kind
 function ToolRow({ item }: { item: ToolItem }) {
   const [opened, setOpened] = useState<boolean | null>(null);
   const r = item.result;
-  const open = r ? opened ?? OPEN_BY_DEFAULT.has(item.name) : false;
+  const steps = item.steps ?? [];
+  // A sub-agent can be opened while it works, to watch its steps come in.
+  const live = !r && item.name === 'task' && steps.length > 0;
+  const canOpen = !!r || live;
+  const open = canOpen ? opened ?? (r ? OPEN_BY_DEFAULT.has(item.name) : false) : false;
   const label = item.label || (item.name === 'bash' ? (r ? 'Command' : 'Terminal…') : '');
+  const latest = [...steps].reverse().find((s) => s.tool);
+  const progress = live ? (latest ? `${toolTitle(latest.tool)} ${latest.label}`.trim() : '') : item.progress;
   return (
     <div className="tool">
-      <button type="button" className={`tool-row ${r ? 'can-open' : ''}`} onClick={() => r && setOpened(!open)}>
+      <button type="button" className={`tool-row ${canOpen ? 'can-open' : ''}`} onClick={() => canOpen && setOpened(!open)}>
         {!r ? <span className="tool-status"><Spinner /></span> : <span className={`tool-status ${r.isError ? 'bad' : 'good'}`}><Icon name={r.isError ? 'close' : 'check'} size={12} /></span>}
         <b>{toolTitle(item.name)}</b>
         {label && <span className="mono muted ellipsis tool-label">{label.split('\n')[0].slice(0, 160)}</span>}
         {r?.summary && <span className={`tool-summary ellipsis ${r.isError ? 'red' : 'dim'}`}>· {r.summary}</span>}
+        {live && <span className="tool-summary ellipsis dim">· {steps.filter((s) => s.tool).length} steps</span>}
         <span className="grow" />
-        {r && <span className="tool-chevron"><Icon name={open ? 'chevronDown' : 'chevronRight'} /></span>}
+        {canOpen && <span className="tool-chevron"><Icon name={open ? 'chevronDown' : 'chevronRight'} /></span>}
       </button>
-      {!r && item.progress && <div className="tool-progress mono dim">{item.progress}</div>}
-      {r && open && <div className="tool-output"><ShowDisplay d={r.display} /></div>}
+      {!r && !open && progress && <div className="tool-progress mono dim ellipsis">{progress}</div>}
+      {open && (
+        <div className="tool-output">
+          {r?.display.type === 'agent' ? <AgentView steps={r.display.steps} answer={r.display.answer} />
+            : r ? <ShowDisplay d={r.display} />
+            : <AgentView steps={steps} answer="" />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What a sub-agent did: each tool call and note in order, then its answer. */
+function AgentView({ steps, answer }: { steps: AgentStep[]; answer: string }) {
+  const [showAnswer, setShowAnswer] = useState(true);
+  return (
+    <div className="agent-view">
+      {steps.length > 0 && (
+        <ol className="agent-steps">
+          {steps.map((s, i) => s.tool ? (
+            <li key={i} className="agent-step">
+              {!s.done ? <span className="tool-status"><Spinner size={10} /></span> : <span className={`tool-status ${s.isError ? 'bad' : 'good'}`}><Icon name={s.isError ? 'close' : 'check'} size={11} /></span>}
+              <b>{toolTitle(s.tool)}</b>
+              {s.label && <span className="mono muted ellipsis tool-label" title={s.label}>{s.label.split('\n')[0].slice(0, 200)}</span>}
+              {s.summary && <span className={`tool-summary ellipsis ${s.isError ? 'red' : 'dim'}`}>· {s.summary}</span>}
+            </li>
+          ) : (
+            <li key={i} className="agent-note pre-wrap">{s.text}</li>
+          ))}
+        </ol>
+      )}
+      {steps.length === 0 && !answer && <span className="small dim">No steps yet.</span>}
+      {answer && (
+        <div className="agent-answer">
+          <button type="button" className="reasoning-head" onClick={() => setShowAnswer(!showAnswer)}>
+            <Icon name={showAnswer ? 'chevronDown' : 'chevronRight'} />
+            <b>Answer</b>
+          </button>
+          {showAnswer && <div className="agent-answer-body"><Markdown text={answer} /></div>}
+        </div>
+      )}
     </div>
   );
 }

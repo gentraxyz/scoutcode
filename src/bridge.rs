@@ -89,6 +89,7 @@ fn snapshot(core: Shared) -> Value {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum Action {
     Stop,
+    Resume,
     NewChat,
     OpenChat { id: String },
     DeleteChat { id: String },
@@ -179,6 +180,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
     }
     match action {
         Action::Stop => c.stop(),
+        Action::Resume => c.resume(),
         Action::NewChat => c.new_chat(),
         Action::OpenChat { id } => c.open_chat(&id),
         Action::DeleteChat { id } => c.delete_chat(&id),

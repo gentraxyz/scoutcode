@@ -202,7 +202,7 @@ function InputBox() {
   const attachments = useUi((u) => u.attachments);
   const focusEpoch = useUi((u) => u.focusEpoch);
   const coreFocus = useView('focusEpoch');
-  const { running, stopping } = useView('run');
+  const { running, stopping, stopped } = useView('run');
   const chat = useView('chat');
   const voice = useView('voice');
   const box = useRef<HTMLTextAreaElement>(null);
@@ -413,6 +413,7 @@ function InputBox() {
           <button type="button" className={`round send ${ready ? 'ready' : ''}`} disabled={!ready} aria-label="Send" title={running ? 'Queue (Enter) · Ctrl+click or Ctrl+Enter to send it now' : undefined} onClick={(e) => send(e.ctrlKey)}><Icon name="arrowUp" /></button>
         )}
         {running && <button type="button" className="round stop" aria-label="Stop" title={stopping ? 'Stopping' : 'Stop (Esc)'} onClick={() => act('stop')}><span className="stop-square" /></button>}
+        {!running && stopped && <button type="button" className="round resume" aria-label="Resume" title="Resume where Scout stopped" onClick={() => act('resume')}><Icon name="play" /></button>}
       </div>
     </div>
   );
@@ -462,7 +463,7 @@ function securityLevels(modes: { id: string; label: string }[]): Level[] {
 }
 
 function Footer() {
-  const { running, status } = useView('run');
+  const { running, status, stopped } = useView('run');
   const mode = useView('mode');
   const effort = useView('effort');
   const totals = useView('totals').totals;
@@ -490,6 +491,8 @@ function Footer() {
           <span className="tiny muted ellipsis">{status || (waiting ? 'Waiting for you' : 'Working…')}</span>
           <span className="tiny dim nowrap">{typing ? '· Enter to queue · Ctrl+Enter to send now' : '· Esc to stop'}</span>
         </>
+      ) : stopped ? (
+        <span className="tiny dim ellipsis">Stopped · press play to resume</span>
       ) : status && <span className="tiny dim ellipsis">{status}</span>}
       <span className="grow" />
       <ModelChip />

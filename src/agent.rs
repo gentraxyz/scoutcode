@@ -66,6 +66,8 @@ pub enum Ev {
     AssistantDone,
     ToolCall { id: String, name: String, label: String },
     ToolProgress { id: String, text: String },
+    /// A step of the sub-agent a task call runs: the `index`th, new or updated.
+    AgentStep { id: String, index: usize, step: tools::AgentStep },
     ToolResult { id: String, result: ToolResult },
     Status(String),
     Notice(String),
@@ -158,7 +160,7 @@ pub struct Shared {
     /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id.
     pub provider: Mutex<String>,
     pub effort: Mutex<String>,
-    pub cancel: AtomicBool,
+    pub cancel: Arc<AtomicBool>,
     /// Each model's edit tool, from /v1/models once the window has the list. The same for every chat.
     pub edit_tools: Arc<Mutex<HashMap<String, EditTool>>>,
     /// Each model's name, from the same list.
@@ -425,6 +427,8 @@ pub struct Agent {
     /// The tool list for the edit tool it was built for.
     specs: (EditTool, Vec<Value>),
     read_only_specs: Vec<Value>,
+    /// The task call a sub-agent is running for, and its steps so far.
+    sub: Option<(String, Vec<tools::AgentStep>)>,
 }
 
 /// A CLI that runs its own tools over the Agent Client Protocol: see `acp_run`.
@@ -537,6 +541,7 @@ impl Agent {
             preferences: Default::default(),
             specs: (EditTool::StrReplace, tools::specs(None, EditTool::StrReplace)),
             read_only_specs: tools::specs(Some(&tools::READ_ONLY), EditTool::StrReplace),
+            sub: None,
         }
     }
 
@@ -946,10 +951,17 @@ impl Agent {
         if name == "task" {
             let d = args.get("description").and_then(Value::as_str).unwrap_or("task").to_string();
             let p = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
-            return match self.run_subagent(&d, &p, h) {
-                Ok(a) => ToolResult::ok(if a.is_empty() { "(the sub-agent returned nothing)".into() } else { a }, "done"),
+            self.sub = Some((id.to_string(), vec![]));
+            let run = self.run_subagent(&d, &p, h);
+            let steps = self.sub.take().map(|(_, s)| s).unwrap_or_default();
+            let calls = steps.iter().filter(|s| !s.tool.is_empty()).count();
+            let mut result = match run {
+                Ok(a) => ToolResult::ok(if a.is_empty() { "(the sub-agent returned nothing)".into() } else { a }, format!("done · {calls} tool call{}", if calls == 1 { "" } else { "s" })),
                 Err(e) => ToolResult::err(format!("Error: {e}"), e.message.chars().take(100).collect::<String>()),
             };
+            let answer = if result.is_error { String::new() } else { result.output.clone() };
+            result.display = Some(Display::Agent { steps, answer });
+            return result;
         }
 
         // Memory edited with the ordinary file tools gets update_memory's check too.
@@ -1036,6 +1048,9 @@ impl Agent {
             if calls.is_empty() {
                 return Ok(r.content);
             }
+            if !r.content.trim().is_empty() {
+                self.sub_step(tools::AgentStep { text: r.content.trim().to_string(), done: true, ..Default::default() }, None, h);
+            }
             for c in calls {
                 let out = self.subagent_tool(description, &c, &cwd, h);
                 messages.push(Message::Tool { tool_call_id: c.id, content: out });
@@ -1051,16 +1066,43 @@ impl Agent {
         if !tools::READ_ONLY.contains(&n) {
             return format!("Error: Unknown tool {n}.");
         }
-        h.send(Ev::Status(format!("task: {description} · {n} {}", tools::label(n, &args)).chars().take(140).collect()));
-        if n == "web_search" {
-            return tools::web_search(&self.cfg, &args).map_or_else(|e| format!("Error: {e}"), |r| r.output);
+        let label = tools::label(n, &args);
+        h.send(Ev::Status(format!("task: {description} · {n} {label}").chars().take(140).collect()));
+        let at = self.sub_step(tools::AgentStep { tool: n.to_string(), label, ..Default::default() }, None, h);
+        let r = if n == "web_search" {
+            tools::web_search(&self.cfg, &args)
+        } else {
+            let mut noop = |_: &str| {};
+            let mut ctx = Ctx { cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
+            tools::run(n, &args, &mut ctx)
+        };
+        let (out, summary, is_error) = match r {
+            Ok(r) => (r.output, r.summary, r.is_error),
+            Err(e) => (format!("Error: {e}"), Some(e.lines().next().unwrap_or("").chars().take(100).collect()), true),
+        };
+        if let Some(at) = at {
+            if let Some(step) = self.sub.as_ref().and_then(|(_, s)| s.get(at)).cloned() {
+                self.sub_step(tools::AgentStep { summary, is_error, done: true, ..step }, Some(at), h);
+            }
         }
-        let mut noop = |_: &str| {};
-        let mut ctx = Ctx { cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
-        match tools::run(n, &args, &mut ctx) {
-            Ok(r) => r.output,
-            Err(e) => format!("Error: {e}"),
-        }
+        out
+    }
+
+    /// Adds a step to the running sub-agent's list, or replaces the `at`th, and shows it under its task call.
+    fn sub_step(&mut self, step: tools::AgentStep, at: Option<usize>, h: &Hooks) -> Option<usize> {
+        let (id, steps) = self.sub.as_mut()?;
+        let index = match at {
+            Some(i) if i < steps.len() => {
+                steps[i] = step.clone();
+                i
+            }
+            _ => {
+                steps.push(step.clone());
+                steps.len() - 1
+            }
+        };
+        h.send(Ev::AgentStep { id: id.clone(), index, step });
+        Some(index)
     }
 
     /// A conversation on Copilot, whose runtime loops over the model by itself: its tool calls come back here to run
@@ -2022,7 +2064,7 @@ mod tests {
 
     #[test]
     fn chats_stop_and_change_settings_on_their_own() {
-        let a = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(true), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
+        let a = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: Arc::new(AtomicBool::new(true)), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         a.steer.lock().unwrap().push(Steer { text: "t".into(), files: vec![], content: "t".into(), read: vec![] });
         let b = a.for_new_chat();
         assert_eq!((b.mode(), b.model.lock().unwrap().as_str(), b.provider.lock().unwrap().as_str()), ("plan".to_string(), "m", "kilo"));
@@ -2059,7 +2101,7 @@ mod tests {
         assert!(!models.is_empty());
         let dir = std::env::temp_dir().join(format!("scout-kiro-{}", crate::session::now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("auto".into()), provider: Mutex::new("kiro".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("auto".into()), provider: Mutex::new("kiro".into()), effort: Mutex::new("low".into()), cancel: Arc::new(AtomicBool::new(false)), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&dir.to_string_lossy(), "auto"), shared.clone());
         let (tx, rx) = channel();
         let h = Hooks { chat: None, tx, ctx: crate::waker::Waker::default() };
@@ -2118,7 +2160,7 @@ mod tests {
             model: Mutex::new("auto".into()),
             provider: Mutex::new("devin".into()),
             effort: Mutex::new("low".into()),
-            cancel: AtomicBool::new(false),
+            cancel: Arc::new(AtomicBool::new(false)),
             edit_tools: Default::default(),
             model_names: Default::default(),
             no_vision: Default::default(),
@@ -2212,7 +2254,7 @@ mod tests {
             model: Mutex::new("auto".into()),
             provider: Mutex::new("copilot".into()),
             effort: Mutex::new("low".into()),
-            cancel: AtomicBool::new(false),
+            cancel: Arc::new(AtomicBool::new(false)),
             edit_tools: Default::default(),
             model_names: Default::default(),
             no_vision: Default::default(),
@@ -2272,7 +2314,7 @@ mod tests {
             model: Mutex::new(cfg.model.clone()),
             provider: Mutex::new(cfg.provider.clone()),
             effort: Mutex::new("low".into()),
-            cancel: AtomicBool::new(false),
+            cancel: Arc::new(AtomicBool::new(false)),
             edit_tools: Default::default(),
             model_names: Default::default(),
             no_vision: Default::default(),
@@ -2341,7 +2383,7 @@ mod tests {
     }
 
     fn kilo_agent() -> (Agent, Hooks) {
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("kilo-auto/free".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("kilo-auto/free".into()), provider: Mutex::new("kilo".into()), effort: Mutex::new("low".into()), cancel: Arc::new(AtomicBool::new(false)), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut cfg = config::load_config();
         (cfg.kilo_enabled, cfg.kilo_key) = (true, None);
         let (tx, _) = std::sync::mpsc::channel();
@@ -2375,7 +2417,7 @@ mod tests {
 
     #[test]
     fn mcp_tools_need_permission() {
-        let shared = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("plan".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: Arc::new(AtomicBool::new(false)), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(".", "m"), shared.clone());
         agent.cfg.allow.clear();
         let (tx, rx) = channel();
@@ -2434,7 +2476,7 @@ mod tests {
         std::fs::write(&a, "v2").unwrap();
         std::fs::write(&b, "made in turn two").unwrap();
         let cwd = dir.to_string_lossy().to_string();
-        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: AtomicBool::new(false), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
+        let shared = Arc::new(Shared { mode: Mutex::new("default".into()), model: Mutex::new("m".into()), provider: Mutex::new("scoutcode".into()), effort: Mutex::new("low".into()), cancel: Arc::new(AtomicBool::new(false)), edit_tools: Default::default(), model_names: Default::default(), no_vision: Default::default(), steer: Default::default() });
         let mut agent = Agent::new(config::load_config(), crate::session::new_session(&cwd, "m"), shared);
         let edit = |id: &str| Message::Assistant {
             content: None,

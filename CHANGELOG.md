@@ -4,6 +4,16 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.22
+Chess and Flappy Scout in Games, a stop-and-resume for turns, and a heads-up when ScoutCode Cloud usage runs high.
+
+- Games now has Chess and Flappy Scout, alongside the existing games.
+- Stop a turn and resume it later from where it left off, without anything new added to the chat.
+- Sub-agent work shows its steps under the task that started it, as they happen.
+- A stop no longer waits for a model that has gone quiet, so Scout responds to Esc right away.
+- Once half of ScoutCode Cloud's usage is used, Scout suggests joining the Discord. Dismiss it and it stays hidden on this PC.
+- Chatbots page asks once whether to connect a chatbot, and shows its models under its own page.
+
 ## 0.1.21
 Scout connects itself to Gemini, chatbots always see all of Scout's tools, and a new Privacy setting.
 

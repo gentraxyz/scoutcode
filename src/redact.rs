@@ -84,21 +84,25 @@ pub fn redact_owned(text: String) -> String {
 mod tests {
     use super::*;
 
+    // Made-up keys, each split with concat! so the source has nothing a secret scanner reads as a real key (GitHub
+    // flagged the whole Google one). The test still sees the joined string.
+    const GITHUB: &str = concat!("ghp", "_abcdefghijklmnopqrstuvwxyz0123456789");
+
     #[test]
     fn provider_keys_are_taken_out() {
         let samples = [
-            "OPENAI=sk-proj-abcdefghijklmnopqrstuvwxyz012345",
-            "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-            "aws AKIAIOSFODNN7EXAMPLE here",
-            "sk_live_abcdefghijklmnop1234",
-            "key=AIzaSyA-abcdefghijklmnopqrstuvwxyz12345",
-            "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2lnbmF0dXJl",
+            concat!("OPENAI=sk", "-proj-abcdefghijklmnopqrstuvwxyz012345"),
+            concat!("token ", "ghp", "_abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("aws AKIA", "IOSFODNN7EXAMPLE here"),
+            concat!("sk", "_live_abcdefghijklmnop1234"),
+            concat!("key=AIza", "SyA-abcdefghijklmnopqrstuvwxyz12345"),
+            concat!("eyJhbGciOiJIUzI1NiJ9", ".eyJyb2xlIjoic2VydmljZV9yb2xlIn0", ".c2lnbmF0dXJl"),
         ];
         for s in samples {
             let r = redact(s);
             assert!(r.contains(MARK), "{s} -> {r}");
         }
-        assert!(!redact("ghp_abcdefghijklmnopqrstuvwxyz0123456789").contains("ghp_"));
+        assert!(!redact(GITHUB).contains("ghp_"));
     }
 
     #[test]
@@ -115,7 +119,7 @@ mod tests {
 
     #[test]
     fn private_keys_and_url_passwords_go() {
-        let pem = "before\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nAAAA\n-----END OPENSSH PRIVATE KEY-----\nafter";
+        let pem = concat!("before\n-----BEGIN OPENSSH ", "PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nAAAA\n-----END OPENSSH ", "PRIVATE KEY-----\nafter");
         let r = redact(pem);
         assert!(r.contains("before") && r.contains("after") && !r.contains("b3BlbnNzaC1rZXk"), "{r}");
         let url = redact("postgres://admin:s3cretpass@db.example.com:5432/app");

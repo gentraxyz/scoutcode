@@ -4,13 +4,14 @@ import { act, tokens, type AgentRouteStep, type AgentRouter, type Model, type Mo
 import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { chatbotConnected, ChatbotPage, CHATBOT_ONLY_PAGES, isBotPage } from './Chatbots';
 import { DeepSeekWebPanel, useDeepSeek } from './DeepSeek';
+import { LocalSetup } from './Local';
 import { core, useCore, useView } from './store';
 import { Icon, IconButton, Link, Popover, Star, Switch } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
-type Tab = 'starred' | 'router' | 'scoutcode' | 'claude' | 'codex' | 'gemini' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'deepseek-web' | 'additional' | 'chatbots';
+type Tab = 'starred' | 'router' | 'scoutcode' | 'claude' | 'codex' | 'gemini' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'deepseek-web' | 'local' | 'additional' | 'chatbots';
 // ChatGPT and Claude are Codex and Claude Code too: their pages hold both the chatbot and its models.
-const TABS: [Tab, string][] = [['starred', 'Starred'], ['router', 'Agent Router'], ['codex', 'ChatGPT'], ['claude', 'Claude'], ['gemini', 'Gemini'], ['grok', 'Grok'], ['chatbots', 'Other chatbots'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'],['hermes', 'Hermes'], ['deepseek-web', 'DeepSeek Web'], ['additional', 'Additional Providers']];
+const TABS: [Tab, string][] = [['starred', 'Starred'], ['router', 'Agent Router'], ['codex', 'ChatGPT'], ['claude', 'Claude'], ['gemini', 'Gemini'], ['grok', 'Grok'], ['chatbots', 'Other chatbots'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'],['hermes', 'Hermes'], ['deepseek-web', 'DeepSeek Web'], ['local', 'Local models'], ['additional', 'Additional Providers']];
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
 type ModelRow = { key: string; provider: string; name: string; star: string; model: Model };
@@ -37,6 +38,7 @@ function allRows(models: Model[]): ModelRow[] {
   add((m) => (m.grokId ? 'grok' : null), (m) => m.id);
   add((m) => (m.hermesId ? 'hermes' : null), (m) => m.id);
   add((m) => (m.id.startsWith('deepseek-web/') ? 'deepseek-web' : null), (m) => m.id);
+  add((m) => (m.id.startsWith('local/') ? 'local' : null), (m) => m.id);
   add((m) => m.additional?.[0] ?? null, (m) => m.id);
   return rows;
 }
@@ -157,7 +159,7 @@ function RailIcon({ tab }: { tab: Tab }) {
   if (tab === 'router') return <Icon name="route" />;
   if (tab === 'additional') return <Icon name="plus" />;
   if (tab === 'chatbots') return <Icon name="chat" />;
-  const file = { scoutcode: 'scoutcode', claude: 'claude', codex: 'codex', gemini: 'gemini', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes', 'deepseek-web': 'deepseek-web' }[tab];
+  const file = { scoutcode: 'scoutcode', claude: 'claude', codex: 'codex', gemini: 'gemini', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes', 'deepseek-web': 'deepseek-web', local: 'local' }[tab];
   if (!file) return <img className="logo" src={scoutLogo} width={16} height={16} alt="" />;
   return <img className="logo" src={logo(file)} width={16} height={16} alt="" />;
 }
@@ -184,6 +186,7 @@ function ModelCard({ m, top, left }: { m: Model; top: number; left: number }) {
 
 function SignedOut({ tab }: { tab: Tab }) {
   if (tab === 'additional') return <AdditionalOptions />;
+  if (tab === 'local') return <LocalSetup compact />;
   const name = TABS.find(([t]) => t === tab)![1];
   const status = providerStatus(tab);
   return (
@@ -269,7 +272,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const deepseek = useDeepSeek();
   const teamRuns = (t: Tab) => !!team && (team.providers.includes(t) || (t === 'additional' && additionalProviders.some((a) => team.providers.includes(a.id))));
   const shownTab = (t: Tab) => (!onPick || (t !== 'router' && !CHATBOT_ONLY_PAGES.includes(t))) && (!team || t === 'starred' || t === 'router' || CHATBOT_ONLY_PAGES.includes(t) || teamRuns(t) || team.acp.includes(t));
-  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, 'deepseek-web': !!deepseek?.enabled, additional: cfg.additional.length > 0, starred: true, router: true, kilo: true, chatbots: link.on, gemini: chatbotConnected('gemini', link.chatbots) })[t];
+  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, 'deepseek-web': !!deepseek?.enabled, local: cfg.local.models.length > 0, additional: cfg.additional.length > 0, starred: true, router: true, kilo: true, chatbots: link.on, gemini: chatbotConnected('gemini', link.chatbots) })[t];
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => {
     const all = allRows(models);
@@ -344,7 +347,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
                 <div className="tiny dim rail-menu-head">{name}{!signedIn(t) && !CHATBOT_ONLY_PAGES.includes(t) ? ` · ${providerStatus(t)}` : ''}</div>
                 {!signedIn(t) && (
                   <button type="button" className="menu-item" onClick={() => { setTab(t); setSearch(''); setAdding(false); setCtx(null); }}>
-                    <Icon name="user" /><span className="grow">{t === 'opencode' ? 'Set up OpenCode' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : CHATBOT_ONLY_PAGES.includes(t) ? `Connect ${name}` : `Sign in to ${name}`}</span>
+                    <Icon name="user" /><span className="grow">{t === 'opencode' ? 'Set up OpenCode' : t === 'local' ? 'Set up local models' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : CHATBOT_ONLY_PAGES.includes(t) ? `Connect ${name}` : `Sign in to ${name}`}</span>
                   </button>
                 )}
                 <button type="button" className="menu-item" onClick={() => {
@@ -571,13 +574,14 @@ function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, o
       { id: 'grok', name: 'Grok Build' },
       { id: 'hermes', name: 'Hermes' },
     ];
+    if (cfg.local.models.length) base.push({ id: 'local', name: 'Local models' });
     for (const a of additionalProviders) {
       if (cfg.additional.some((l) => l.id === a.id) || rows.some((r) => r.provider === a.id)) {
         base.push({ id: a.id, name: a.name });
       }
     }
     return base;
-  }, [additionalProviders, cfg.additional, rows]);
+  }, [additionalProviders, cfg.additional, cfg.local.models.length, rows]);
 
   const defaultProvider = useMemo(() => {
     if (router.lastProvider && providers.some((p) => p.id === router.lastProvider)) return router.lastProvider;

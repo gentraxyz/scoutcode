@@ -17,6 +17,8 @@ export const pl: Translations = {
   "btn_save": "Zapisz",
   "btn_finish": "Zakończ konfigurację",
   "welcome_start": "Rozpocznij",
+  "welcome_skip": "Pomiń konfigurację i zacznij czat",
+  "welcome_skip_note": "Wszystko możesz ustawić później w Ustawieniach.",
   "lang_title": "Wybierz język",
   "lang_sub": "Wybierz język interfejsu Scout. Możesz zmienić język interfejsu lub odpowiedzi w dowolnej chwili w Ustawieniach.",
   "lang_search_ph": "Szukaj języków…",

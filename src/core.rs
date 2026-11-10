@@ -378,6 +378,9 @@ fn model_sources(cfg: &Config) -> Vec<&'static str> {
     // Always asked for: Kilo's free models need no key.
     out.push("kilo");
     out.extend(config::ADDITIONAL.iter().filter(|a| cfg.linked(a.id).is_some()).map(|a| a.id));
+    if cfg.local_on() {
+        out.push(crate::local::PROVIDER);
+    }
     let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
     out.extend(on.into_iter().filter(|(_, on)| *on).map(|(s, _)| s));
     if crate::deepseek::enabled() {
@@ -448,6 +451,7 @@ fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>,
         }
         "nvidia" => crate::api::list_nvidia(cfg).map_err(|e| format!("NVIDIA NIM: {}", e.message)),
         crate::deepseek::PROVIDER => Ok(crate::deepseek::models()),
+        crate::local::PROVIDER => Ok(crate::local::models(&cfg.local)),
         "kilo" => crate::api::list_kilo(cfg).map_err(|e| format!("Kilo Code: {}", e.message)),
         "copilot" => Ok(with_default(crate::copilot::list_models(cfg.copilot_token.as_deref().unwrap_or_default()))),
         "devin" => Ok(with_default(crate::devin::list_models())),
@@ -702,6 +706,7 @@ impl Core {
         let chat = Chat::new(0, session::new_session(&cwd, &cfg.model), &cfg, shared);
         let updater = crate::update::Updater::start(&waker, cfg.auto_update);
         crate::mcp_client::hub().reload(&waker, false);
+        crate::local::set_waker(waker.clone());
         let mut core = Core {
             handle,
             chat,
@@ -769,6 +774,11 @@ impl Core {
         let args: Vec<String> = std::env::args().collect();
         if let Some(s) = args.iter().position(|a| a == "--resume").and_then(|i| args.get(i + 1)).and_then(|id| session::load_session(id)) {
             core.open_session(s);
+        }
+        // A local model is loaded now, so the first message doesn't wait for it.
+        if core.chat.provider == crate::local::PROVIDER {
+            let model = core.chat.model.clone();
+            core.preload_local(&model);
         }
         core
     }
@@ -1105,6 +1115,7 @@ impl Core {
             Ev::KiloCheck(r) => self.login.kilo_check = Some(r),
             Ev::WhatsNew(notes) => self.whats_new = notes,
             Ev::AdditionalErrors(e) => self.additional_errors = e,
+            Ev::LocalModel(m) => self.add_local_model(m),
             Ev::Copilot(u) => self.copilot_update(u),
             Ev::Devin(u) => self.devin_update(u),
             Ev::Kiro(u) => self.kiro_update(u),
@@ -1986,6 +1997,15 @@ impl Core {
             config::save_one("model", json!(model));
             config::save_one("provider", json!(provider));
         }
+        if provider == crate::local::PROVIDER {
+            self.preload_local(&model);
+        }
+    }
+
+    /// Loads a local model in the background, and has it read how this chat's requests start (see `local::preload`).
+    fn preload_local(&mut self, model: &str) {
+        let prefix = self.chat.agent.as_mut().and_then(|a| a.local_prefix());
+        crate::local::preload(&self.cfg.local, model, prefix);
     }
 
     fn model_label(&self, m: &ModelRef) -> String {
@@ -2129,7 +2149,8 @@ impl Core {
                 let perm = self.chat.permission.as_ref().map(|p| tools::permission(&p.req.tool));
                 if mode == "yolo" && self.chat.permission.is_some() {
                     self.answer_permission(PermissionAnswer::Allow);
-                } else if mode == "acceptEdits" && perm == Some(tools::Permission::Edit) {
+                } else if mode == "acceptEdits" && perm == Some(tools::Permission::Edit) && self.chat.permission.as_ref().is_some_and(|p| p.req.reason.is_none()) {
+                    // A write outside the project carries a reason, and keeps waiting for the user's own answer.
                     self.answer_permission(PermissionAnswer::Allow);
                 } else if mode == "plan" && self.chat.permission.is_some() {
                     self.answer_permission(PermissionAnswer::Deny("Switched to plan mode".into()));
@@ -2643,6 +2664,7 @@ impl Core {
     /// Runs as the app closes. A waiting update goes in now; if it can't, it's found again at the next start.
     pub fn on_exit(&mut self) {
         tools::kill_background_shells();
+        crate::local::stop();
         let _ = self.updater.install();
     }
 
@@ -2670,6 +2692,104 @@ impl Core {
 
     pub fn dismiss_whats_new(&mut self) {
         self.whats_new.clear();
+    }
+
+    // ---------- local models ----------
+
+    /// Saves the local settings and hands them to the chat's agent. A change to how llama-server runs stops it, so the
+    /// next message starts it again with the new settings and the old model's memory is freed now.
+    fn save_local(&mut self, restart: bool) {
+        config::save_one("local", json!(self.cfg.local));
+        if restart {
+            crate::local::stop();
+        }
+        self.keys_changed();
+    }
+
+    /// Changes the local settings the window sends: any of backend, gpuLayers (null for auto), context,
+    /// reasoningBudget, tools, singleCall and shortPrompt.
+    pub fn set_local(&mut self, patch: Value) {
+        let mut l = self.cfg.local.clone();
+        let o = patch.as_object().cloned().unwrap_or_default();
+        let mut restart = false;
+        if let Some(b) = o.get("backend").and_then(Value::as_str) {
+            restart |= l.backend.as_deref() != Some(b);
+            l.backend = Some(b.to_string());
+        }
+        if let Some(v) = o.get("gpuLayers") {
+            let n = v.as_u64().map(|n| n.min(999) as u32);
+            restart |= l.gpu_layers != n;
+            l.gpu_layers = n;
+        }
+        if let Some(c) = o.get("context").and_then(Value::as_u64) {
+            let c = (c as u32).clamp(2048, 262_144);
+            restart |= l.context != c;
+            l.context = c;
+        }
+        if let Some(n) = o.get("reasoningBudget").and_then(Value::as_i64) {
+            let n = n.clamp(-1, 32_768) as i32;
+            restart |= l.reasoning_budget != n;
+            l.reasoning_budget = n;
+        }
+        if let Some(t) = o.get("tools").and_then(Value::as_str).filter(|t| crate::local::PRESETS.contains(t)) {
+            l.tools = t.to_string();
+        }
+        if let Some(b) = o.get("singleCall").and_then(Value::as_bool) {
+            l.single_call = b;
+        }
+        if let Some(b) = o.get("shortPrompt").and_then(Value::as_bool) {
+            l.short_prompt = b;
+        }
+        self.cfg.local = l;
+        self.save_local(restart);
+    }
+
+    pub fn local_install(&mut self, backend: Option<String>) {
+        let b = backend.or_else(|| crate::local::backend_for(&self.cfg.local).map(String::from));
+        if let Some(b) = b {
+            if self.cfg.local.backend.as_deref() != Some(b.as_str()) {
+                self.cfg.local.backend = Some(b.clone());
+                self.save_local(true);
+            }
+            crate::local::start_install(&b);
+        }
+    }
+
+    pub fn local_remove_backend(&mut self, backend: &str) {
+        crate::local::remove_backend(backend);
+    }
+
+    /// Downloads a curated model. Once it's in, it's added and, with nothing else chosen, chosen.
+    pub fn local_download(&mut self, id: &str) {
+        let h = self.hooks.clone();
+        crate::local::start_download(id, move |m| h.send(Ev::LocalModel(m)));
+    }
+
+    /// Adds a model, from a download or a file, and moves to it when the user has nothing else to run on.
+    fn add_local_model(&mut self, m: config::LocalModel) {
+        let id = format!("{}/{}", crate::local::PROVIDER, m.id);
+        let first = self.cfg.nothing_to_run_on();
+        self.cfg.local.models.retain(|x| x.id != m.id);
+        self.cfg.local.models.push(m);
+        self.save_local(false);
+        if first {
+            self.switch_model(&id, crate::local::PROVIDER, true);
+        }
+    }
+
+    /// Adds a GGUF file the user picked.
+    pub fn local_add_file(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let m = crate::local::model_from_file(path, &self.cfg.local.models)?;
+        self.add_local_model(m);
+        Ok(())
+    }
+
+    pub fn local_remove(&mut self, id: &str) {
+        if let Some(m) = self.cfg.local.models.iter().find(|m| m.id == id).cloned() {
+            crate::local::delete_model_file(&m);
+        }
+        self.cfg.local.models.retain(|m| m.id != id);
+        self.save_local(false);
     }
 
     /// Turns anonymous usage analytics on or off. Turning it off is the last event sent.
@@ -2980,6 +3100,31 @@ impl Core {
                 };
                 self.answer_permission(a);
             }
+            "plan" => {
+                if self.chat.plan.is_none() {
+                    return;
+                }
+                match c["answer"].as_str() {
+                    Some("approve") => {
+                        let mode = s("mode").filter(|m| m == "default" || m == "acceptEdits").unwrap_or_else(|| "default".into());
+                        self.answer_plan(PlanAnswer::Approve(mode));
+                    }
+                    Some("revise") => self.answer_plan(PlanAnswer::Revise(s("feedback").unwrap_or_default())),
+                    _ => {}
+                }
+            }
+            "questions" => {
+                let Some(asked) = self.chat.questions.as_ref().map(|q| q.questions.len()) else { return };
+                if c["skip"] == true {
+                    self.answer_questions(QuestionAnswer::Skipped);
+                } else if let Some(list) = c["answers"].as_array() {
+                    let answers: Vec<String> = list.iter().map(|a| a.as_str().unwrap_or("").trim().chars().take(4000).collect()).collect();
+                    // One non-empty answer per question, as the window sends.
+                    if answers.len() == asked && answers.iter().all(|a| !a.is_empty()) {
+                        self.answer_questions(QuestionAnswer::Answered(answers));
+                    }
+                }
+            }
             "mode" => {
                 if let Some(m) = s("mode").filter(|m| MODES.contains(&m.as_str())) {
                     self.set_mode(&m);
@@ -3104,7 +3249,7 @@ impl Core {
                 let live = std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == s.id);
                 json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "updated": s.updated, "running": live.is_some_and(|c| c.running), "waiting": live.is_some_and(Chat::waiting) })
             }).collect::<Vec<_>>(),
-            "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m) })).collect::<Vec<_>>(),
+            "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m), "about": config::mode_about(m) })).collect::<Vec<_>>(),
             "models": self.remote_models(),
             "starred": self.starred,
             "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name })).collect::<Vec<_>>(),
@@ -3122,11 +3267,22 @@ impl Core {
                 "queue": self.chat.queue.len(),
                 "permission": self.chat.permission.as_ref().map(|p| json!({ "tool": p.req.tool, "label": p.req.label, "reason": p.req.reason })),
                 "waiting": self.chat.plan.is_some() || self.chat.questions.is_some(),
+                // Sent by Scout 0.1.23 and later, so the website can answer them too.
+                "plan": self.chat.plan.as_ref().map(|p| cut(&p.text)),
+                "questions": self.questions_json(),
                 "todos": todos_json(&self.chat.todos),
                 "items": items,
                 "more": start,
             },
         })
+    }
+
+    /// The open chat's pending questions, for the window and ScoutMote; null when there are none.
+    fn questions_json(&self) -> Value {
+        json!(self.chat.questions.as_ref().map(|p| p.questions.iter().map(|q| json!({
+            "question": q.question, "header": q.header, "multiSelect": q.multi_select,
+            "options": q.options.iter().map(|o| json!({ "label": o.label, "description": o.description })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>()))
     }
 
     /// Hands ScoutMote what's on screen, at most about four times a second.
@@ -3152,7 +3308,7 @@ impl Core {
         let cfg = &self.cfg;
         let hub = crate::mcp_client::hub();
         let steering: Vec<String> = self.chat.shared.steer.lock().unwrap().iter().map(|s| s.text.clone()).collect();
-        let login_needed = cfg.team.is_none() && cfg.api_key.is_none() && !cfg.guest && cfg.openrouter_keys.is_empty() && cfg.nvidia_key.is_none() && !cfg.kilo_on() && cfg.copilot_token.is_none() && !cfg.devin_enabled && !cfg.kiro_enabled && !cfg.codex_enabled && !cfg.claude_enabled && !cfg.opencode_enabled && !cfg.grok_on() && !cfg.hermes_on() && cfg.additional.is_empty();
+        let login_needed = cfg.nothing_to_run_on();
         let voice = match &self.voice {
             Voice::Idle => json!({ "state": "idle" }),
             // Rounded so that it only goes out when it moves.
@@ -3217,7 +3373,9 @@ impl Core {
                 "imageModel": cfg.image_model,
                 "games": cfg.games,
                 "music": cfg.music,
+                "local": cfg.local,
             })),
+            ("local", crate::local::view(&cfg.local)),
             ("mode", json!(self.chat.shared.mode())),
             ("model", if let Some(id) = (self.chat.provider == "router").then(|| self.chat.model.clone()).or_else(|| self.chat.fallback.as_ref().filter(|r| r.is_router).map(|r| r.from.key.clone())) {
                 let router = self.cfg.agent_router(&id);
@@ -3242,10 +3400,7 @@ impl Core {
             ("totals", json!({ "totals": self.chat.totals, "context": self.chat.context })),
             ("permission", json!(self.chat.permission.as_ref().map(permission_json))),
             ("plan", json!(self.chat.plan.as_ref().map(|p| &p.text))),
-            ("questions", json!(self.chat.questions.as_ref().map(|p| p.questions.iter().map(|q| json!({
-                "question": q.question, "header": q.header, "multiSelect": q.multi_select,
-                "options": q.options.iter().map(|o| json!({ "label": o.label, "description": o.description })).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>()))),
+            ("questions", self.questions_json()),
             ("queue", json!(self.chat.queue.iter().map(|q| json!({ "text": q.text, "files": q.files.len() })).collect::<Vec<_>>())),
             ("steering", json!(steering)),
             ("sessions", json!(self.sessions.iter().map(|s| {
@@ -3289,7 +3444,7 @@ impl Core {
             ("usage", json!({ "info": self.usage.info, "busy": self.usage.busy, "message": self.usage.message })),
             ("quotas", json!(crate::quota::all())),
             ("voice", voice),
-            ("updater", json!({ "enabled": self.updater.enabled(), "version": crate::update::VERSION, "status": status_json(&self.updater.status()) })),
+            ("updater", json!({ "enabled": self.updater.enabled(), "version": crate::update::VERSION, "commit": crate::update::COMMIT, "status": status_json(&self.updater.status()) })),
             ("whatsNew", json!(self.whats_new)),
             ("mcp", json!({ "error": hub.error(), "servers": mcp_views })),
         ]
@@ -3341,7 +3496,7 @@ impl Core {
             "view": view,
             "models": self.models.iter().map(model_json).collect::<Vec<_>>(),
             "items": self.chat.items.iter().map(item_json).collect::<Vec<_>>(),
-            "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m) })).collect::<Vec<_>>(),
+            "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m), "about": config::mode_about(m) })).collect::<Vec<_>>(),
             "efforts": EFFORTS,
             "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name, "needsKey": a.needs_key, "note": a.note, "keyUrl": a.key_url, "keyLink": a.key_link, "keyHint": a.key_hint })).collect::<Vec<_>>(),
             "kiloWarning": config::KILO_WARNING,
@@ -3464,6 +3619,7 @@ mod tests {
             chatbot_link_mode: "default".into(),
             usage_analytics: false,
             agent_routers: Default::default(),
+            local: Default::default(),
         };
 
         // Shared had temporarily escalated to acceptEdits

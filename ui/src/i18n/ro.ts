@@ -17,6 +17,8 @@ export const ro: Translations = {
   "btn_save": "Salvează",
   "btn_finish": "Finalizează configurarea",
   "welcome_start": "Începe",
+  "welcome_skip": "Sari peste configurare și începe să conversezi",
+  "welcome_skip_note": "Poți configura totul mai târziu din Setări.",
   "lang_title": "Alegeți limba",
   "lang_sub": "Selectați limba pentru Scout. Puteți schimba interfața sau limba de răspuns oricând din Setări.",
   "lang_search_ph": "Căutare limbi…",

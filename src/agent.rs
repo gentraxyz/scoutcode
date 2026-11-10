@@ -113,6 +113,8 @@ pub enum Ev {
     WhatsNew(Vec<crate::update::ReleaseNote>),
     /// Why linked additional providers didn't list their models, from the last time the lists were loaded.
     AdditionalErrors(Vec<String>),
+    /// A local model finished downloading.
+    LocalModel(crate::config::LocalModel),
     /// The account the key belongs to, from the model list.
     User(String),
     /// The Scout Enterprise team the account is in, read before the model list when it changed.
@@ -240,20 +242,7 @@ fn edit_targets(args: &Value) -> Vec<String> {
 
 /// Whether `p` (relative to `cwd` or absolute) is one of the project's own files: inside `cwd` and not in .git.
 fn inside_project(cwd: &str, p: &str) -> bool {
-    let joined = std::path::Path::new(cwd).join(p);
-    let mut parts = Vec::new();
-    for c in joined.components() {
-        match c {
-            std::path::Component::ParentDir => _ = parts.pop(),
-            std::path::Component::CurDir => {}
-            c => parts.push(c),
-        }
-    }
-    let full: PathBuf = parts.iter().collect();
-    match full.strip_prefix(cwd) {
-        Ok(rel) => rel.components().next().is_none_or(|c| c.as_os_str() != ".git"),
-        Err(_) => false,
-    }
+    tools::within_project(cwd, p)
 }
 
 fn is_safe(cmd: &str) -> bool {
@@ -290,15 +279,44 @@ const KEEP_RECENT_RESULTS: usize = 6;
 const CACHE_TTL: Duration = Duration::from_secs(300);
 const STUB: &str = "[Output cleared to save context";
 
+#[cfg(test)]
+#[test]
+fn a_local_models_limits_stay_inside_its_context() {
+    assert_eq!(local_limit(90_000, Some(8192), 4), 6144, "three quarters of 8k");
+    assert_eq!(local_limit(60_000, Some(8192), 2), 4096);
+    assert_eq!(local_limit(5_000, Some(32_768), 4), 5_000, "a lower setting still wins");
+    assert_eq!(local_limit(0, Some(8192), 4), 6144, "off elsewhere, but a small context must still compact");
+    assert_eq!(local_limit(90_000, None, 4), 90_000, "other providers keep the setting");
+    assert_eq!(cap_output_to("#".repeat(10_000), 4_000).chars().filter(|c| *c == '#').count(), 4_000);
+}
+
 pub fn cap_output(s: String) -> String {
+    cap_output_to(s, MAX_TOOL_CHARS)
+}
+
+/// Cuts tool output above `max` characters in the middle, after taking out any secrets it holds: every tool result
+/// passes through here on its way into the conversation, and so to the provider.
+fn cap_output_to(s: String, max: usize) -> String {
+    let s = crate::redact::redact_owned(s);
     let n = s.chars().count();
-    if n <= MAX_TOOL_CHARS {
+    if n <= max {
         return s;
     }
-    let half = MAX_TOOL_CHARS / 2;
+    let half = max / 2;
     let head: String = s.chars().take(half).collect();
     let tail: String = s.chars().skip(n - half).collect();
-    format!("{head}\n\n… [{} characters cut to save context; narrow the request to see this part] …\n\n{tail}", n - MAX_TOOL_CHARS)
+    format!("{head}\n\n… [{} characters cut to save context; narrow the request to see this part] …\n\n{tail}", n - max)
+}
+
+/// A token limit for a local model's context: the setting, but no more than `context` × (n−1)/n. Unchanged elsewhere.
+fn local_limit(setting: u64, context: Option<u32>, n: u64) -> u64 {
+    match context {
+        Some(c) => {
+            let cap = c as u64 * (n - 1) / n;
+            if setting == 0 { cap } else { setting.min(cap) }
+        }
+        None => setting,
+    }
 }
 
 fn args_of(c: &ToolCall) -> Value {
@@ -422,7 +440,7 @@ pub struct Agent {
     /// A message whose turn failed before it joined the conversation, for a retry to send.
     unsent: Option<Content>,
     last_request_at: Option<Instant>,
-    sys: Option<(String, EditTool, String, Message)>,
+    sys: Option<(String, EditTool, String, Option<String>, Message)>,
     preferences: crate::instructions::Preferences,
     /// The tool list for the edit tool it was built for.
     specs: (EditTool, Vec<Value>),
@@ -589,11 +607,17 @@ impl Agent {
         let model = self.shared.model.lock().unwrap().clone();
         let edit = self.shared.edit_tool(&model);
         let name = self.shared.model_name(&model);
-        if self.sys.as_ref().is_none_or(|(cwd, e, n, _)| *cwd != self.session.cwd || *e != edit || *n != name) {
-            let msg = Message::System { content: prompt::system_prompt(&self.session.cwd, edit, &name, &self.preferences) };
-            self.sys = Some((self.session.cwd.clone(), edit, name, msg));
+        // A local model with the short prompt: what it says depends on its tools and whether it makes one call at a time.
+        let short = (self.on_local() && self.cfg.local.short_prompt).then(|| format!("{}|{}", self.cfg.local.tools, self.cfg.local.single_call));
+        if self.sys.as_ref().is_none_or(|(cwd, e, n, s, _)| *cwd != self.session.cwd || *e != edit || *n != name || *s != short) {
+            let content = if short.is_some() {
+                prompt::short_system_prompt(&self.session.cwd, edit, &name, &self.preferences, self.cfg.local.tools != "none", self.cfg.local.single_call)
+            } else {
+                prompt::system_prompt(&self.session.cwd, edit, &name, &self.preferences)
+            };
+            self.sys = Some((self.session.cwd.clone(), edit, name, short, Message::System { content }));
         }
-        self.sys.as_ref().unwrap().3.clone()
+        self.sys.as_ref().unwrap().4.clone()
     }
 
     fn add_usage(&mut self, r: &StreamResult, main: bool, h: &Hooks) {
@@ -697,6 +721,18 @@ impl Agent {
         if cfgs.is_empty() {
             cfgs.push(self.cfg.for_provider(&provider));
         }
+        // A local model runs in llama-server, which starts (or switches model) here and says which port it's on.
+        if provider == crate::local::PROVIDER {
+            let mut status = |s: String| h.send(Ev::Status(s));
+            match crate::local::ensure(&self.cfg.local, &model, &self.shared.cancel, &mut status) {
+                Ok((port, key)) => {
+                    cfgs[0].base_url = format!("http://127.0.0.1:{port}/v1");
+                    cfgs[0].api_key = Some(key);
+                }
+                Err(_) if self.cancelled() => return Err(ApiError::aborted()),
+                Err(message) => return Err(ApiError { message, status: 0, retry_after: None, aborted: false }),
+            }
+        }
         let mut key = 0;
         let effort = self.shared.effort.lock().unwrap().clone();
         let edit = self.shared.edit_tool(&model);
@@ -716,7 +752,9 @@ impl Agent {
                 tool_choice_none: no_tools,
                 temperature: self.cfg.temperature,
                 // ScoutCode and OpenRouter drop it for models without it; NIM isn't known to, and some of OVH's models refuse it.
-                effort: (provider != "nvidia" && config::additional_provider(&provider).is_none()).then_some(effort.as_str()),
+                effort: (provider != "nvidia" && provider != crate::local::PROVIDER && config::additional_provider(&provider).is_none()).then_some(effort.as_str()),
+                // llama-server makes one call per reply unless told otherwise.
+                parallel_tool_calls: (provider == crate::local::PROVIDER).then_some(!self.cfg.local.single_call),
             };
             // Whether any of the answer has been shown: once it has, another key would repeat it, so it isn't retried.
             let shown = Cell::new(false);
@@ -737,6 +775,9 @@ impl Agent {
                     self.add_usage(&r, !quiet, h);
                     if !quiet {
                         self.last_request_at = Some(Instant::now());
+                    }
+                    if let Some(t) = r.timings.as_ref().filter(|_| provider == crate::local::PROVIDER) {
+                        crate::local::observe(t);
                     }
                     return Ok(r);
                 }
@@ -786,8 +827,34 @@ impl Agent {
         unreachable!()
     }
 
-    /// Scout's own tools, then those of the user's MCP servers.
+    /// How this chat's requests to a local model start, for llama-server to read before the first message: the same
+    /// system prompt and tools `request` sends. None when the user's preferences don't load, which a turn reports.
+    pub fn local_prefix(&mut self) -> Option<crate::local::Prefix> {
+        // A turn loads them first too, so the prompt comes out the same.
+        self.reload_instructions().ok()?;
+        let model = self.shared.model.lock().unwrap().clone();
+        let edit = self.shared.edit_tool(&model);
+        if self.specs.0 != edit {
+            self.specs = (edit, tools::specs(None, edit));
+        }
+        Some(crate::local::Prefix { system: self.system(), tools: self.all_specs(), parallel_tool_calls: Some(!self.cfg.local.single_call) })
+    }
+
+    /// Whether this chat's model runs on this PC, where the local settings for small models apply.
+    fn on_local(&self) -> bool {
+        *self.shared.provider.lock().unwrap() == crate::local::PROVIDER
+    }
+
+    /// Scout's own tools a local model's preset leaves out, or None when it gets every tool.
+    fn local_tools(&self) -> Option<&'static [&'static str]> {
+        if self.on_local() { crate::local::tool_names(&self.cfg.local.tools) } else { None }
+    }
+
+    /// Scout's own tools, then those of the user's MCP servers. A local model gets only its preset's.
     fn all_specs(&self) -> Vec<Value> {
+        if let Some(only) = self.local_tools() {
+            return tools::specs(Some(only), self.specs.0);
+        }
         let mut all = self.specs.1.clone();
         if self.cfg.experimental_images {
             all.push(tools::image_spec());
@@ -810,11 +877,9 @@ impl Agent {
         if mode == "plan" {
             return PermissionAnswer::Deny(self.read_only_note.into());
         }
-        if perm == Permission::Edit && mode == "acceptEdits" {
-            return PermissionAnswer::Allow;
-        }
         let mut reason = None;
-        if perm == Permission::Edit && mode == "auto" {
+        // Accepting edits means the project's own files: a write anywhere else still asks first.
+        if perm == Permission::Edit && (mode == "auto" || mode == "acceptEdits") {
             let targets = if name == "update_memory" { crate::memory::target(&self.session.cwd, args).map(|p| p.to_string_lossy().to_string()).into_iter().collect() } else { edit_targets(args) };
             match targets.into_iter().find(|p| !inside_project(&self.session.cwd, p)) {
                 None => return PermissionAnswer::Allow,
@@ -893,7 +958,8 @@ impl Agent {
     }
 
     fn run_tool_inner(&mut self, name: &str, args: &Value, id: &str, h: &Hooks) -> ToolResult {
-        if !tools::known(name) && !tools::is_mcp(name) {
+        // A local model may still call a tool its preset leaves out, from what it was trained on.
+        if !tools::known(name) && !tools::is_mcp(name) || self.local_tools().is_some_and(|only| !only.contains(&name)) {
             let names: Vec<String> = self.all_specs().iter().filter_map(|s| s["function"]["name"].as_str().map(String::from)).collect();
             return ToolResult { output: format!("Unknown tool {name}. Available: {}", names.join(", ")), is_error: true, ..Default::default() };
         }
@@ -1085,7 +1151,7 @@ impl Agent {
                 self.sub_step(tools::AgentStep { summary, is_error, done: true, ..step }, Some(at), h);
             }
         }
-        out
+        crate::redact::redact_owned(out)
     }
 
     /// Adds a step to the running sub-agent's list, or replaces the `at`th, and shows it under its task call.
@@ -1627,8 +1693,19 @@ impl Agent {
         self.last_prompt_tokens.max(estimate_tokens(&self.session.messages))
     }
 
+    /// When to compact. A local model's context is small and fixed, so it compacts at three quarters of it.
+    fn compact_limit(&self) -> u64 {
+        local_limit(self.cfg.auto_compact_tokens, self.on_local().then_some(self.cfg.local.context), 4)
+    }
+
+    /// When to clear old tool output: at half a local model's context.
+    fn prune_limit(&self) -> u64 {
+        local_limit(self.cfg.prune_tokens, self.on_local().then_some(self.cfg.local.context), 2)
+    }
+
     fn should_compact(&self) -> bool {
-        self.cfg.auto_compact_tokens > 0 && self.context_tokens() > self.cfg.auto_compact_tokens
+        let limit = self.compact_limit();
+        limit > 0 && self.context_tokens() > limit
     }
 
     /// Replaces old tool output with a one-line stub, stale views first, then the oldest, until the context is down to `target`.
@@ -1715,7 +1792,7 @@ impl Agent {
 
     /// Clears old tool output once the context passes cfg.prune_tokens, or sooner when the provider's cache has expired anyway.
     fn auto_prune(&mut self, h: &Hooks) {
-        let limit = self.cfg.prune_tokens;
+        let limit = self.prune_limit();
         if limit == 0 {
             return;
         }
@@ -1736,7 +1813,8 @@ impl Agent {
     /// Index from which a compaction keeps messages word for word: the latest user turns that fit in a quarter of the limit.
     fn compact_cut(&self) -> usize {
         let msgs = &self.session.messages;
-        let budget = (if self.cfg.auto_compact_tokens > 0 { self.cfg.auto_compact_tokens } else { 80_000 }) / 4;
+        let limit = self.compact_limit();
+        let budget = (if limit > 0 { limit } else { 80_000 }) / 4;
         let mut cut = msgs.len();
         for i in (1..msgs.len()).rev() {
             if !matches!(msgs[i], Message::User { .. }) {
@@ -1993,7 +2071,11 @@ impl Agent {
                     return Err(e);
                 }
             };
-            let calls = r.tool_calls.clone();
+            let mut calls = r.tool_calls.clone();
+            // One call at a time: the rest are dropped from the reply too, so the conversation only has what ran.
+            if self.on_local() && self.cfg.local.single_call {
+                calls.truncate(1);
+            }
             self.push_assistant((!r.content.is_empty()).then(|| r.content.clone()), (!calls.is_empty()).then(|| calls.clone()));
             h.send(Ev::AssistantDone);
             save_session(&mut self.session);
@@ -2019,7 +2101,10 @@ impl Agent {
                 }
                 let res = self.run_tool(c, h);
                 denied |= res.summary.as_deref() == Some("denied");
-                self.session.messages.push(Message::Tool { tool_call_id: c.id.clone(), content: cap_output(res.output) });
+                // A local model's result gets at most about an eighth of its context (4 characters a token): reading it is
+                // the wait before its next step, and a quarter filled a small context in two results.
+                let max = if self.on_local() { (self.cfg.local.context as usize / 2).clamp(2048, MAX_TOOL_CHARS) } else { MAX_TOOL_CHARS };
+                self.session.messages.push(Message::Tool { tool_call_id: c.id.clone(), content: cap_output_to(res.output, max) });
             }
             self.take_steer(h);
             save_session(&mut self.session);
@@ -2085,6 +2170,9 @@ mod tests {
         assert!(!inside_project(cwd, "../other/file.txt"));
         assert!(!inside_project(cwd, ".git/config"));
         assert!(!inside_project(cwd, if cfg!(windows) { r"C:\Windows\hosts" } else { "/etc/hosts" }));
+        // The edit tools take ~ as the home folder, so it is never the project's.
+        assert!(!inside_project(cwd, "~/.bashrc"));
+        assert!(!inside_project(cwd, ""));
         let patch = json!({ "input": "*** Begin Patch\n*** Update File: a.rs\n*** Add File: ../b.rs\n*** End Patch" });
         assert_eq!(edit_targets(&patch), ["a.rs", "../b.rs"]);
     }

@@ -17,6 +17,8 @@ export const sv: Translations = {
   "btn_save": "Spara",
   "btn_finish": "Slutför installationen",
   "welcome_start": "Kom igång",
+  "welcome_skip": "Hoppa över installationen och börja chatta",
+  "welcome_skip_note": "Du kan ställa in allt senare i Inställningar.",
   "lang_title": "Välj ditt språk",
   "lang_sub": "Välj språk för Scout. Du kan när som helst ändra gränssnittet eller svarspråket i Inställningar.",
   "lang_search_ph": "Sök språk…",

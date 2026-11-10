@@ -442,6 +442,9 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .welcome-title { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; color: var(--strong); margin: 0; }
 .welcome-tagline { font-size: 14.5px; color: var(--muted); line-height: 1.4; margin: 0; }
 .welcome-start { min-width: 156px; height: 38px; padding: 0 20px; gap: 8px; border-radius: 999px; font-size: 13.5px; }
+.welcome-actions { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.welcome-skip { font-size: 12.5px; color: var(--muted); }
+.welcome-skip:hover { color: var(--strong); }
 .welcome-start .icon { transition: transform 0.2s var(--ease-out); }
 .welcome-start:hover .icon { transform: translateX(3px); }
 
@@ -777,6 +780,8 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .level-name { font-size: 13.5px; font-weight: 600; color: var(--strong); animation: fade-in var(--fast) var(--ease); transition: color var(--med) var(--ease), text-shadow var(--med) var(--ease); }
 .level-panel.max .level-name { color: var(--level); }
 .level-panel.max.reason .level-name { text-shadow: 0 0 12px var(--level-glow); }
+/* Tucked under the level's name, always one line tall so the panel never jumps while dragging. */
+.level-about { margin-top: -8px; min-height: 1.4em; line-height: 1.4; text-align: right; animation: fade-in var(--fast) var(--ease); }
 .level-track { position: relative; height: 32px; margin: 2px 0 0; }
 .level-rail { position: absolute; inset: 0; border-radius: 999px; background: color-mix(in srgb, var(--code-bg) 72%, var(--surface)); border: 1px solid var(--border-hi); pointer-events: none; }
 .level-fill { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(26px + (100% - 32px) * var(--f)); border-radius: 999px; background: color-mix(in srgb, var(--strong) 22%, var(--surface-hi)); opacity: 0; pointer-events: none; transition: width var(--med) var(--ease-out), opacity var(--fast) var(--ease), background-color var(--med) var(--ease); }

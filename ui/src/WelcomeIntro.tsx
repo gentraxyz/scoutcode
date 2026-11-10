@@ -4,7 +4,8 @@ import { useTranslation } from './i18n';
 import { ScoutLogo } from './logo';
 import { Icon } from './widgets';
 
-export function WelcomeIntro({ onStart }: { onStart: () => void }) {
+/** `onSkip` takes every default and goes straight to the chat; everything is still in Settings. */
+export function WelcomeIntro({ onStart, onSkip }: { onStart: () => void; onSkip: () => void }) {
   const { t } = useTranslation();
 
   useEffect(() => {
@@ -26,9 +27,13 @@ export function WelcomeIntro({ onStart }: { onStart: () => void }) {
           <p className="welcome-tagline">The gateway to free AI models</p>
         </div>
       </div>
-      <button type="button" className="button primary tall welcome-start" onClick={onStart}>
-        {t('welcome_start')}<Icon name="arrowRight" size={14} />
-      </button>
+      <div className="welcome-actions">
+        <button type="button" className="button primary tall welcome-start" onClick={onStart}>
+          {t('welcome_start')}<Icon name="arrowRight" size={14} />
+        </button>
+        <button type="button" className="text-button welcome-skip" onClick={onSkip}>{t('welcome_skip')}</button>
+        <span className="tiny dim">{t('welcome_skip_note')}</span>
+      </div>
     </div>
   );
 }

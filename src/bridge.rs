@@ -76,6 +76,7 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         music_upload,
         music_remove,
         music_soundcloud_add,
+        local_add_file,
     ]
 }
 
@@ -151,6 +152,15 @@ enum Action {
     SetAutoUpdate { on: bool },
     SetAnalytics { on: bool },
     RefreshSkills,
+    /// Changes local model settings: any of backend, gpuLayers, context, reasoningBudget, tools, singleCall, shortPrompt.
+    SetLocal { patch: Value },
+    LocalInstall { backend: Option<String> },
+    LocalCancelInstall,
+    LocalRemoveBackend { backend: String },
+    LocalDownload { id: String },
+    LocalCancelDownload { id: String },
+    LocalRemove { id: String },
+    LocalUnload,
 }
 
 fn permission_answer(answer: &str, feedback: Option<String>) -> PermissionAnswer {
@@ -168,7 +178,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
     // to the ones the team allows.
     if let Some(t) = c.team() {
         let own = match &action {
-            Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SetGuest { on: true } => true,
+            Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SetGuest { on: true } | Action::LocalInstall { .. } | Action::LocalDownload { .. } => true,
             Action::SaveNvidiaKey { key } | Action::SaveGrokKey { key } | Action::SaveHermesKey { key } => key.is_some(),
             Action::SetOpencode { on, .. } => *on && !t.acp.iter().any(|a| a == "opencode"),
             Action::SignIn { which } => !t.acp.iter().any(|a| a == which),
@@ -277,9 +287,30 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::SetAutoUpdate { on } => c.set_auto_update(on),
         Action::SetAnalytics { on } => c.set_analytics(on),
         Action::RefreshSkills => c.refresh_skills(),
+        Action::SetLocal { patch } => c.set_local(patch),
+        Action::LocalInstall { backend } => c.local_install(backend),
+        Action::LocalCancelInstall => crate::local::cancel_install(),
+        Action::LocalRemoveBackend { backend } => c.local_remove_backend(&backend),
+        Action::LocalDownload { id } => c.local_download(&id),
+        Action::LocalCancelDownload { id } => crate::local::cancel_download(&id),
+        Action::LocalRemove { id } => c.local_remove(&id),
+        Action::LocalUnload => crate::local::stop(),
     }
     c.wake();
     Ok(())
+}
+
+/// Adds a GGUF model file the user picks. The dialog is open before the core is locked, so Scout keeps working behind it.
+#[tauri::command(async)]
+fn local_add_file(core: Shared<'_>) -> Result<(), String> {
+    let Some(path) = rfd::FileDialog::new().set_title("Add a local model").add_filter("GGUF model", &["gguf"]).pick_file() else { return Ok(()) };
+    let mut c = core.lock().unwrap();
+    if let Some(t) = c.team() {
+        return Err(format!("{} manages your providers. Ask a team admin to add it.", t.name));
+    }
+    let r = c.local_add_file(&path);
+    c.wake();
+    r
 }
 
 /// False when the message wasn't taken and should stay in the box.

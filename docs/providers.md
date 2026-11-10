@@ -174,6 +174,22 @@ works, rate-limited with a monthly cap), sent to Cohere's OpenAI-compatible API 
 
 **Testing:** `cargo test cohere` covers reading the list. A real chat needs a key.
 
+## Experiential Labs
+
+**Experiential Labs** is an additional provider like Google AI Studio: the user's own `xpl_…` key from
+platform.experientiallabs.ai, sent to its OpenAI-compatible gateway at `https://api.experientiallabs.ai/v1`.
+
+- **The model list is two reads.** `GET /v1/models` with the key says which slugs it may call, with nothing but ids, so
+  `experiential_listing` fills in names, context, vision and prices from the public catalog (`GET /api/models`, paged).
+  It keeps active chat models that take tools. Retired, `-batch`, image/video and decision models are left out.
+- **Prices** are the cheapest route Experiential pays for (`host_managed`), from its nano-USD fields. A route on the user's
+  own provider key (BYOK) bills them at that provider's price instead.
+- **Free promotions** (`promotions[].free` in the catalog) are listed again as `<slug>:free`, which Experiential stops at
+  the allowance instead of billing. The plain slug of the same model is billed.
+
+**Testing:** `cargo test experiential` covers reading the list, and
+`EXPLABS_API_KEY=xpl_… cargo test -- --ignored live_experiential --nocapture` reads the real one.
+
 ## DeepSeek API and DeepSeek Web
 
 **DeepSeek API** is an additional provider like Google AI Studio: the user's own key from platform.deepseek.com, sent
@@ -219,3 +235,66 @@ desktop only, off until turned on in Settings > Providers, and its settings are 
 
 **Testing:** `cargo test deepseek` covers the prompt bookkeeping and reading tool calls back. Nothing can test the page
 without a signed-in account: after a change, sign in, pick DeepSeek Web, and ask for something that needs a tool.
+
+## Local models (llama.cpp)
+
+`src/local.rs` runs GGUF models on the user's own PC with llama.cpp's `llama-server`, which speaks OpenAI's API, so
+turns go through `api::stream_chat` like any other provider. The provider id is `local` and model ids are
+`local/<id>`. Settings are in `config.json` under `local`.
+
+- **Runtime.** Scout pins one llama.cpp build (`BUILD`, now `b12110`) with a table of each platform's archives and
+  GitHub's SHA-256 for each (`ALL_BACKENDS`). The user picks the GPU API: Vulkan, CUDA (two archives: the build and
+  `cudart`) or CPU on Windows x64 and Linux; Adreno OpenCL, Vulkan or CPU on Windows on ARM; Metal on macOS. The one
+  offered first is the table's first for the platform, or CUDA on a PC with NVIDIA's driver (`has_nvidia`:
+  `nvcuda.dll` on Windows, `/proc/driver/nvidia` on Linux). Builds go in `~/.scoutcode/runtime/llama/<build>-<backend>/`.
+- **Models.** A short curated list (`CURATED`: Q4_K_M GGUFs from Unsloth, and Tesslate's own for OmniCoder, all
+  Apache-2.0) downloads from Hugging Face
+  into `~/.scoutcode/models/`, checked against Hugging Face's SHA-256. Downloads come in 32 MB chunks, four at a time
+  (one long connection to Hugging Face's CDN gets about a quarter of the line's speed); the finished chunks are listed
+  in `<file>.part.done`, so a paused download carries on, and the hash is checked once the file is whole. The user can also add any `.gguf` file, which stays where it is.
+- **Server.** `local::ensure` starts `llama-server` on a free port on 127.0.0.1 with `-ngl auto` (llama.cpp's `--fit`
+  puts as many layers on the GPU as fit) or the user's layer count, `-c <context>`, `-np 1`, `--jinja` (tool calls
+  need the model's own template), `--api-key` with a random key made up for each start (llama-server allows every
+  origin, so without one any web page in the browser could use it) and `-lv 4` (the level that logs offload). It
+  waits for `/health`, reads "offloaded X/Y layers to GPU" from its log for
+  Settings, and starts again when the model, layers, context or build changes. With automatic offload, a model that
+  runs out of GPU memory while loading starts again leaving 2 GB, then 4 GB, free (`-fitt`): Adreno's OpenCL needs
+  room beyond what llama.cpp's fit counts. It stops on Unload, when its model is
+  removed, and when Scout quits; one a crashed Scout left running is ended at the next start (`server.pid`).
+- **Speed.** More flags: `--cache-reuse 256` (when pruning rewrites an old message, the cache of what follows
+  is shifted along, not worked out again), `--ctx-checkpoints 8` and `--checkpoint-min-step` at an eighth of the
+  context, no less than 512 (`local::checkpoint_step`; models whose cache can only go back to a checkpoint, such as
+  Qwen3.5's recurrent layers and Gemma's sliding window, otherwise get none in a small context and read a changed
+  chat again from the start), `--cache-ram` at an eighth of the PC's memory, between 1 and 8 GB (`local::cache_ram`;
+  llama.cpp's own 8 GB pushes the model out on a 16 GB PC), `--spec-type ngram-mod` (text the model repeats from the
+  chat, like code quoted in an edit, is drafted from the chat and only checked; no draft model) and
+  `--reasoning-budget` (`local.reasoningBudget`, 1024 tokens unless changed; 0 is no thinking, -1 no limit).
+  `local::preload` loads the model when it's chosen and at startup if the chat is on one, but only when nothing is
+  loaded, so a model in use is never swapped out. Starts are one at a time (`ENSURE`). With the chat's system prompt
+  and tools (`Agent::local_prefix`), the preload then has llama-server read them (`local::warm`: a request for a reply
+  to a stand-in message, dropped as the reply begins), so a first message on a CPU doesn't wait for them; not once a
+  message has been sent.
+- **Drafting.** llama-server's `timings` for each reply (`StreamResult::timings`) go to `local::observe`, which adds
+  up what was drafted, accepted, read and written (`Drafts`). Once 1,500 tokens were drafted and 1,000 read,
+  `Drafts::pays` decides: checking a drafted token costs about a prompt token's read (with a quarter more), and an
+  accepted one saves writing a token. The answer is kept in `speed.json` (`ngram`), and a server started later goes
+  without `ngram-mod` when it didn't pay, which happens on CPUs that read slowly.
+- **GPU or CPU.** With automatic offload on a GPU build, a model's first start times a short completion
+  (`local::measure`, llama-server's own `timings`) on the GPU and, unless the GPU is clearly quick (`clearly_gpu`), on
+  the CPU with `-ngl 0`. The CPU is kept only when a usual step (1,500 tokens read, 300 written) is a tenth quicker
+  there, which happens with built-in GPUs such as Adreno. The answer is kept per build and model in
+  `runtime/llama/speed.json`; delete the file to measure again. A layer count the user sets is never measured.
+- **Expert cache.** When the GPU wins on CUDA or Vulkan, a mixture-of-experts model (`n_expert` in its log) that kept
+  more than a sixth of its weights in the computer's memory (its `model buffer size` lines; `local::worth_moe_cache`)
+  is started once more with `--moe-cache-mib` at a tenth of the model's size (`local::moe_cache_size`) and measured
+  again (`local::try_moe_cache`). It's kept only when a usual step is a tenth quicker, and the answer goes in
+  `speed.json` (`moeCache`, 0 when it wasn't worth trying or lost). A model measured before this is tried at its next
+  start. Never with a layer count the user sets.
+- **Small models.** Only for local models: a tool preset (`none`, `essential`, `standard`, `full`; see
+  `local::tool_names`; MCP tools and `task` only in `full`), one tool call per reply (`parallel_tool_calls: false`, and
+  extra calls are dropped from the reply), a short system prompt (`prompt::short_system_prompt`), compaction at ¾ and
+  pruning at ½ of the context size, and tool output capped to about an eighth of it (reading it is the wait before the next step).
+
+To move to a new llama.cpp build: change `BUILD`, then copy each asset's name, size and `digest` from
+`https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/<build>` into `ALL_BACKENDS`. To change a curated
+model, take its `size` and `lfs.oid` from `https://huggingface.co/api/models/<repo>/tree/main`.

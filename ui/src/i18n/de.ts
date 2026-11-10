@@ -17,6 +17,8 @@ export const de: Translations = {
   "btn_save": "Speichern",
   "btn_finish": "Einrichtung abschließen",
   "welcome_start": "Loslegen",
+  "welcome_skip": "Einrichtung überspringen und loschatten",
+  "welcome_skip_note": "Du kannst alles später in den Einstellungen einrichten.",
   "lang_title": "Wähle deine Sprache",
   "lang_sub": "Wähle die Sprache für Scout. Du kannst die Benutzeroberfläche und die Antwortsprache jederzeit in den Einstellungen ändern.",
   "lang_search_ph": "Sprachen suchen…",

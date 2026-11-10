@@ -49,6 +49,10 @@ interface DesktopBuild {
   size: number;
   /** Ed25519 over "scout-desktop:<platform>:<version>:<sha256>", checked by the app against the key built into it. */
   signature: string;
+  /** The git commit the exe was built from. The exe carries it too (build.rs), and shows it in Settings. */
+  commit: string;
+  /** Ed25519 over "scout-desktop-commit:<platform>:<version>:<sha256>:<commit>", so the commit can't be swapped. */
+  commitSignature: string;
 }
 
 interface DesktopRelease {
@@ -131,6 +135,23 @@ function signingKey(): crypto.KeyObject {
   return key;
 }
 
+function git(args: string[]): string {
+  const r = spawnSync('git', args, { cwd: GUI, encoding: 'utf8' });
+  if (r.status !== 0) fail(`git ${args.join(' ')} failed: ${r.stderr.trim()}`);
+  return r.stdout.trim();
+}
+
+/**
+ * The commit a release is built from. A published release must be exactly a commit, so anyone can check the exe
+ * against the source it names: uncommitted changes to the app stop it. --out, for trying a release, allows them.
+ */
+function releaseCommit(allowDirty: boolean): string {
+  const head = git(['rev-parse', 'HEAD']);
+  const dirty = git(['status', '--porcelain', '--', '.']) !== '';
+  if (dirty && !allowDirty) fail('gui/ has uncommitted changes. Commit them first, so the release names the source it was built from.');
+  return dirty ? `${head}-dirty` : head;
+}
+
 function cargoVersion(): string {
   const toml = fs.readFileSync(path.join(GUI, 'Cargo.toml'), 'utf8');
   return /^version = "([^"]+)"/m.exec(toml)?.[1] ?? fail('no version in Cargo.toml');
@@ -173,13 +194,15 @@ function importedDlls(exe: Buffer): string[] {
 }
 
 /** The exe for each architecture. An exe built for the wrong one would leave people with an app that can't start. */
-function loadBuilds(): Built[] {
+function loadBuilds(commit: string): Built[] {
   return TARGETS.map(({ platform, target, machine }) => {
     const file = path.join(GUI, 'target', target, 'release', 'scout-desktop.exe');
     if (!fs.existsSync(file)) fail(`${file} doesn't exist. Run this without --skip-build.`);
     const exe = fs.readFileSync(file);
     if (exe.length > MAX_BYTES) fail(`${file} is ${exe.length} bytes, over Supabase's limit of ${MAX_BYTES}.`);
     if (exe.readUInt16LE(exe.readUInt32LE(0x3c) + 4) !== machine) fail(`${file} isn't a ${platform} build.`);
+    // An exe left over from another commit (as with --skip-build) would be published under the wrong one.
+    if (!exe.includes(Buffer.from(commit))) fail(`${file} wasn't built from ${commit}. Run this without --skip-build.`);
     // These come with the compiler, not with Windows, so the app wouldn't start on anyone else's PC.
     for (const dll of TOOLCHAIN_DLLS) if (exe.includes(dll)) fail(`${file} needs ${dll}. Check .cargo/config.toml.`);
     // Updates only replace the exe, so it can't need this beside it. See src/webview2.rs, and don't look for the
@@ -189,10 +212,17 @@ function loadBuilds(): Built[] {
   });
 }
 
-function describe(platform: string, version: string, url: string, exe: Buffer, key: crypto.KeyObject): DesktopBuild {
+function describe(platform: string, version: string, url: string, exe: Buffer, key: crypto.KeyObject, commit: string): DesktopBuild {
   const sha256 = crypto.createHash('sha256').update(exe).digest('hex');
-  const message = `scout-desktop:${platform}:${version}:${sha256}`;
-  return { url, sha256, size: exe.length, signature: crypto.sign(null, Buffer.from(message), key).toString('base64') };
+  const sign = (message: string) => crypto.sign(null, Buffer.from(message), key).toString('base64');
+  return {
+    url,
+    sha256,
+    size: exe.length,
+    signature: sign(`scout-desktop:${platform}:${version}:${sha256}`),
+    commit,
+    commitSignature: sign(`scout-desktop-commit:${platform}:${version}:${sha256}:${commit}`),
+  };
 }
 
 interface Notes {
@@ -212,7 +242,7 @@ function withRelease(history: DesktopReleaseNote[], version: string, notes: Note
   return [{ version, ...notes, published }, ...history.filter((r) => r.version !== version)];
 }
 
-async function publish(version: string, notes: Notes, builds: Built[], key: crypto.KeyObject) {
+async function publish(version: string, notes: Notes, builds: Built[], key: crypto.KeyObject, commit: string) {
   loadEnv();
   const { SUPABASE_URL: url, SUPABASE_SERVICE_ROLE_KEY: secret } = process.env;
   if (!url || !secret) fail('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (the environment, .env here, or the release environment on GitHub).');
@@ -236,7 +266,7 @@ async function publish(version: string, notes: Notes, builds: Built[], key: cryp
     console.log(`Uploading ${exePath} (${(exe.length / 1024 / 1024).toFixed(1)} MB)…`);
     const up = await db.storage.from(RELEASE_BUCKET).upload(exePath, exe, { upsert: true, contentType: 'application/octet-stream', cacheControl: '31536000' });
     if (up.error) fail(`upload failed: ${up.error.message}`);
-    platforms[platform] = describe(platform, version, db.storage.from(RELEASE_BUCKET).getPublicUrl(exePath).data.publicUrl, exe, key);
+    platforms[platform] = describe(platform, version, db.storage.from(RELEASE_BUCKET).getPublicUrl(exePath).data.publicUrl, exe, key, commit);
   }
 
   const published = new Date().toISOString();
@@ -253,12 +283,12 @@ async function publish(version: string, notes: Notes, builds: Built[], key: cryp
   console.log(`Published Scout ${version}. Installed apps pick it up within 6 hours, or at their next start.`);
 }
 
-function writeToFolder(out: string, version: string, notes: Notes, urlBase: string, builds: Built[], key: crypto.KeyObject) {
+function writeToFolder(out: string, version: string, notes: Notes, urlBase: string, builds: Built[], key: crypto.KeyObject, commit: string) {
   const platforms: Record<string, DesktopBuild> = {};
   for (const { platform, exe } of builds) {
     fs.mkdirSync(path.join(out, platform), { recursive: true });
     fs.writeFileSync(path.join(out, platform, 'Scout.exe'), exe);
-    platforms[platform] = describe(platform, version, `${urlBase.replace(/\/$/, '')}/${platform}/Scout.exe`, exe, key);
+    platforms[platform] = describe(platform, version, `${urlBase.replace(/\/$/, '')}/${platform}/Scout.exe`, exe, key, commit);
   }
   const published = new Date().toISOString();
   const historyFile = path.join(out, HISTORY_PATH);
@@ -313,6 +343,7 @@ async function main() {
     changelog: (file ? fs.readFileSync(file, 'utf8') : (option('changelog') ?? '')).trim(),
   };
   if (notes.summary.includes('\n')) fail('--summary is one line. Put the rest in --changelog.');
+  const commit = releaseCommit(Boolean(out));
 
   if (!process.argv.includes('--skip-build')) {
     // The web UI goes into each exe, so it's built first.
@@ -325,15 +356,15 @@ async function main() {
         cwd: GUI,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS || '2' },
+        env: { ...process.env, CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS || '2', SCOUT_COMMIT: commit },
       });
       if (build.status !== 0) fail(`cargo build failed for ${target}`);
     }
   }
-  const builds = loadBuilds();
+  const builds = loadBuilds(commit);
 
-  if (out) return writeToFolder(out, version, notes, option('url-base') ?? fail('--out needs --url-base'), builds, key);
-  await publish(version, notes, builds, key);
+  if (out) return writeToFolder(out, version, notes, option('url-base') ?? fail('--out needs --url-base'), builds, key, commit);
+  await publish(version, notes, builds, key, commit);
 }
 
 await main();

@@ -17,6 +17,8 @@ export const fi: Translations = {
   "btn_save": "Tallenna",
   "btn_finish": "Viimeistele asennus",
   "welcome_start": "Aloita",
+  "welcome_skip": "Ohita käyttöönotto ja aloita keskustelu",
+  "welcome_skip_note": "Voit määrittää kaiken myöhemmin Asetuksissa.",
   "lang_title": "Valitse kieli",
   "lang_sub": "Valitse Scoutin kieli. Voit muuttaa käyttöliittymän tai vastausten kieltä milloin tahansa Asetuksista.",
   "lang_search_ph": "Etsi kieliä…",

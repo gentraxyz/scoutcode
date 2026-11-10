@@ -45,6 +45,7 @@ function Projects() {
   const sessions = useView('sessions');
   const chat = useView('chat');
   const renaming = useUi((u) => u.renaming);
+  const orphans = sessions.filter((s) => !projects.some((p) => sameDir(p.path, s.cwd)));
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState('');
   // A project is shown open when Scout enters it.
@@ -105,6 +106,13 @@ function Projects() {
           </div>
         );
       })}
+      {/* Chats in folders that aren't in the list any more (removed from it) still show, like on ScoutMote. */}
+      {orphans.length > 0 && (
+        <>
+          <div className="row side-label"><SectionLabel>Other chats</SectionLabel></div>
+          {orphans.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} tip={s.cwd} />)}
+        </>
+      )}
     </div>
   );
 }
@@ -183,7 +191,7 @@ function Profile() {
               </div>
             </div>
             <hr />
-            <MenuItem icon="gear" onClick={() => { close(); ui.set({ settings: 'notifications' }); }}>Settings</MenuItem>
+            <MenuItem icon="gear" onClick={() => { close(); ui.set({ settings: 'appearance' }); }}>Settings</MenuItem>
             <MenuItem icon="chart" onClick={() => { close(); ui.set({ settings: 'usage' }); }}>Usage</MenuItem>
             <hr />
             <MenuItem icon="download" onClick={() => { close(); ui.set({ settings: 'updates' }); act('checkUpdates'); }}>Check for updates</MenuItem>
@@ -205,9 +213,24 @@ function DeltaTab() {
   );
 }
 
+const WIDTH_KEY = 'scout:sidebarWidth';
+/** The search, kept while the sidebar is hidden (hiding it unmounts it). */
+let lastSearch = '';
+
 export function Sidebar() {
-  const [search, setSearch] = useState('');
-  const [width, setWidth] = useState(264);
+  const [search, setSearchState] = useState(lastSearch);
+  const setSearch = (s: string) => { lastSearch = s; setSearchState(s); };
+  // The width it was dragged to, across hiding it and restarts.
+  const [width, setWidthState] = useState(() => {
+    try {
+      const w = Number(localStorage.getItem(WIDTH_KEY));
+      return w >= 200 && w <= 420 ? w : 264;
+    } catch { return 264; }
+  });
+  const setWidth = (w: number) => {
+    setWidthState(w);
+    try { localStorage.setItem(WIDTH_KEY, String(w)); } catch {}
+  };
   const searching = !!search.trim() && !useHidden().includes('side.search');
   return (
     <aside className="sidebar" style={{ width }}>

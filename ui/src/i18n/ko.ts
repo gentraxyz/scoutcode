@@ -17,6 +17,8 @@ export const ko: Translations = {
   "btn_save": "저장",
   "btn_finish": "설정 완료",
   "welcome_start": "시작하기",
+  "welcome_skip": "설정 건너뛰고 채팅 시작하기",
+  "welcome_skip_note": "모든 설정은 나중에 설정에서 할 수 있습니다.",
   "lang_title": "언어 선택",
   "lang_sub": "Scout에서 사용할 언어를 선택하세요. 인터페이스 및 응답 언어는 설정에서 언제든지 변경할 수 있습니다.",
   "lang_search_ph": "언어 검색…",

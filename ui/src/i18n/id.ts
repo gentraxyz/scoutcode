@@ -17,6 +17,8 @@ export const id: Translations = {
   "btn_save": "Simpan",
   "btn_finish": "Selesaikan Pengaturan",
   "welcome_start": "Mulai Sekarang",
+  "welcome_skip": "Lewati penyiapan dan mulai mengobrol",
+  "welcome_skip_note": "Anda dapat mengatur semuanya nanti di Pengaturan.",
   "lang_title": "Pilih bahasa Anda",
   "lang_sub": "Pilih bahasa untuk Scout. Anda dapat mengubah antarmuka atau bahasa balasan kapan saja di Pengaturan.",
   "lang_search_ph": "Cari bahasa…",

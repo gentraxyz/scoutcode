@@ -17,6 +17,8 @@ export const it: Translations = {
   "btn_save": "Salva",
   "btn_finish": "Completa configurazione",
   "welcome_start": "Inizia",
+  "welcome_skip": "Salta la configurazione e inizia a chattare",
+  "welcome_skip_note": "Puoi configurare tutto più tardi nelle Impostazioni.",
   "lang_title": "Scegli la tua lingua",
   "lang_sub": "Seleziona la lingua per Scout. Puoi modificare l’interfaccia o la lingua delle risposte in qualsiasi momento nelle Impostazioni.",
   "lang_search_ph": "Cerca lingue…",

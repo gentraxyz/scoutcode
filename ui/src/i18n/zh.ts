@@ -17,6 +17,8 @@ export const zh: Translations = {
   "btn_save": "保存",
   "btn_finish": "完成设置",
   "welcome_start": "开始使用",
+  "welcome_skip": "跳过设置，直接开始聊天",
+  "welcome_skip_note": "之后可以在设置中完成所有配置。",
   "lang_title": "选择您的语言",
   "lang_sub": "为 Scout 选择语言。您可以随时在“设置”中更改界面或回复语言。",
   "lang_search_ph": "搜索语言…",

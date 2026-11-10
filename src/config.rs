@@ -28,7 +28,7 @@ pub struct AdditionalProvider {
     pub default_model: &'static str,
 }
 
-pub static ADDITIONAL: [AdditionalProvider; 4] = [
+pub static ADDITIONAL: [AdditionalProvider; 5] = [
     AdditionalProvider {
         id: "ovh",
         name: "OVH Cloud",
@@ -73,7 +73,23 @@ pub static ADDITIONAL: [AdditionalProvider; 4] = [
         key_hint: "Cohere API key",
         default_model: "command-a-03-2025",
     },
+    AdditionalProvider {
+        id: "experiential",
+        name: "Experiential Labs",
+        url: EXPERIENTIAL_URL,
+        needs_key: true,
+        note: "One gateway for Claude, GPT, Gemini, GLM, DeepSeek, Kimi and more, with your own key. Models are billed from your Experiential credit at list price, except those in a free promotion, which are listed with \":free\" and stop at the allowance instead of billing. GPT-6 Luna is free up to a daily limit once your account has a saved card. Saved on this PC.",
+        key_url: "https://platform.experientiallabs.ai/settings/api-keys",
+        key_link: "Make a key on Experiential Labs",
+        key_hint: "xpl_…",
+        default_model: "gpt-6-luna",
+    },
 ];
+
+/// Experiential Labs' OpenAI-compatible API. Its `/v1/models` has only ids, so names, prices and capabilities come from
+/// its public catalog at `EXPERIENTIAL_CATALOG_URL`.
+pub const EXPERIENTIAL_URL: &str = "https://api.experientiallabs.ai/v1";
+pub const EXPERIENTIAL_CATALOG_URL: &str = "https://api.experientiallabs.ai/api/models";
 
 /// Cohere's OpenAI-compatible API. Its model list comes from Cohere's own API, at `COHERE_MODELS_URL`.
 pub const COHERE_URL: &str = "https://api.cohere.ai/compatibility/v1";
@@ -135,6 +151,17 @@ pub fn mode_label(mode: &str) -> &'static str {
         "plan" => "Read Only",
         "yolo" => "Accept All",
         _ => "Ask first",
+    }
+}
+
+/// A few words on what a mode lets Scout do without asking, shown under its label on one line. It follows `Agent::permit`.
+pub fn mode_about(mode: &str) -> &'static str {
+    match mode {
+        "plan" => "Looks, never changes anything",
+        "acceptEdits" => "Edits freely, asks before commands",
+        "auto" => "Asks only about risky actions",
+        "yolo" => "Never asks",
+        _ => "Asks before every edit and command",
     }
 }
 
@@ -235,6 +262,45 @@ pub struct Config {
     pub chatbot_link_mode: String,
     /// Desktop app only: send anonymous usage analytics (see analytics.rs). On unless turned off.
     pub usage_analytics: bool,
+    /// Desktop app only: models run on this PC with llama.cpp (see local.rs), and what small models are given.
+    pub local: Local,
+}
+
+/// Local models with llama.cpp: how llama-server runs them, and what they're offered, which suits small models.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Local {
+    /// The llama.cpp build to run ("vulkan", "cuda", "cpu"…). None for the first installed, else the best for this PC.
+    pub backend: Option<String>,
+    /// How many of the model's layers go on the GPU. None lets llama.cpp fit as many as there's memory for.
+    pub gpu_layers: Option<u32>,
+    /// The context size in tokens. Compaction and pruning stay inside it.
+    pub context: u32,
+    /// Which tools the model is offered: "none", "essential", "standard" or "full" (see `local::tool_names`).
+    pub tools: String,
+    /// One tool call per reply: the rest of a reply's calls are dropped.
+    pub single_call: bool,
+    /// A short system prompt, with the project's files and memory cut down to fit a small context.
+    pub short_prompt: bool,
+    /// The most tokens a model thinks for before it must answer: 0 for no thinking, -1 for no limit.
+    pub reasoning_budget: i32,
+    pub models: Vec<LocalModel>,
+}
+
+impl Default for Local {
+    fn default() -> Self {
+        Local { backend: None, gpu_layers: None, context: 8192, tools: "essential".into(), single_call: true, short_prompt: true, reasoning_budget: 1024, models: vec![] }
+    }
+}
+
+/// A GGUF model on this PC: one Scout downloaded, or a file the user picked.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LocalModel {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub size: u64,
 }
 
 /// A model in the picker: its list key and where it runs.
@@ -419,12 +485,48 @@ fn file() -> PathBuf {
     home().join("config.json")
 }
 
-pub fn read_saved() -> Map<String, Value> {
+/// The settings file alone, without the keys kept in Credential Manager.
+fn read_file() -> Map<String, Value> {
     std::fs::read_to_string(file())
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default()
+}
+
+fn write_file(saved: Map<String, Value>) {
+    let _ = std::fs::create_dir_all(home());
+    if let Ok(text) = serde_json::to_string_pretty(&Value::Object(saved)) {
+        let _ = std::fs::write(file(), text);
+    }
+}
+
+/// Every saved setting, keys included. A key still in the file, as an older build saved it, moves to Credential
+/// Manager here and leaves the file.
+pub fn read_saved() -> Map<String, Value> {
+    let mut saved = read_file();
+    let in_file: Vec<String> = saved.keys().filter(|k| crate::secrets::is_secret(k)).cloned().collect();
+    if !in_file.is_empty() {
+        let mut file_only = saved.clone();
+        let mut moved = false;
+        for k in &in_file {
+            if crate::secrets::set(k, &saved[k]) {
+                file_only.remove(k);
+                moved = true;
+            }
+        }
+        if moved {
+            write_file(file_only);
+        }
+    }
+    for f in crate::secrets::FIELDS {
+        if !saved.contains_key(f) {
+            if let Some(v) = crate::secrets::get(f) {
+                saved.insert(f.to_string(), v);
+            }
+        }
+    }
+    saved
 }
 
 /// The saved OpenRouter keys in the order they're tried. A file from before the list has one `openrouterKey`, which
@@ -519,6 +621,7 @@ pub fn load_config() -> Config {
         chatbot_link: s.get("chatbotLink").and_then(Value::as_bool).unwrap_or(true),
         chatbot_link_mode: s.get("chatbotLinkMode").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or("default").to_string(),
         usage_analytics: s.get("usageAnalytics").and_then(Value::as_bool).unwrap_or(true),
+        local: s.get("local").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
     };
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
@@ -572,7 +675,7 @@ impl Config {
 
     /// Whether Kilo is the only provider there's a way to use.
     pub fn only_kilo(&self) -> bool {
-        self.team.is_none() && self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty()
+        self.team.is_none() && self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty() && self.local.models.is_empty()
     }
 
     /// Whether requests to ScoutCode go without an account.
@@ -612,6 +715,10 @@ impl Config {
         } else if let Some(a) = additional_provider(provider) {
             c.base_url = a.url.to_string();
             c.api_key = self.linked(a.id).and_then(|l| l.key.clone());
+        } else if provider == crate::local::PROVIDER {
+            // llama-server's port is only known once it runs: see `Agent::request`. It takes no key.
+            c.base_url = String::new();
+            c.api_key = None;
         }
         c
     }
@@ -652,6 +759,17 @@ impl Config {
         self.games = other.games.clone();
         self.music = other.music.clone();
         self.team = other.team.clone();
+        self.local = other.local.clone();
+    }
+
+    /// Whether there's no provider at all to run models on, so the window asks the user to set one up.
+    pub fn nothing_to_run_on(&self) -> bool {
+        self.team.is_none() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && !self.kilo_on() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty() && !self.local_on()
+    }
+
+    /// Whether the user has local models to run.
+    pub fn local_on(&self) -> bool {
+        self.team.is_none() && !self.local.models.is_empty()
     }
 }
 
@@ -666,20 +784,24 @@ pub fn save_openrouter_keys(keys: &[OpenRouterKey]) {
     save_config(m);
 }
 
-/// Saves the given fields, keeping anything else already in the file. Null removes a field.
+/// Saves the given fields, keeping anything else already in the file. Null removes a field. Keys go to Credential
+/// Manager, and only stay in the file when it can't hold them.
 pub fn save_config(patch: Map<String, Value>) {
-    let mut saved = read_saved();
+    let mut saved = read_file();
     for (k, v) in patch {
+        let secret = crate::secrets::is_secret(&k);
         if v.is_null() {
+            if secret {
+                crate::secrets::delete(&k);
+            }
+            saved.remove(&k);
+        } else if secret && crate::secrets::set(&k, &v) {
             saved.remove(&k);
         } else {
             saved.insert(k, v);
         }
     }
-    let _ = std::fs::create_dir_all(home());
-    if let Ok(text) = serde_json::to_string_pretty(&Value::Object(saved)) {
-        let _ = std::fs::write(file(), text);
-    }
+    write_file(saved);
 }
 
 pub fn save_one(key: &str, value: Value) {

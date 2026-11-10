@@ -593,6 +593,19 @@ pub fn resolve(cwd: &str, p: &str) -> Result<PathBuf, String> {
     })
 }
 
+/// Whether a write to `p` lands in the project's own files: the path the edit tools would write (so ~ is the home folder
+/// and symlinks are followed), inside `cwd` and not in .git.
+pub fn within_project(cwd: &str, p: &str) -> bool {
+    if p.is_empty() {
+        return false;
+    }
+    let real = canon(&normalize(&Path::new(cwd).join(native(p))));
+    match real.strip_prefix(canon(Path::new(cwd))) {
+        Ok(rel) => rel.components().next().is_none_or(|c| !c.as_os_str().eq_ignore_ascii_case(".git")),
+        Err(_) => false,
+    }
+}
+
 pub fn rel(cwd: &str, abs: &Path) -> String {
     match abs.strip_prefix(cwd) {
         Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().replace('\\', "/"),

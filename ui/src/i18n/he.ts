@@ -17,6 +17,8 @@ export const he: Translations = {
   "btn_save": "שמור",
   "btn_finish": "סיים הגדרה",
   "welcome_start": "התחל",
+  "welcome_skip": "דלג על ההגדרה והתחל לשוחח",
+  "welcome_skip_note": "אפשר להגדיר הכול מאוחר יותר בהגדרות.",
   "lang_title": "בחר את השפה שלך",
   "lang_sub": "בחר שפה עבור Scout. תוכל לשנות את הממשק או שפת המענה בכל עת בהגדרות.",
   "lang_search_ph": "חיפוש שפות…",

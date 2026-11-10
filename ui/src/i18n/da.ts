@@ -17,6 +17,8 @@ export const da: Translations = {
   "btn_save": "Gem",
   "btn_finish": "Afslut opsætning",
   "welcome_start": "Kom i gang",
+  "welcome_skip": "Spring opsætningen over og begynd at chatte",
+  "welcome_skip_note": "Du kan indstille alt senere under Indstillinger.",
   "lang_title": "Vælg dit sprog",
   "lang_sub": "Vælg sproget til Scout. Du kan til enhver tid ændre brugerfladen eller svarssproget i Indstillinger.",
   "lang_search_ph": "Søg efter sprog…",

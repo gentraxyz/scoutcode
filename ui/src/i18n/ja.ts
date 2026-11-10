@@ -17,6 +17,8 @@ export const ja: Translations = {
   "btn_save": "保存",
   "btn_finish": "セットアップ完了",
   "welcome_start": "はじめる",
+  "welcome_skip": "セットアップをスキップしてチャットを始める",
+  "welcome_skip_note": "すべての設定は後から「設定」で行えます。",
   "lang_title": "言語を選択",
   "lang_sub": "Scoutの言語を選択してください。インターフェースや回答言語は後からいつでも設定で変更できます。",
   "lang_search_ph": "言語を検索…",

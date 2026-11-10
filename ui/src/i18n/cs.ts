@@ -17,6 +17,8 @@ export const cs: Translations = {
   "btn_save": "Uložit",
   "btn_finish": "Dokončit nastavení",
   "welcome_start": "Začít",
+  "welcome_skip": "Přeskočit nastavení a začít chatovat",
+  "welcome_skip_note": "Vše můžete nastavit později v Nastavení.",
   "lang_title": "Vyberte svůj jazyk",
   "lang_sub": "Zvolte jazyk pro Scout. Rozhraní nebo jazyk odpovědí můžete kdykoli změnit v Nastavení.",
   "lang_search_ph": "Hledat jazyky…",

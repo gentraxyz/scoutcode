@@ -17,6 +17,8 @@ export const fil: Translations = {
   "btn_save": "I-save",
   "btn_finish": "Tapusin ang Setup",
   "welcome_start": "Magsimula",
+  "welcome_skip": "Laktawan ang setup at magsimulang mag-chat",
+  "welcome_skip_note": "Maaari mong i-set up ang lahat mamaya sa Settings.",
   "lang_title": "Piliin ang iyong wika",
   "lang_sub": "Pumili ng wika para sa Scout. Maaari mong baguhin ang interface o wika ng tugon anumang oras sa Mga Setting.",
   "lang_search_ph": "Maghanap ng mga wika…",

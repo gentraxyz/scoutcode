@@ -9,6 +9,7 @@ import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
 import { ClaudeSetup } from './ClaudeSetup';
+import { LocalSetup, localStatus } from './Local';
 import { DeepSeekWebPanel, useDeepSeek } from './DeepSeek';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
@@ -24,7 +25,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'router', title: 'Agent Router', icon: 'route', keywords: 'agent router routing route fallback fallbacks jev rate limit 429 retry provider models intelligence tier' },
   { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily weekly monthly 5-hour limits balance banked reset chart history quota free requests rate limit providers rewards login streak claim referral referrals invite code bonus credit' },
   { id: 'account', title: 'Account', icon: 'user', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
-  { id: 'providers', title: 'Providers', icon: 'user', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro kilo models' },
+  { id: 'providers', title: 'Providers', icon: 'user', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro kilo models local llama llama.cpp gguf gpu offload offline ollama tools small model' },
   { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
@@ -185,7 +186,6 @@ function Discord() {
 
 /** Colors, picked from short lists of ones that go together. */
 function Appearance() {
-  const { cwd } = useView('chat');
   const theme = useTheme();
   const elements = ELEMENTS.find((e) => e.id === theme.elements)!.vars;
   const coreLanguages = useCore((s) => s.statics?.languages);
@@ -205,13 +205,8 @@ function Appearance() {
         <select
           className="input select"
           value={uiLanguage}
-          onChange={(e) => {
-            const next = e.target.value;
-            setUiLanguage(next);
-            invoke<{ global: string; project: string; language: string }>('instructions_load', { cwd })
-              .then((p) => invoke('instructions_save', { cwd, ...p, language: next }))
-              .catch(() => {});
-          }}
+          // Only the interface: the language Scout replies in is its own setting, under Instructions.
+          onChange={(e) => setUiLanguage(e.target.value)}
         >
           <optgroup label={t('settings_optgroup_full')}>
             {languages.filter(([id]) => isFull(id)).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
@@ -541,7 +536,7 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
     if (!trimmed || busy) return;
     act('usageChange', {
       body: { action: 'redeem-referral', code: trimmed },
-      said: `Redeemed referral code: added ${usd(ref?.credit ?? 5)} of credit for ${ref?.expiryDays ?? 3} days.`,
+      said: 'Redeemed referral code.',
     });
     setCode('');
   };
@@ -569,7 +564,7 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
       {ref && (
         <>
           <SettingRow
-            title={`Partner Program (${ref.referred.length} referred${ref.earned > 0 ? ` · ${usd(ref.earned)} earned` : ''})`}
+            title={`${ref.partner ? 'Partner Program' : 'Referrals'} (${ref.referred.length} referred${ref.earned > 0 ? ` · ${usd(ref.earned)} earned` : ''})`}
             sub={`Your referral code is "${ref.code}". Refer as many friends as you like: they get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days, and you get ${usd(ref.bonus)} in balance once they sign in to Scout and send their first prompt.`}
           >
             <CopyButton text={ref.code} label="Copy code" />
@@ -583,7 +578,7 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
             />
           ))}
           {ref.referredBy ? (
-            <SettingRow title={`Referred by ${ref.referredBy}`} sub={`You received ${usd(ref.credit)} in ScoutCode credit for ${ref.expiryDays} days.`} />
+            <SettingRow title={`Referred by ${ref.referredBy}`} sub={`You received ${usd(ref.receivedCredit)} in ScoutCode credit for ${ref.expiryDays} days.`} />
           ) : (
             ref.canRedeem !== false && (
               <SettingRow title="Redeem a referral code" sub={`Enter a friend's username or referral link to get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days.`}>
@@ -900,6 +895,7 @@ function ProviderRow({ p, open, onToggle }: { p: ProviderEntry; open: boolean; o
 function Providers() {
   const cfg = useView('cfg');
   const login = useView('login');
+  const local = useView('local');
   const { plans, kiloWarning, additionalProviders } = useCore((s) => s.statics);
   const deepseek = useDeepSeek();
   const [open, setOpen] = useState<string | null>(null);
@@ -1013,6 +1009,11 @@ function Providers() {
       id: 'deepseek-web', name: 'DeepSeek Web', linked: !!deepseek?.enabled,
       status: !deepseek?.enabled ? providerStatus('deepseek-web') : `Browser extension · ${deepseek.signedIn ? 'Signed in' : 'Not signed in'}`,
       body: <DeepSeekWebPanel />,
+    },
+    {
+      id: 'local', name: 'Local models (llama.cpp)', linked: cfg.local.models.length > 0,
+      status: localStatus(cfg.local, local.backends.some((b) => b.id === local.backend && b.installed)),
+      body: <LocalSetup />,
     },
     own('devin', 'Devin', DEVIN_NOTE, cfg.devin, "See Devin's plans"),
     own('kiro', 'Kiro', KIRO_NOTE, cfg.kiro, "See Kiro's plans"),
@@ -1303,11 +1304,13 @@ function Privacy() {
 }
 
 function Updates() {
-  const { enabled, version, status } = useView('updater');
+  const { enabled, version, commit, status } = useView('updater');
   const { autoUpdate } = useView('cfg');
   const { anyRunning } = useView('run');
   const dirty = useUi((u) => u.editorDirty);
-  const title = `Scout ${version}`;
+  // The commit it was built from, so this copy can be checked against the source.
+  const built = commit && commit !== 'unknown' ? ` (${commit.slice(0, 7)}${commit.endsWith('-dirty') ? ', uncommitted changes' : ''})` : '';
+  const title = `Scout ${version}${built}`;
   if (!enabled) return (
     <>
       <Heading title="Updates" sub="Scout checks for new versions when it starts and every few hours. They're signed by ScoutCode and checked before they're installed." />

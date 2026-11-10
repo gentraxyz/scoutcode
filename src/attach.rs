@@ -124,7 +124,8 @@ pub fn build(cwd: &str, text: &str, files: &[String]) -> (Content, Vec<PathBuf>)
                 Ok(b) if b.iter().take(8000).any(|&c| c == 0) => "(A binary file, so its contents are not included.)".to_string(),
                 Ok(b) => {
                     read.push(abs);
-                    String::from_utf8_lossy(&b).replace("\r\n", "\n")
+                    // An attached .env or config goes to the provider with its secrets taken out.
+                    crate::redact::redact_owned(String::from_utf8_lossy(&b).replace("\r\n", "\n"))
                 }
             }
         };

@@ -17,6 +17,8 @@ export const no: Translations = {
   "btn_save": "Lagre",
   "btn_finish": "Fullfør oppsett",
   "welcome_start": "Kom i gang",
+  "welcome_skip": "Hopp over oppsettet og begynn å chatte",
+  "welcome_skip_note": "Du kan sette opp alt senere i Innstillinger.",
   "lang_title": "Velg ditt språk",
   "lang_sub": "Velg språk for Scout. Du kan når som helst endre grensesnittet eller svarspråket i Innstillinger.",
   "lang_search_ph": "Søk etter språk…",

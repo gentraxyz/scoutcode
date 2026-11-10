@@ -17,6 +17,8 @@ export const hu: Translations = {
   "btn_save": "Mentés",
   "btn_finish": "Beállítás befejezése",
   "welcome_start": "Kezdés",
+  "welcome_skip": "Beállítás kihagyása és csevegés indítása",
+  "welcome_skip_note": "Mindent később is beállíthatsz a Beállításokban.",
   "lang_title": "Válassz nyelvet",
   "lang_sub": "Válaszd ki a Scout nyelvét. A kezelőfelületet vagy a válasz nyelvét bármikor módosíthatod a Beállításokban.",
   "lang_search_ph": "Nyelvek keresése…",

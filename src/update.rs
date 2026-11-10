@@ -30,6 +30,8 @@ const MANIFEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The git commit this exe was built from, with "-dirty" when it had uncommitted changes (see build.rs).
+pub const COMMIT: &str = env!("SCOUT_COMMIT");
 
 #[derive(Deserialize, Clone)]
 struct Manifest {
@@ -50,6 +52,25 @@ struct Build {
     sha256: String,
     size: u64,
     signature: String,
+    /// The commit the exe was built from, and Ed25519 over "scout-desktop-commit:<platform>:<version>:<sha256>:<commit>".
+    /// Releases from before 0.1.23 have neither.
+    #[serde(default)]
+    commit: Option<String>,
+    #[serde(default, rename = "commitSignature")]
+    commit_signature: Option<String>,
+}
+
+fn commit_message(platform: &str, version: &str, sha256: &str, commit: &str) -> String {
+    format!("scout-desktop-commit:{platform}:{version}:{sha256}:{commit}")
+}
+
+/// A commit a release names must be signed with the same key as the exe: one that isn't is refused, not just ignored.
+fn verify_commit(public_key: &str, platform: &str, version: &str, build: &Build) -> Result<(), String> {
+    match (&build.commit, &build.commit_signature) {
+        (None, None) => Ok(()),
+        (Some(c), Some(sig)) => verify_signature(public_key, &commit_message(platform, version, &build.sha256, c), sig),
+        _ => Err("The update names a commit without a matching signature, so it was not installed.".into()),
+    }
 }
 
 #[derive(Clone)]
@@ -382,6 +403,7 @@ fn latest() -> Result<Option<Release>, String> {
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let Some(build) = manifest.platforms.get(&platform).cloned() else { return Ok(None) };
     verify_signature(PUBLIC_KEY, &signed_message(&platform, &manifest.version, &build.sha256), &build.signature)?;
+    verify_commit(PUBLIC_KEY, &platform, &manifest.version, &build)?;
     let (summary, changelog) = if manifest.summary.is_empty() && manifest.changelog.is_empty() {
         (String::new(), manifest.notes)
     } else {
@@ -516,6 +538,20 @@ mod tests {
         assert!(verify_signature(&public, &signed_message("windows-x86_64", "9.9.9", "abc"), &signature).is_err());
         assert!(verify_signature(&public, &signed_message("windows-x86_64", "1.2.3", "def"), &signature).is_err());
         assert!(verify_signature(&public, &message, "not base64!").is_err());
+    }
+
+    #[test]
+    fn a_named_commit_must_be_signed_too() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let (public, _) = sign(&key, "");
+        let build = |commit: Option<&str>, sig: Option<String>| Build { url: String::new(), sha256: "abc".into(), size: 1, signature: String::new(), commit: commit.map(String::from), commit_signature: sig };
+        let (_, good) = sign(&key, &commit_message("windows-x86_64", "1.2.3", "abc", "6f26526"));
+        // Older releases name no commit.
+        assert!(verify_commit(&public, "windows-x86_64", "1.2.3", &build(None, None)).is_ok());
+        assert!(verify_commit(&public, "windows-x86_64", "1.2.3", &build(Some("6f26526"), Some(good.clone()))).is_ok());
+        // Another commit under the same signature, or a commit with no signature at all.
+        assert!(verify_commit(&public, "windows-x86_64", "1.2.3", &build(Some("0000000"), Some(good))).is_err());
+        assert!(verify_commit(&public, "windows-x86_64", "1.2.3", &build(Some("6f26526"), None)).is_err());
     }
 
     #[test]

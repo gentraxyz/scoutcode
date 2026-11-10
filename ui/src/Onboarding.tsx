@@ -21,6 +21,7 @@ import { WEB_BOTS, type WebBot } from './webbots';
 import { core, ui, useCore, useView } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { ClaudeSetup } from './ClaudeSetup';
+import { LocalSetup } from './Local';
 import { WelcomeIntro } from './WelcomeIntro';
 import { CopyButton, Icon, Link, SectionLabel, Spinner, Toggle } from './widgets';
 import mcpGuidePlaceholder from '../../assets/mcp-guide-placeholder.png';
@@ -74,6 +75,14 @@ function StepFrame({ title, sub, wide, children, back, next }: {
   );
 }
 
+/** What leaving setup always does, from its last step or from Skip: keep the notification defaults, and fall back to guest mode with no account. */
+function finishSetup(cfg: Cfg) {
+  if (cfg.notifyFlash === null || cfg.notifyToast === null) {
+    act('setNotify', { flash: cfg.notifyFlash ?? true, toast: cfg.notifyToast ?? false });
+  }
+  if (cfg.loginNeeded) act('setGuest', { on: true });
+}
+
 // ---------- Preferences (instructions.json) ----------
 
 type Prefs = { global: string; project: string; language: string };
@@ -114,9 +123,10 @@ const PROVIDERS: Provider[] = [
   { id: 'grok', name: 'Grok Build', group: 'setup', tag: 'paid', linked: (c) => c.grokSignedIn || !!c.grokKey },
   { id: 'kiro', name: 'Kiro', group: 'setup', tag: 'free', linked: (c) => c.kiro },
   { id: 'devin', name: 'Devin', group: 'setup', tag: 'paid', linked: (c) => c.devin },
+  { id: 'local', name: 'Local models', group: 'setup', tag: 'free', linked: (c) => c.local.models.length > 0 },
 ];
 
-const GROUPS: [Group, string][] = [['open', 'No login'], ['login', 'Login'], ['setup', 'Login with setup']];
+const GROUPS: [Group, string][] = [['open', 'No sign-in'], ['login', 'Sign in'], ['setup', 'Sign in with setup']];
 
 
 function TagPill({ tag }: { tag: Tag }) {
@@ -244,6 +254,8 @@ function Setup({ p, linked }: { p: Provider; linked: boolean }) {
     case 'devin':
       if (linked) return done('Signed in to Devin.');
       return <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>;
+    case 'local':
+      return <LocalSetup compact />;
     default:
       return null;
   }
@@ -1109,10 +1121,7 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
 
   const finish = async () => {
     await saveInstructions();
-    if (cfg.notifyFlash === null || cfg.notifyToast === null) {
-      act('setNotify', { flash, toast });
-    }
-    if (cfg.loginNeeded) act('setGuest', { on: true });
+    finishSetup(cfg);
     onDone();
   };
 
@@ -1245,6 +1254,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   // 0 is the welcome; 1..STEPS.length are the steps.
   const [step, setStep] = useState<number>(0);
   const { t } = useTranslation();
+  const cfg = useView('cfg');
 
   // Preload folder places and detected Claude Code / Codex chats right at the start of onboarding
   // so they are ready by the time the user reaches the Project step.
@@ -1256,7 +1266,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     invoke<DetectedChat[]>('detect_external_chats').then(setDetected).catch(() => {});
   }, []);
 
-  if (step === 0) return <WelcomeIntro onStart={() => setStep(1)} />;
+  if (step === 0) return <WelcomeIntro onStart={() => setStep(1)} onSkip={() => { finishSetup(cfg); onDone(); }} />;
   const current = STEPS[step - 1].id;
   const back = () => setStep(step - 1);
   const next = () => setStep(step + 1);

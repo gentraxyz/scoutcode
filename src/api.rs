@@ -148,6 +148,8 @@ pub struct StreamResult {
     pub finish_reason: Option<String>,
     pub usage: Option<Usage>,
     pub meta: Meta,
+    /// llama-server's own timings for the reply: tokens and milliseconds read and written, and what was drafted.
+    pub timings: Option<Value>,
 }
 
 pub enum Delta<'a> {
@@ -216,6 +218,10 @@ fn auth<B>(req: ureq::RequestBuilder<B>, cfg: &Config) -> Result<ureq::RequestBu
         return Ok(req.header("x-scoutcode-desktop-guest", "1"));
     }
     if cfg.api_key.is_none() && crate::config::ADDITIONAL.iter().any(|a| !a.needs_key && a.url == cfg.base_url) {
+        return Ok(req);
+    }
+    // llama-server on this PC takes no key.
+    if cfg.api_key.is_none() && cfg.base_url.starts_with("http://127.0.0.1:") {
         return Ok(req);
     }
     if !is_kilo(cfg) {
@@ -711,8 +717,98 @@ pub fn list_additional(cfg: &Config, a: &crate::config::AdditionalProvider) -> R
         return Err(error_from(res));
     }
     let body: Value = res.into_body().read_json().map_err(transport)?;
-    let body = if cohere { cohere_listing(&body) } else { body };
+    let body = if cohere {
+        cohere_listing(&body)
+    } else if a.id == "experiential" {
+        experiential_listing(&body, &experiential_catalog(&c)?)
+    } else {
+        body
+    };
     Ok(additional_models(a, c.api_key.is_some(), &body))
+}
+
+/// Experiential Labs' catalog, every page of it. It's public; with the key it also has the account's own models.
+fn experiential_catalog(c: &Config) -> Result<Vec<Value>, ApiError> {
+    const PAGE: usize = 1000;
+    let mut pages = vec![];
+    for page in 0..10 {
+        let url = format!("{}?limit={PAGE}&offset={}", crate::config::EXPERIENTIAL_CATALOG_URL, page * PAGE);
+        let res = auth(http().get(&url), c)?.call().map_err(transport)?;
+        if !res.status().is_success() {
+            return Err(error_from(res));
+        }
+        let body: Value = res.into_body().read_json().map_err(transport)?;
+        let got = body.get("models").and_then(Value::as_array).map_or(0, Vec::len);
+        let total = body.get("total").and_then(Value::as_u64).unwrap_or(0) as usize;
+        pages.push(body);
+        if got < PAGE || (page + 1) * PAGE >= total {
+            break;
+        }
+    }
+    Ok(pages)
+}
+
+/// Experiential Labs' model list as an OpenAI-style one, with what its catalog says about each model. `ids` is the key's
+/// `/v1/models`: the models it may call. Only chat models that take tools can run Scout. The catalog also has image,
+/// video and decision models, retired ones, and "-batch" ones that only the batch API serves. Models in a free
+/// promotion are listed again with ":free", which stops at the allowance instead of billing.
+fn experiential_listing(ids: &Value, catalog: &[Value]) -> Value {
+    let callable: std::collections::HashSet<&str> = ids.get("data").and_then(Value::as_array).map(|a| a.iter().filter_map(|m| m.get("id")?.as_str()).collect()).unwrap_or_default();
+    let entries: Vec<&Value> = catalog.iter().filter_map(|p| p.get("models")?.as_array()).flatten().collect();
+    let runs_scout = |m: &Value| {
+        let slug = m.get("slug").and_then(Value::as_str).unwrap_or("");
+        let has = |k: &str, v: &str| m.get(k).and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some(v)));
+        let description = m.get("description").and_then(Value::as_str).unwrap_or("").to_lowercase();
+        m.get("status").and_then(Value::as_str).unwrap_or("active") == "active"
+            && !has("tags", "retired")
+            && !slug.ends_with("-batch")
+            && !description.contains("not a chat")
+            && m.get("output_modalities").and_then(Value::as_array).is_none_or(|_| has("output_modalities", "text"))
+            && m.pointer("/supported_params/tools").and_then(Value::as_bool) == Some(true)
+    };
+    // The cheapest of the routes Experiential pays for, in USD per token. A key of the user's own has its own prices.
+    let price = |entry: &Value| {
+        let nano = |r: &Value, k: &str| r.get(k).and_then(Value::as_f64);
+        entry
+            .get("providers")
+            .and_then(Value::as_array)?
+            .iter()
+            .filter(|r| r.get("billing_source").and_then(Value::as_str) == Some("host_managed") && r.get("status").and_then(Value::as_str).unwrap_or("active") == "active")
+            .filter_map(|r| Some((nano(r, "input_nano_usd_per_million")?, nano(r, "output_nano_usd_per_million")?)))
+            .min_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)))
+            .map(|(i, o)| json!({ "prompt": i / 1e15, "completion": o / 1e15 }))
+    };
+    let listing = |m: &Value, id: String, extra: Value| {
+        let vision = m.get("input_modalities").and_then(Value::as_array).map(|a| a.iter().any(|x| x.as_str() == Some("image")));
+        let mut out = json!({ "id": id, "name": m.get("display_name"), "description": m.get("description"), "context_length": m.get("context_window"), "tools": true, "vision": vision });
+        if let (Some(o), Some(e)) = (out.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+        }
+        out
+    };
+    let mut data = vec![];
+    // Free promotions first, so they lead the list.
+    for p in catalog.iter().filter_map(|p| p.get("promotions")?.as_array()).flatten() {
+        if p.get("free").and_then(Value::as_bool) != Some(true) || p.get("display_only").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        for slug in p.get("slugs").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            let Some(e) = entries.iter().find(|e| e.pointer("/model/slug").and_then(Value::as_str) == Some(slug)) else { continue };
+            let m = &e["model"];
+            if runs_scout(m) {
+                let note = if p.get("requires_payment_method").and_then(Value::as_bool) == Some(true) { "Free (needs a saved card)" } else { "Free" };
+                data.push(listing(m, format!("{slug}:free"), json!({ "cost": note })));
+            }
+        }
+    }
+    for e in &entries {
+        let m = &e["model"];
+        let Some(slug) = m.get("slug").and_then(Value::as_str) else { continue };
+        if callable.contains(slug) && runs_scout(m) {
+            data.push(listing(m, slug.to_string(), json!({ "pricing": price(e) })));
+        }
+    }
+    json!({ "data": data })
 }
 
 /// Cohere's own model list, `{"models": [{"name", "features", "context_length"}]}`, as an OpenAI-style one. Models without
@@ -905,6 +1001,58 @@ mod tests {
         assert_eq!(listed[0].tools, Some(true));
     }
 
+    #[test]
+    fn experiential_lists_callable_chat_models_and_free_promos() {
+        let exp = crate::config::additional_provider("experiential").unwrap();
+        let data: Vec<Value> = ["gpt-6-luna", "claude-fable-5.2", "clef", "claude-opus-5-batch", "old-model", "chatgpt-image-latest"].map(|id| json!({ "id": id })).into();
+        let ids = json!({ "data": data });
+        let host = |i: f64, o: f64| json!({ "billing_source": "host_managed", "status": "active", "input_nano_usd_per_million": i, "output_nano_usd_per_million": o });
+        let byok = json!({ "billing_source": "customer_managed", "status": "active", "input_nano_usd_per_million": null, "output_nano_usd_per_million": null });
+        let chat = |slug: &str, extra: Value| {
+            let mut m = json!({ "slug": slug, "display_name": slug.to_uppercase(), "context_window": 400000, "input_modalities": ["text", "image"], "output_modalities": ["text"], "supported_params": { "tools": true }, "tags": [], "status": "active" });
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            m
+        };
+        let catalog = [json!({
+            "models": [
+                { "model": chat("gpt-6-luna", json!({})), "providers": [byok, host(1.5e9, 6e9), host(1.25e9, 5e9)] },
+                { "model": chat("claude-fable-5.2", json!({})), "providers": [host(8e9, 40e9)] },
+                { "model": chat("clef", json!({ "supported_params": {}, "description": "A decision model, not a chat model." })), "providers": [] },
+                { "model": chat("claude-opus-5-batch", json!({})), "providers": [] },
+                { "model": chat("old-model", json!({ "tags": ["retired"] })), "providers": [] },
+                { "model": chat("chatgpt-image-latest", json!({ "output_modalities": ["image"] })), "providers": [] },
+                { "model": chat("not-for-this-key", json!({})), "providers": [] },
+            ],
+            "promotions": [
+                { "free": true, "display_only": false, "slugs": ["claude-fable-5.2"], "requires_payment_method": true },
+                { "free": false, "display_only": false, "slugs": ["gpt-6-luna"] },
+            ],
+            "total": 7,
+        })];
+        let listed = additional_models(exp, true, &experiential_listing(&ids, &catalog));
+        assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["experiential/claude-fable-5.2:free", "experiential/gpt-6-luna", "experiential/claude-fable-5.2"]);
+        let promo = &listed[0];
+        assert!(promo.free && promo.tier.is_none());
+        assert_eq!(promo.request_id("experiential"), "claude-fable-5.2:free");
+        assert_eq!(promo.cost.as_deref(), Some("Free (needs a saved card)"));
+        let luna = &listed[1];
+        assert!(!luna.free && luna.tier.is_some(), "billed from credit");
+        assert_eq!(luna.cost.as_deref(), Some("$1.25 in · $5 out / M tokens"), "the cheapest route Experiential pays for");
+        assert_eq!((luna.context, luna.tools, luna.vision), (Some(400000), Some(true), Some(true)));
+        assert_eq!(luna.label(), "GPT-6-LUNA");
+    }
+
+    #[test]
+    #[ignore = "talks to Experiential Labs, and needs EXPLABS_API_KEY"]
+    fn live_experiential_lists_models() {
+        let exp = crate::config::additional_provider("experiential").unwrap();
+        let mut cfg = crate::config::load_config();
+        cfg.additional = vec![crate::config::LinkedProvider { id: "experiential".into(), key: std::env::var("EXPLABS_API_KEY").ok() }];
+        let models = list_additional(&cfg, exp).unwrap();
+        println!("{:?}", models.iter().map(|m| (m.request_id("experiential"), m.cost.clone())).collect::<Vec<_>>());
+        assert!(models.iter().any(|m| m.request_id("experiential") == exp.default_model), "the default model is gone");
+    }
+
     /// The ScoutCode key must never go to another provider, and OVH's free tier refuses nothing for lacking one.
     #[test]
     fn additional_providers_only_get_their_own_keys() {
@@ -951,7 +1099,7 @@ mod tests {
         assert!(models.iter().all(|m| m.free));
         let tools = [json!({ "type": "function", "function": { "name": "ping", "description": "Ping", "parameters": { "type": "object", "properties": {} } } })];
         let messages = [Message::User { content: Content::Text("Call the ping tool now.".into()) }];
-        let req = ChatRequest { model: ovh.default_model, messages: &messages, tools: Some(&tools), tool_choice_none: false, temperature: None, effort: None };
+        let req = ChatRequest { model: ovh.default_model, messages: &messages, tools: Some(&tools), tool_choice_none: false, temperature: None, effort: None, parallel_tool_calls: None };
         let r = stream_chat(&cfg.for_provider("ovh"), req, &mut |_| {}, &Arc::new(AtomicBool::new(false))).unwrap();
         assert_eq!(r.tool_calls.first().map(|c| c.function.name.as_str()), Some("ping"), "{r:?}");
     }
@@ -1363,6 +1511,8 @@ pub struct ChatRequest<'a> {
     pub tool_choice_none: bool,
     pub temperature: Option<f64>,
     pub effort: Option<&'a str>,
+    /// Whether the model may make several tool calls in one reply. None leaves it to the provider.
+    pub parallel_tool_calls: Option<bool>,
 }
 
 fn canonical_call(mut c: ToolCall) -> ToolCall {
@@ -1400,6 +1550,9 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     if let Some(t) = req.tools.filter(|t| !t.is_empty()) {
         body["tools"] = Value::Array(t.to_vec());
         body["tool_choice"] = json!(if req.tool_choice_none { "none" } else { "auto" });
+        if let Some(p) = req.parallel_tool_calls {
+            body["parallel_tool_calls"] = json!(p);
+        }
     }
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
@@ -1441,6 +1594,7 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
             .collect();
         out.finish_reason = data.pointer("/choices/0/finish_reason").and_then(Value::as_str).map(String::from);
         out.usage = data.get("usage").map(usage_from);
+        out.timings = data.get("timings").filter(|t| t.is_object()).cloned();
         if out.tool_calls.is_empty() && can_recover {
             if let Some((rest, recovered)) = crate::tools::recover_calls(&out.content, &out.reasoning, req.tools.unwrap_or_default()) {
                 out.content = rest;
@@ -1526,6 +1680,9 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
         }
         if let Some(u) = chunk.get("usage").filter(|u| u.is_object()) {
             out.usage = Some(usage_from(u));
+        }
+        if let Some(t) = chunk.get("timings").filter(|t| t.is_object()) {
+            out.timings = Some(t.clone());
         }
         // What a token-priced answer cost, from ScoutCode, once the answer is done.
         if let Some(sc) = chunk.get("scoutcode") {

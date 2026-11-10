@@ -17,6 +17,8 @@ export const vi: Translations = {
   "btn_save": "Lưu",
   "btn_finish": "Hoàn tất cài đặt",
   "welcome_start": "Bắt đầu",
+  "welcome_skip": "Bỏ qua thiết lập và bắt đầu trò chuyện",
+  "welcome_skip_note": "Bạn có thể thiết lập mọi thứ sau trong Cài đặt.",
   "lang_title": "Chọn ngôn ngữ của bạn",
   "lang_sub": "Chọn ngôn ngữ cho Scout. Bạn có thể thay đổi giao diện hoặc ngôn ngữ phản hồi bất cứ lúc nào trong Cài đặt.",
   "lang_search_ph": "Tìm kiếm ngôn ngữ…",

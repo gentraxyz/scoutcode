@@ -141,7 +141,9 @@ function DeleteDialog() {
   useEffect(() => {
     if (!deleting) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Enter') {
+      // Enter deletes unless another button has focus: Enter on Cancel cancels.
+      const focused = document.activeElement;
+      if (e.key === 'Enter' && !(focused instanceof HTMLButtonElement && !focused.classList.contains('danger'))) {
         e.preventDefault();
         act('deleteChat', { id: deleting.id });
         ui.set({ deleting: null });
@@ -243,7 +245,8 @@ function useShortcuts() {
         e.preventDefault();
         return act('newChat');
       }
-      if (e.shiftKey && e.key === 'Tab' && !document.activeElement?.closest('.modal, .popover')) {
+      // Only from the chat box: everywhere else Shift+Tab moves focus back, as usual.
+      if (e.shiftKey && e.key === 'Tab' && document.activeElement?.matches('.composer textarea.prompt')) {
         e.preventDefault();
         return act('cycleMode');
       }

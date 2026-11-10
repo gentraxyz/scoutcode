@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Icon, Popover } from './widgets';
 
 /** One stop on a level slider, from least to most. */
-export type Level = { id: string; label: string };
+export type Level = { id: string; label: string; about?: string };
 
 /**
  * A chip that opens a notched slider: left for less, right for more. The last stop is the maximum and takes the
@@ -49,6 +49,7 @@ export function LevelPicker({ title, tip, levels, value, onChange, less, more, t
             <span className="level-title">{title}</span>
             <b key={cur?.id} className="level-name">{cur?.label ?? shown}</b>
           </div>
+          {levels.some((l) => l.about) && <div key={cur?.id} className="level-about tiny dim ellipsis">{cur?.about}</div>}
           <div className="level-track" style={{ '--f': last ? at / last : 0 } as CSSProperties}>
             <span className="level-rail" />
             <span className={`level-fill ${at > 0 ? 'on' : ''}`} />

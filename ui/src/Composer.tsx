@@ -38,7 +38,20 @@ export function PermissionBody({ p, onAnswer, link }: { p: Permission; onAnswer:
       <div className="row wrap">
         <button type="button" className="button primary" onClick={() => onAnswer('allow')}>Allow</button>
         {always && <button type="button" className="button" onClick={() => onAnswer('always')}>{always}</button>}
-        <input className="input feedback" placeholder={link ? 'or tell the chatbot why not' : 'or tell Scout what to do instead'} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+        <input
+          className="input feedback"
+          placeholder={link ? 'or tell the chatbot why not' : 'or tell Scout what to do instead'}
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          // In here Enter denies with what was typed, and Ctrl+Enter must not allow by accident.
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.nativeEvent.stopImmediatePropagation();
+            if (!e.ctrlKey) onAnswer('deny', feedback.trim());
+          }}
+        />
         <button type="button" className="button ghost" onClick={() => onAnswer('deny', feedback.trim())}>{!link && feedback.trim() ? 'Deny and send' : 'Deny'}</button>
       </div>
     </>
@@ -52,7 +65,8 @@ function PermissionCard() {
   useEffect(() => {
     if (!p || input.trim()) return;
     const key = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter') {
+      // Not from the card's own "what to do instead" box, where Enter denies.
+      if (e.ctrlKey && e.key === 'Enter' && !(e.target as Element | null)?.closest?.('.feedback')) {
         e.preventDefault();
         act('answerPermission', { answer: 'allow' });
       }
@@ -457,9 +471,9 @@ function UsageRing() {
 /** Permission modes from the most caution to the most freedom, so right on the slider is freer. */
 const SECURITY_ORDER = ['plan', 'default', 'acceptEdits', 'auto', 'yolo'];
 
-function securityLevels(modes: { id: string; label: string }[]): Level[] {
+function securityLevels(modes: { id: string; label: string; about?: string }[]): Level[] {
   const rank = (id: string) => { const i = SECURITY_ORDER.indexOf(id); return i < 0 ? SECURITY_ORDER.length : i; };
-  return [...modes].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ id: m.id, label: m.label }));
+  return [...modes].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ id: m.id, label: m.label, about: m.about }));
 }
 
 function Footer() {

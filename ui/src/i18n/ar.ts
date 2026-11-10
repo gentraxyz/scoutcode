@@ -17,6 +17,8 @@ export const ar: Translations = {
   "btn_save": "حفظ",
   "btn_finish": "إنهاء الإعداد",
   "welcome_start": "ابدأ الآن",
+  "welcome_skip": "تخطَّ الإعداد وابدأ الدردشة",
+  "welcome_skip_note": "يمكنك إعداد كل شيء لاحقًا من الإعدادات.",
   "lang_title": "اختر لغتك",
   "lang_sub": "حدد لغة Scout. يمكنك تغيير لغة الواجهة أو لغة الرد في أي وقت من الإعدادات.",
   "lang_search_ph": "البحث عن اللغات…",

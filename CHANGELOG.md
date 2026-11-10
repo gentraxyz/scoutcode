@@ -4,6 +4,19 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.23
+Run models on your own PC with llama.cpp, Experiential Labs as a provider, and your keys kept in Windows Credential Manager.
+
+- Local models: Scout downloads llama.cpp for your GPU (Vulkan, CUDA, or CPU), offers models to download, and runs any `.gguf` file you add. Find it under Local models in the model menu.
+- Experiential Labs is a new additional provider: use your own key, with free promotional models listed as `:free`.
+- Keys and tokens in your settings are now kept in Windows Credential Manager instead of the plain config file.
+- Keys, tokens and private keys are taken out of command output and attached files before they reach a model.
+- Settings > Updates shows which build of Scout you're running.
+- Skip setup from the welcome screen and start chatting right away.
+- The sidebar can be resized, and permission cards deny with Enter in the "what to do instead" box.
+- Logos for Experiential Labs and Local models in the model menu.
+- Also in this update, from 0.1.22: Chess and Flappy Scout in Games, stop a turn and resume it later, sub-agent steps shown as they happen, Esc stops right away, and a heads-up when ScoutCode Cloud usage runs high.
+
 ## 0.1.22
 Chess and Flappy Scout in Games, a stop-and-resume for turns, and a heads-up when ScoutCode Cloud usage runs high.
 

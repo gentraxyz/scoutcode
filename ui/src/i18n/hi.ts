@@ -17,6 +17,8 @@ export const hi: Translations = {
   "btn_save": "सहेजें",
   "btn_finish": "सेटअप पूरा करें",
   "welcome_start": "शुरू करें",
+  "welcome_skip": "सेटअप छोड़ें और चैट शुरू करें",
+  "welcome_skip_note": "आप बाद में सेटिंग्स में सब कुछ सेट कर सकते हैं।",
   "lang_title": "अपनी भाषा चुनें",
   "lang_sub": "Scout के लिए भाषा चुनें। आप सेटिंग में कभी भी इंटरफ़ेस या उत्तर की भाषा बदल सकते हैं।",
   "lang_search_ph": "भाषा खोजें…",

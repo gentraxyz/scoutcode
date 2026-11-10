@@ -17,6 +17,8 @@ export const tr: Translations = {
   "btn_save": "Kaydet",
   "btn_finish": "Kurulumu Tamamla",
   "welcome_start": "Başla",
+  "welcome_skip": "Kurulumu atla ve sohbete başla",
+  "welcome_skip_note": "Her şeyi daha sonra Ayarlar’dan yapabilirsin.",
   "lang_title": "Dilinizi seçin",
   "lang_sub": "Scout için dili seçin. Arayüzü veya yanıt dilini istediğiniz zaman Ayarlar’dan değiştirebilirsiniz.",
   "lang_search_ph": "Dil ara…",

@@ -57,7 +57,7 @@ export type ReferralEntry = {
   username: string; createdAt: string; rewardedAt: string | null; payout: number;
 };
 export type Referrals = {
-  code: string; bonus: number; credit: number; expiryDays: number; earned: number;
+  code: string; partner: boolean; bonus: number; credit: number; receivedCredit: number; expiryDays: number; earned: number;
   referredBy: string | null; canRedeem?: boolean | null; referred: ReferralEntry[];
 };
 export const DISCORD_INVITE_URL = 'https://discord.gg/T9Ch9wVAUc';
@@ -118,6 +118,27 @@ export type MusicTrack = {
   duration: number | null;
 };
 
+/** Local models with llama.cpp: how llama-server runs them, and what small models are given. */
+export type LocalSettings = {
+  backend: string | null; gpuLayers: number | null; context: number; tools: 'none' | 'essential' | 'standard' | 'full';
+  singleCall: boolean; shortPrompt: boolean; reasoningBudget: number; models: { id: string; name: string; path: string; size: number }[];
+};
+export type Progress = { done: number; total: number };
+/** What `local::view` says: the llama.cpp builds, downloads and the running server. */
+export type LocalView = {
+  build: string; backend: string | null;
+  backends: { id: string; name: string; about: string; size: number; installed: boolean }[];
+  installing: (Progress & { backend: string }) | null; installError: string | null;
+  curated: { id: string; name: string; about: string; size: number; have: boolean }[];
+  downloads: Record<string, Progress>; downloadErrors: Record<string, string>;
+  server: { state: 'stopped' | 'loading' | 'ready' | 'error'; model: string | null; error: string | null; offloaded: [number, number] | null; cpuFaster: boolean };
+};
+
+/** "2.7 GB". */
+export function gb(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
 /** The Scout Enterprise team the account is in: the providers it runs through the server, and the ones on this PC it allows. */
 export type Team = { name: string; role: string; providers: string[]; acp: string[] };
 
@@ -125,8 +146,9 @@ export type View = {
   cfg: {
     loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; games: Games; music: Music;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; games: Games; music: Music; local: LocalSettings;
   };
+  local: LocalView;
   mode: string;
   model: { id: string; provider: string; key: string; short: string };
   effort: string;
@@ -165,14 +187,14 @@ export type View = {
   usage: { info: UsageInfo | null; busy: boolean; message: [boolean, string] | null };
   quotas: QuotaSnapshot[];
   voice: { state: 'idle' } | { state: 'recording'; level: number } | { state: 'busy'; label: string };
-  updater: { enabled: boolean; version: string; status: UpdateStatus };
+  updater: { enabled: boolean; version: string; commit: string; status: UpdateStatus };
   /** The releases since the version that ran before this one, newest first. Empty unless the app was just updated. */
   whatsNew: { version: string; summary: string; changelog: string }[];
   mcp: { error: string | null; servers: McpServer[] };
 };
 
 export type Statics = {
-  modes: { id: string; label: string }[];
+  modes: { id: string; label: string; about: string }[];
   efforts: string[];
   additionalProviders: { id: string; name: string; needsKey: boolean; note: string; keyUrl: string; keyLink: string; keyHint: string }[];
   kiloWarning: string;

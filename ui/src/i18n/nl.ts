@@ -17,6 +17,8 @@ export const nl: Translations = {
   "btn_save": "Opslaan",
   "btn_finish": "Configuratie voltooien",
   "welcome_start": "Aan de slag",
+  "welcome_skip": "Installatie overslaan en beginnen met chatten",
+  "welcome_skip_note": "Je kunt alles later instellen in Instellingen.",
   "lang_title": "Kies je taal",
   "lang_sub": "Selecteer de taal voor Scout. Je kunt de interface of antwoordtaal op elk moment wijzigen in Instellingen.",
   "lang_search_ph": "Talen zoeken…",

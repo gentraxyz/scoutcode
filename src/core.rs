@@ -303,6 +303,12 @@ pub struct Core {
     remote_online: bool,
     /// When what's on screen was last handed to ScoutMote.
     remote_published: Option<std::time::Instant>,
+    /// When the user last touched the window, in milliseconds since 1970, for Dreaming's idle timer.
+    last_input: u64,
+    /// The dream running now, to stop it as the app closes.
+    dreaming: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// What the last dream or undo said, for Settings.
+    dream_message: Option<(bool, String)>,
 }
 
 fn project_name(cwd: &str) -> String {
@@ -707,6 +713,7 @@ impl Core {
         let updater = crate::update::Updater::start(&waker, cfg.auto_update);
         crate::mcp_client::hub().reload(&waker, false);
         crate::local::set_waker(waker.clone());
+        crate::review::set_waker(waker.clone());
         let mut core = Core {
             handle,
             chat,
@@ -757,6 +764,9 @@ impl Core {
             remote_status: String::new(),
             remote_online: false,
             remote_published: None,
+            last_input: crate::session::now_ms(),
+            dreaming: None,
+            dream_message: None,
         };
         core.enter_project(&cwd);
         core.update_discord();
@@ -1115,7 +1125,7 @@ impl Core {
             Ev::KiloCheck(r) => self.login.kilo_check = Some(r),
             Ev::WhatsNew(notes) => self.whats_new = notes,
             Ev::AdditionalErrors(e) => self.additional_errors = e,
-            Ev::LocalModel(m) => self.add_local_model(m),
+            Ev::LocalModel(m, select) => self.add_local_model(m, select),
             Ev::Copilot(u) => self.copilot_update(u),
             Ev::Devin(u) => self.devin_update(u),
             Ev::Kiro(u) => self.kiro_update(u),
@@ -1146,6 +1156,7 @@ impl Core {
                     Err(e) => self.usage.message = Some((false, e)),
                 }
             }
+            Ev::Dreamed(r) => self.dreamed(r),
             // A refresh in the background only ever updates the numbers.
             Ev::UsagePolled(r) => {
                 self.usage.busy = false;
@@ -2307,6 +2318,19 @@ impl Core {
         }
     }
 
+    /// Marks a chat Done, or back in Recent. Any later activity in it brings it back on its own.
+    pub fn set_done(&mut self, id: &str, done: bool) {
+        if done {
+            self.cfg.done_chats.insert(id.to_string(), session::now_ms());
+        } else {
+            self.cfg.done_chats.remove(id);
+        }
+        // Chats deleted since don't need remembering.
+        let sessions = &self.sessions;
+        self.cfg.done_chats.retain(|k, _| sessions.iter().any(|s| &s.id == k));
+        config::save_one("desktopDone", json!(self.cfg.done_chats));
+    }
+
     pub fn delete_chat(&mut self, id: &str) {
         let current = self.chat.session_id == id;
         // The chat Scout is working in stays until it's done: it would only be saved again.
@@ -2761,18 +2785,45 @@ impl Core {
 
     /// Downloads a curated model. Once it's in, it's added and, with nothing else chosen, chosen.
     pub fn local_download(&mut self, id: &str) {
-        let h = self.hooks.clone();
-        crate::local::start_download(id, move |m| h.send(Ev::LocalModel(m)));
+        if let Some(c) = crate::local::curated(id) {
+            self.local_get(c.download());
+        }
     }
 
-    /// Adds a model, from a download or a file, and moves to it when the user has nothing else to run on.
-    fn add_local_model(&mut self, m: config::LocalModel) {
+    /// Downloads a GGUF file from a Hugging Face repo, as `local_download` does.
+    pub fn local_download_hf(&mut self, repo: &str, path: &str, sha256: &str, size: u64) -> Result<(), String> {
+        let d = crate::local::hf_download(repo, path, sha256, size)?;
+        self.local_get(d);
+        Ok(())
+    }
+
+    /// Downloads a model. Without llama.cpp, that's quick setup, which installs it first and moves to the model.
+    fn local_get(&mut self, d: crate::local::Download) {
+        let h = self.hooks.clone();
+        if crate::local::engine_installed(&self.cfg.local) {
+            crate::local::start_download(d, move |m| h.send(Ev::LocalModel(m, false)));
+        } else {
+            crate::local::start_setup(crate::local::backend_for(&self.cfg.local), d, move |m| h.send(Ev::LocalModel(m, true)));
+        }
+    }
+
+    /// Quick setup: llama.cpp, then `model` (a curated id) or the one that suits this PC, and the chat moves to it.
+    pub fn local_setup(&mut self, model: Option<String>) {
+        let Some(c) = model.as_deref().and_then(crate::local::curated).or_else(|| crate::local::recommend(crate::local::hardware())) else {
+            return crate::local::setup_failed("This PC doesn't have enough memory for the models Scout offers. A free cloud provider will work better here.");
+        };
+        let h = self.hooks.clone();
+        crate::local::start_setup(crate::local::backend_for(&self.cfg.local), c.download(), move |m| h.send(Ev::LocalModel(m, true)));
+    }
+
+    /// Adds a model, from a download or a file, and moves to it when asked to or when the user has nothing else to run on.
+    fn add_local_model(&mut self, m: config::LocalModel, select: bool) {
         let id = format!("{}/{}", crate::local::PROVIDER, m.id);
         let first = self.cfg.nothing_to_run_on();
         self.cfg.local.models.retain(|x| x.id != m.id);
         self.cfg.local.models.push(m);
         self.save_local(false);
-        if first {
+        if first || select {
             self.switch_model(&id, crate::local::PROVIDER, true);
         }
     }
@@ -2780,7 +2831,7 @@ impl Core {
     /// Adds a GGUF file the user picked.
     pub fn local_add_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         let m = crate::local::model_from_file(path, &self.cfg.local.models)?;
-        self.add_local_model(m);
+        self.add_local_model(m, false);
         Ok(())
     }
 
@@ -2843,6 +2894,42 @@ impl Core {
         config::save_config(m);
     }
 
+    /// Explore: whether it's on and the models it runs on, in order (none for its default). Each model's id is worked out
+    /// here, since Claude Code's server for it has no model list. Applies from the next message.
+    pub fn set_explore(&mut self, on: bool, models: Vec<ModelRef>) {
+        let models = models
+            .into_iter()
+            .filter(|m| crate::explore::runs_here(&m.provider))
+            .map(|m| {
+                let model = self.models.iter().find(|x| x.id == m.key).map(|x| x.request_id(&m.provider).to_string()).unwrap_or_else(|| m.key.clone());
+                crate::explore::ExploreModel { key: m.key, provider: m.provider, model }
+            })
+            .collect();
+        self.cfg.explore = crate::explore::Settings { on, models };
+        crate::explore::set_enabled(on);
+        let mut m = serde_json::Map::new();
+        m.insert("explore".into(), json!(self.cfg.explore));
+        config::save_config(m);
+    }
+
+    /// Code Review, from the chat's side panel: a separate review agent for this chat, on `models` in order (none for
+    /// explore's free models). It runs apart from the chat, so the chat can keep working; its findings go to the panel.
+    pub fn review_start(&mut self, label: String, task: String, models: Vec<ModelRef>) -> Result<(), String> {
+        let models = models
+            .into_iter()
+            .filter(|m| crate::explore::runs_here(&m.provider))
+            .map(|m| {
+                let model = self.models.iter().find(|x| x.id == m.key).map(|x| x.request_id(&m.provider).to_string()).unwrap_or_else(|| m.key.clone());
+                crate::explore::ExploreModel { key: m.key, provider: m.provider, model }
+            })
+            .collect();
+        crate::review::start(self.cfg.clone(), self.chat.session_id.clone(), self.chat.cwd.clone(), label, task, models)
+    }
+
+    pub fn review_chat(&self) -> String {
+        self.chat.session_id.clone()
+    }
+
     /// Experimental games: where they show and when they open and close. Only the window reads these.
     pub fn set_games(&mut self, games: config::Games) {
         let mut m = serde_json::Map::new();
@@ -2871,6 +2958,90 @@ impl Core {
         m.insert("desktopFlash".into(), json!(flash));
         m.insert("desktopToast".into(), json!(toast));
         config::save_config(m);
+    }
+
+    // ---------- Dreaming ----------
+
+    /// The user touched the window.
+    pub fn activity(&mut self) {
+        self.last_input = crate::session::now_ms();
+    }
+
+    pub fn set_dreaming(&mut self, on: bool) {
+        self.cfg.dreaming = Some(on);
+        config::save_one("dreaming", json!(on));
+        if !on {
+            if let Some(c) = &self.dreaming {
+                c.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// For the timer: dreams when it's on, the window has gone untouched long enough, no chat is working, and a day has
+    /// passed since the last dream.
+    pub fn dream_tick(&mut self) {
+        let now = crate::session::now_ms();
+        if self.cfg.dreaming != Some(true) || self.dreaming.is_some() || now.saturating_sub(self.last_input) < crate::dream::IDLE_MS || !crate::dream::due(now) {
+            return;
+        }
+        if std::iter::once(&self.chat).chain(&self.background).any(|c| c.running) {
+            return;
+        }
+        self.start_dream();
+    }
+
+    /// Settings' Dream now: skips the idle wait and the day between dreams.
+    pub fn dream_now(&mut self) {
+        if self.dreaming.is_none() {
+            self.start_dream();
+        }
+    }
+
+    fn start_dream(&mut self) {
+        if self.cfg.api_key.is_none() && !self.cfg.is_guest() {
+            self.dream_message = Some((false, "Dreaming needs ScoutCode: sign in, or use its free models without an account.".into()));
+            return;
+        }
+        if crate::dream::model().is_none() {
+            self.dream_message = Some((false, "Dreaming isn't available right now: no Dreaming model is set on ScoutCode.".into()));
+            return;
+        }
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.dreaming = Some(cancel.clone());
+        self.dream_message = None;
+        let cfg = self.cfg.for_provider("scoutcode");
+        let h = self.hooks.clone();
+        std::thread::spawn(move || {
+            let d = crate::dream::run(&cfg, &cancel);
+            h.send(Ev::Dreamed(match d.error {
+                Some(e) => Err(e),
+                None => Ok(d.changes.len()),
+            }));
+        });
+    }
+
+    fn dreamed(&mut self, r: Result<usize, String>) {
+        self.dreaming = None;
+        self.dream_message = Some(match r {
+            Ok(0) => (true, "Dreamed, and found nothing lasting to change.".into()),
+            Ok(n) => (true, format!("Dreamed: {n} memory {}. See the Dream Log.", if n == 1 { "change" } else { "changes" })),
+            Err(e) => (false, format!("The dream stopped: {e}")),
+        });
+        self.files_epoch += 1;
+    }
+
+    pub fn dream_undo(&mut self, id: &str) {
+        self.dream_message = Some(match crate::dream::undo(id) {
+            Ok(()) => (true, "Undone: memory is back as it was before that dream.".into()),
+            Err(e) => (false, e),
+        });
+        self.files_epoch += 1;
+    }
+
+    pub fn dream_seen(&mut self, id: &str) {
+        crate::dream::mark_seen(id);
+        // The log isn't in the core, so nudge the view to send it again.
+        self.sent.remove("dreaming");
     }
 
     /// Asks the server for the account's limits, after making a change when `change` says what to send and say.
@@ -3371,11 +3542,20 @@ impl Core {
                 "agentRouters": cfg.agent_routers,
                 "experimentalImages": cfg.experimental_images,
                 "imageModel": cfg.image_model,
+                "explore": { "on": cfg.explore.on, "models": cfg.explore.models, "tokens": crate::explore::total(), "showFrom": crate::explore::SHOW_FROM },
                 "games": cfg.games,
                 "music": cfg.music,
                 "local": cfg.local,
             })),
             ("local", crate::local::view(&cfg.local)),
+            ("dreaming", {
+                let mut v = crate::dream::view();
+                v["on"] = json!(cfg.dreaming);
+                v["running"] = json!(self.dreaming.is_some());
+                v["message"] = json!(self.dream_message.as_ref().map(|(ok, m)| json!({ "ok": ok, "text": m })));
+                v
+            }),
+            ("review", crate::review::view(&self.chat.session_id)),
             ("mode", json!(self.chat.shared.mode())),
             ("model", if let Some(id) = (self.chat.provider == "router").then(|| self.chat.model.clone()).or_else(|| self.chat.fallback.as_ref().filter(|r| r.is_router).map(|r| r.from.key.clone())) {
                 let router = self.cfg.agent_router(&id);
@@ -3405,7 +3585,9 @@ impl Core {
             ("steering", json!(steering)),
             ("sessions", json!(self.sessions.iter().map(|s| {
                 let live = std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == s.id);
-                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "running": live.is_some_and(|c| c.running), "waiting": live.is_some_and(Chat::waiting), "unread": live.is_some_and(|c| c.unread) })
+                let (running, waiting) = (live.is_some_and(|c| c.running), live.is_some_and(Chat::waiting));
+                let done = !running && !waiting && self.cfg.done_chats.get(&s.id).is_some_and(|&t| t >= s.updated);
+                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "running": running, "waiting": waiting, "unread": live.is_some_and(|c| c.unread), "done": done })
             }).collect::<Vec<_>>())),
             ("projects", json!(self.projects)),
             ("chat", json!({ "id": self.chat.session_id, "cwd": self.chat.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch })),
@@ -3520,6 +3702,7 @@ pub fn pump(core: Arc<Mutex<Core>>, rx: Receiver<Ev>, wake: Receiver<()>) {
             let mut core = core.lock().unwrap();
             core.usage_poll();
             core.quota_poll();
+            core.dream_tick();
         }
         // The mic's level has no event of its own.
         let wait = if core.lock().unwrap().is_recording() { Duration::from_millis(50) } else { Duration::from_secs(1) };
@@ -3601,6 +3784,7 @@ mod tests {
             temperature: None,
             starred_models: vec![],
             projects: vec![],
+            done_chats: HashMap::new(),
             notify_flash: None,
             notify_toast: None,
             discord_presence: false,
@@ -3610,11 +3794,13 @@ mod tests {
             fallbacks: Default::default(),
             experimental_images: false,
             image_model: None,
+            explore: Default::default(),
             games: Default::default(),
             music: Default::default(),
             team: None,
             scout_mote: false,
             scout_mote_id: None,
+            dreaming: None,
             chatbot_link: false,
             chatbot_link_mode: "default".into(),
             usage_analytics: false,

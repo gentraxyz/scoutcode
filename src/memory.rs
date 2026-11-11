@@ -248,6 +248,19 @@ pub fn run(a: &Value, ctx: &mut Ctx) -> Result<ToolResult, String> {
     })
 }
 
+/// The sections each memory is meant to have, for Dreaming, which may only write into these.
+pub fn sections(scope: Scope) -> Vec<&'static str> {
+    (if scope == Scope::Project { PROJECT_SECTIONS } else { USER_SECTIONS }).split(", ").collect()
+}
+
+/// One update_memory call made outside a chat, by Dreaming: the file it wrote, and its text before and after. Same
+/// checks as the tool: secrets, steering, a stale old_text and the size limit all refuse it.
+pub fn apply_edit(cwd: &str, a: &Value) -> Result<(Scope, PathBuf, String, String), String> {
+    let (scope, file, before, crlf, next) = plan(cwd, a)?;
+    crate::tools::write_text(&file, &next, crlf)?;
+    Ok((scope, file, before, next))
+}
+
 /// Saves what the user typed in Settings over `saved`, the text they started from, unless the file has moved on since.
 /// It's their own text, so it isn't checked, and an empty draft doesn't create a file.
 pub fn save_draft(file: &Path, saved: &str, draft: &str) -> Result<(), String> {

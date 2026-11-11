@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
-import { act, invoke, openExternal, usd, type View } from './api';
-import { ui, useCore, useUi, useView } from './store';
+import { act, invoke, usd, type View } from './api';
+import { ui, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
-import { ScoutLogo } from './logo';
-import { DeltaMark } from './delta/Delta';
 import { Hideable, useHidden } from './Hideable';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
@@ -14,44 +12,76 @@ export function addProject() {
   ui.set({ pickingFolder: true });
 }
 
+type SessionInfo = View['sessions'][number];
+
+/** The project a chat's folder is listed as, or the folder's own name. */
+export function useProjectName() {
+  const projects = useView('projects');
+  return (cwd: string) => projects.find((p) => sameDir(p.path, cwd))?.name ?? (cwd.replaceAll('\\', '/').replace(/\/+$/, '').split('/').pop() || cwd);
+}
+
 /** How a chat is doing, for one that isn't on screen as well as the one that is. */
-function SessionState({ s }: { s: View['sessions'][number] }) {
-  if (s.waiting) return <span className="session-dot waiting" title="Scout needs your answer" />;
-  if (s.running) return <span className="session-state" title="Scout is working"><Spinner size={11} /></span>;
-  if (s.unread) return <span className="session-dot" title="Finished" />;
+function SessionState({ s }: { s: SessionInfo }) {
+  if (s.waiting) return <span className="session-status waiting" title="Scout needs your answer"><span className="session-dot waiting" />Needs input</span>;
+  if (s.running) return <span className="session-status working" title="Scout is working"><Spinner size={11} />Working</span>;
+  if (s.unread) return <span className="session-status finished" title="Finished"><span className="session-dot" />New</span>;
   return null;
 }
 
-function SessionRow({ s, current, tip }: { s: View['sessions'][number]; current: boolean; tip?: string }) {
+export function SessionRow({ s, current, project }: { s: SessionInfo; current: boolean; project: string }) {
+  const busy = s.running || s.waiting;
   return (
-    <div className={`session-row ${current ? 'selected' : ''}`} title={tip}>
+    <div className={`session-row two-line ${current ? 'selected' : ''}`} title={`${s.title}\n${s.cwd}`}>
       <button type="button" className="session-open" onClick={() => { ui.set({ page: 'chat' }); act('openChat', { id: s.id }); }}>
-        <SessionState s={s} />
-        <span className="ellipsis grow">{s.title}</span>
-        <span className="tiny dim when">{s.ago}</span>
+        <span className="session-line">
+          <span className="session-title ellipsis grow">{s.title}</span>
+          <SessionState s={s} />
+        </span>
+        <span className="session-line sub">
+          <span className="ellipsis grow">{project}</span>
+          <span className="tiny when">{s.ago}</span>
+        </span>
       </button>
-      <Popover width={150} trigger={(_, toggle) => <IconButton icon="more" tip="More" size={24} className="row-more" onClick={toggle} />}>
-        {(close) => (
-          // The chat Scout is working in stays until it's done.
-          <MenuItem disabled={s.running} onClick={() => { close(); ui.set({ deleting: { id: s.id, title: s.title } }); }}>Delete…</MenuItem>
-        )}
-      </Popover>
+      <span className="row-actions">
+        {s.done
+          ? <IconButton icon="back" tip="Move back to Recent" size={24} onClick={() => act('setDone', { id: s.id, done: false })} />
+          : <IconButton icon="check" tip={busy ? 'Scout is still working on this chat' : 'Mark as done'} size={24} disabled={busy} onClick={() => act('setDone', { id: s.id, done: true })} />}
+        <Popover width={160} trigger={(_, toggle) => <IconButton icon="more" tip="More" size={24} onClick={toggle} />}>
+          {(close) => (
+            <>
+              {s.done
+                ? <MenuItem onClick={() => { close(); act('setDone', { id: s.id, done: false }); }}>Move back to Recent</MenuItem>
+                : <MenuItem disabled={busy} onClick={() => { close(); act('setDone', { id: s.id, done: true }); }}>Mark as done</MenuItem>}
+              {/* The chat Scout is working in stays until it's done. */}
+              <MenuItem disabled={s.running} onClick={() => { close(); ui.set({ deleting: { id: s.id, title: s.title } }); }}>Delete…</MenuItem>
+            </>
+          )}
+        </Popover>
+      </span>
     </div>
   );
 }
 
-function Projects() {
-  const projects = useView('projects');
+/** Every chat across every project, newest first: Recent, or the ones marked Done. */
+function ChatList({ done }: { done: boolean }) {
   const sessions = useView('sessions');
   const chat = useView('chat');
+  const projectName = useProjectName();
+  const rows = sessions.filter((s) => !!s.done === done);
+  return (
+    <div className="side-scroll">
+      {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} project={projectName(s.cwd)} />)}
+      {rows.length === 0 && <div className="small dim no-chats">{done ? 'Nothing marked done yet.' : 'No chats yet. Start one above.'}</div>}
+    </div>
+  );
+}
+
+/** The project folders: start a chat in one, rename it, or add another. */
+function ProjectsMenu() {
+  const projects = useView('projects');
+  const chat = useView('chat');
   const renaming = useUi((u) => u.renaming);
-  const orphans = sessions.filter((s) => !projects.some((p) => sameDir(p.path, s.cwd)));
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState('');
-  // A project is shown open when Scout enters it.
-  useEffect(() => {
-    setExpanded((e) => (e.has(norm(chat.cwd)) ? e : new Set(e).add(norm(chat.cwd))));
-  }, [chat.cwd]);
   useEffect(() => {
     const p = projects.find((x) => renaming && sameDir(x.path, renaming));
     if (p) setDraft(p.name);
@@ -61,67 +91,41 @@ function Projects() {
     ui.set({ renaming: null });
   };
   return (
-    <div className="side-scroll">
-      {projects.map((p) => {
-        const here = sameDir(p.path, chat.cwd);
-        const open = expanded.has(norm(p.path));
-        const list = sessions.filter((s) => sameDir(s.cwd, p.path));
-        return (
-          <div key={p.path}>
-            {renaming && sameDir(renaming, p.path) ? (
-              <input className="input rename" autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => commit(p.path)} onKeyDown={(e) => {
+    <Popover width={240} align="end" trigger={(open, toggle) => <IconButton icon="folder" tip="Projects: new chat in a folder" size={26} active={open} onClick={toggle} />}>
+      {(close) => (
+        <>
+          <div className="tiny dim projects-menu-label">New chat in…</div>
+          <div className="projects-menu">
+            {projects.map((p) => renaming && sameDir(renaming, p.path) ? (
+              <input key={p.path} className="input rename" autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => commit(p.path)} onKeyDown={(e) => {
                 if (e.key === 'Enter') e.currentTarget.blur();
                 if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ui.set({ renaming: null }); }
               }} />
             ) : (
-              <div className={`project-row ${here ? 'here' : ''}`} title={p.path}>
-                <button type="button" className="project-open" onClick={() => {
-                  const next = new Set(expanded);
-                  if (open) next.delete(norm(p.path)); else next.add(norm(p.path));
-                  setExpanded(next);
-                }}>
-                  <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />
+              <div key={p.path} className={`project-row ${sameDir(p.path, chat.cwd) ? 'here' : ''}`} title={p.path}>
+                <button type="button" className="project-open" onClick={() => { close(); ui.set({ page: 'chat' }); act('changeProject', { dir: p.path }); }}>
                   <Icon name="folder" size={15} />
                   <span className="ellipsis">{p.name}</span>
                 </button>
-                <IconButton icon="plus" tip="New chat here" size={24} className="row-more" onClick={() => { ui.set({ page: 'chat' }); act('changeProject', { dir: p.path }); }} />
-                <Popover width={170} trigger={(_, toggle) => <IconButton icon="more" tip="More" size={24} className="row-more" onClick={toggle} />}>
-                  {(close) => (
-                    <>
-                      <MenuItem onClick={() => { close(); ui.set({ page: 'chat' }); act('changeProject', { dir: p.path }); }}>New chat</MenuItem>
-                      <MenuItem onClick={() => { close(); ui.set({ renaming: p.path }); }}>Rename</MenuItem>
-                      {/* The open project stays, so the chat on screen always has one. */}
-                      {!here && <MenuItem onClick={() => { close(); act('removeProject', { path: p.path }); }}>Remove from list</MenuItem>}
-                    </>
-                  )}
-                </Popover>
+                <IconButton icon="pencil" tip="Rename" size={24} className="row-more" onClick={() => ui.set({ renaming: p.path })} />
+                {/* The open project stays, so the chat on screen always has one. */}
+                {!sameDir(p.path, chat.cwd) && <IconButton icon="close" tip="Remove from list" size={24} className="row-more" onClick={() => act('removeProject', { path: p.path })} />}
               </div>
-            )}
-            {open && (
-              <div className="project-chats">
-                {list.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} />)}
-                {list.length === 0 && <div className="small dim no-chats">No chats yet</div>}
-              </div>
-            )}
+            ))}
           </div>
-        );
-      })}
-      {/* Chats in folders that aren't in the list any more (removed from it) still show, like on ScoutMote. */}
-      {orphans.length > 0 && (
-        <>
-          <div className="row side-label"><SectionLabel>Other chats</SectionLabel></div>
-          {orphans.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} tip={s.cwd} />)}
+          <hr />
+          <MenuItem icon="folderPlus" onClick={() => { close(); addProject(); }}>Add a project folder…</MenuItem>
         </>
       )}
-    </div>
+    </Popover>
   );
 }
 
 /** Chats matching the sidebar search, across every project: titles at once, then text once the search ends. */
 function SearchResults({ query }: { query: string }) {
   const sessions = useView('sessions');
-  const projects = useView('projects');
   const chat = useView('chat');
+  const projectName = useProjectName();
   const [hits, setHits] = useState<{ q: string; ids: Set<string> } | null>(null);
   const q = query.trim();
   useEffect(() => {
@@ -135,7 +139,7 @@ function SearchResults({ query }: { query: string }) {
     <>
       <div className="row side-label"><SectionLabel>Results</SectionLabel>{!found && <Spinner size={11} />}</div>
       <div className="side-scroll">
-        {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} tip={projects.find((p) => sameDir(p.path, s.cwd))?.name} />)}
+        {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} project={projectName(s.cwd)} />)}
         {rows.length === 0 && found && <div className="small dim no-chats">No chats match.</div>}
       </div>
     </>
@@ -166,56 +170,11 @@ function DailyRewardBanner() {
   );
 }
 
-function Profile() {
-  const cfg = useView('cfg');
-  const { additionalProviders } = useCore((s) => s.statics);
-  const linked = additionalProviders.find((a) => a.id === cfg.additional[0]?.id)?.name;
-  const name = cfg.username ?? (cfg.browserSignIn ? 'Signed in' : cfg.hasKey ? 'API key' : cfg.openrouterKeys.length ? 'OpenRouter key' : cfg.nvidiaKey ? 'NVIDIA key' : cfg.claude ? 'Claude Code' : cfg.codex ? 'Codex' : cfg.opencode ? 'OpenCode' : cfg.grokSignedIn || cfg.grokKey ? 'Grok Build' : cfg.hermesSignedIn || cfg.hermesKey ? 'Hermes' : linked ?? (cfg.guest ? 'No account' : 'Kilo Code'));
-  const { version } = useView('updater');
-  return (
-    <div className="profile">
-      <Popover side="top" className="profile-menu" width="anchor" trigger={(open, toggle) => (
-        <button type="button" className={`profile-row ${open ? 'open' : ''}`} onClick={toggle}>
-          <span className="avatar">{name.charAt(0).toUpperCase()}</span>
-          <span className="ellipsis grow">{name}</span>
-          <Icon name={open ? 'chevronDown' : 'chevronUp'} size={14} />
-        </button>
-      )}>
-        {(close) => (
-          <>
-            <div className="profile-head">
-              <span className="avatar big">{name.charAt(0).toUpperCase()}</span>
-              <div className="min0">
-                <div className="strong ellipsis">{name}</div>
-                <div className="tiny dim">Scout {version}</div>
-              </div>
-            </div>
-            <hr />
-            <MenuItem icon="gear" onClick={() => { close(); ui.set({ settings: 'appearance' }); }}>Settings</MenuItem>
-            <MenuItem icon="chart" onClick={() => { close(); ui.set({ settings: 'usage' }); }}>Usage</MenuItem>
-            <hr />
-            <MenuItem icon="download" onClick={() => { close(); ui.set({ settings: 'updates' }); act('checkUpdates'); }}>Check for updates</MenuItem>
-            <MenuItem icon="user" onClick={() => { close(); openExternal(`${cfg.baseUrl.replace(/\/v1$/, '')}/account`); }}>Account page</MenuItem>
-          </>
-        )}
-      </Popover>
-    </div>
-  );
-}
-
-/** ScoutCode Delta, the issue tracker, which opens in place of the chat. */
-function DeltaTab() {
-  const page = useUi((u) => u.page);
-  return (
-    <button type="button" className={`new-chat side-tab ${page === 'delta' ? 'selected' : ''}`} onClick={() => ui.set({ page: page === 'delta' ? 'chat' : 'delta' })} title="Issues, projects and cycles">
-      <DeltaMark size={16} /><span className="grow">Delta</span><span className="tiny dim">Issues</span>
-    </button>
-  );
-}
-
 const WIDTH_KEY = 'scout:sidebarWidth';
 /** The search, kept while the sidebar is hidden (hiding it unmounts it). */
 let lastSearch = '';
+/** Whether the Done list is showing, kept the same way. */
+let lastShowDone = false;
 
 export function Sidebar() {
   const [search, setSearchState] = useState(lastSearch);
@@ -232,18 +191,19 @@ export function Sidebar() {
     try { localStorage.setItem(WIDTH_KEY, String(w)); } catch {}
   };
   const searching = !!search.trim() && !useHidden().includes('side.search');
+  const [showDone, setShowDoneState] = useState(lastShowDone);
+  const setShowDone = (v: boolean) => { lastShowDone = v; setShowDoneState(v); };
+  const doneCount = useView('sessions').filter((s) => s.done).length;
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="side-head" data-tauri-drag-region>
-        <ScoutLogo size={24} drag />
-        <b className="brand" data-tauri-drag-region>Scout</b>
+        <b className="brand" data-tauri-drag-region>Chats</b>
         <span className="grow" data-tauri-drag-region />
         <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />
       </div>
       <Hideable id="side.newChat"><button type="button" className="new-chat" onClick={() => { ui.set({ page: 'chat' }); act('newChat'); }}>
         <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
       </button></Hideable>
-      <Hideable id="side.delta"><DeltaTab /></Hideable>
       <Hideable id="side.search">
       <div className="side-search">
         <Icon name="search" />
@@ -254,15 +214,24 @@ export function Sidebar() {
       {searching ? <SearchResults query={search} /> : (
         <>
           <div className="row side-label">
-            <SectionLabel>Projects</SectionLabel>
+            {showDone
+              ? <button type="button" className="side-back" onClick={() => setShowDone(false)}><Icon name="back" size={13} /><SectionLabel>Done</SectionLabel></button>
+              : <SectionLabel>Recent</SectionLabel>}
             <span className="grow" />
-            <IconButton icon="plus" tip="Add a project folder" size={24} onClick={addProject} />
+            <ProjectsMenu />
+            <IconButton icon="folderPlus" tip="Add a project folder" size={26} onClick={addProject} />
           </div>
-          <Projects />
+          <ChatList done={showDone} />
+          {!showDone && (
+            <button type="button" className="done-footer" onClick={() => setShowDone(true)} title="Chats you marked as done">
+              <span className="grow">Done</span>
+              <span className="dim">{doneCount}</span>
+              <Icon name="chevronRight" size={13} />
+            </button>
+          )}
         </>
       )}
       <DailyRewardBanner />
-      <Profile />
       <Resizer side="right" width={width} min={200} max={420} onChange={setWidth} />
     </aside>
   );

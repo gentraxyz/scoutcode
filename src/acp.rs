@@ -280,7 +280,12 @@ impl Server {
 
     /// A new session, with `meta` for the CLI's own extensions when it isn't null.
     pub fn new_session_with(&self, cwd: &str, meta: Value) -> Result<Value, String> {
-        let mut params = json!({"cwd": cwd, "mcpServers": []});
+        self.new_session_full(cwd, meta, vec![])
+    }
+
+    /// A new session with MCP servers of Scout's own, such as explore's (see `explore::acp_server`).
+    pub fn new_session_full(&self, cwd: &str, meta: Value, servers: Vec<Value>) -> Result<Value, String> {
+        let mut params = json!({"cwd": cwd, "mcpServers": servers});
         if !meta.is_null() {
             params["_meta"] = meta;
         }

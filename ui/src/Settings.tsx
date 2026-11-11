@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { act, invoke, money, openExternal, parseUsd, shortDate, usd, DISCORD_INVITE_URL, type Fallbacks, type Games, type McpServer, type ModelRef, type Music, type UsageInfo } from './api';
+import { act, invoke, money, openExternal, parseUsd, setExplore, shortDate, usd, DISCORD_INVITE_URL, type Fallbacks, type Games, type McpServer, type ModelRef, type Music, type UsageInfo } from './api';
 import { closeGame } from './Games';
 import { closeMusic } from './Music';
 import { AgentRouterPanel, FallbackList, ModelPicker, useModelName } from './ModelMenu';
@@ -14,15 +14,18 @@ import { DeepSeekWebPanel, useDeepSeek } from './DeepSeek';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
+import { DreamEntry, DreamingNow } from './Dreams';
 
 const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[] = [
   { id: 'appearance', title: 'Appearance', icon: 'palette', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style language interface translation' },
   { id: 'instructions', title: 'Instructions', icon: 'chat', keywords: 'instructions project global rules preferences language russian english responses' },
   { id: 'memory', title: 'Memory', icon: 'file', keywords: 'memory remember project user profile facts context' },
+  { id: 'dreaming', title: 'Dreaming', icon: 'sparkle', keywords: 'dreaming dream dreams idle away sleep memory tidy learn recent chats free model log undo' },
   { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
   { id: 'discord', title: 'Discord', icon: 'chat', keywords: 'discord rich presence profile status privacy share activity' },
   { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
   { id: 'router', title: 'Agent Router', icon: 'route', keywords: 'agent router routing route fallback fallbacks jev rate limit 429 retry provider models intelligence tier' },
+  { id: 'explore', title: 'Explore', icon: 'search', keywords: 'explore explorer sub-agent subagent search research free qwen save plan tokens claude code codex limits cheaper' },
   { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily weekly monthly 5-hour limits balance banked reset chart history quota free requests rate limit providers rewards login streak claim referral referrals invite code bonus credit' },
   { id: 'account', title: 'Account', icon: 'user', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
   { id: 'providers', title: 'Providers', icon: 'user', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro kilo models local llama llama.cpp gguf gpu offload offline ollama tools small model' },
@@ -126,6 +129,31 @@ function Memory() {
         {dirty && <span className="small dim">Unsaved changes</span>}
       </div>
       <Message m={message} />
+    </>
+  );
+}
+
+function Dreaming() {
+  const cfg = useView('cfg');
+  const d = useView('dreaming');
+  const on = d.on === true;
+  const next = d.last ? new Date(d.last + 24 * 60 * 60_000) : null;
+  return (
+    <>
+      <Heading title="Dreaming" sub="While you're away, Scout reads your last two days of chats and tidies your memory: it keeps what will still be true in a month, like your stack, style, commands and decisions, and never what you're in the middle of." />
+      <SettingRow title="Dream while I'm away" sub="Starts after 20 minutes without using Scout, at most once a day, while no chat is working. Uses ScoutCode's free Dreaming model, and each request counts toward your free requests.">
+        <Toggle label="Dream while I'm away" on={on} onChange={(v) => act('setDreaming', { on: v })} />
+      </SettingRow>
+      {!cfg.hasKey && !cfg.guest && <div className="small red">Dreaming runs on ScoutCode: sign in, or use its free models without an account, in Settings &gt; Account.</div>}
+      {!d.model && <div className="small dim">ScoutCode hasn't set a Dreaming model yet, so Scout won't dream for now.</div>}
+      <SettingRow title="Dream now" sub={d.last ? `Last dream ${new Date(d.last).toLocaleString()}.${on && next && next.getTime() > Date.now() ? ` Next one after ${next.toLocaleString()}, once you're away.` : ''}` : 'No dreams yet.'}>
+        <button type="button" className="button" disabled={d.running || !d.model} onClick={() => act('dreamNow')}>{d.running ? 'Dreaming…' : 'Dream now'}</button>
+      </SettingRow>
+      <DreamingNow />
+      {d.message && <Message m={[d.message.ok, d.message.text]} />}
+      <SectionLabel>Dream Log</SectionLabel>
+      {d.log.length === 0 && <p className="small dim">What each dream changed shows up here, and in the Inbox, with an Undo.</p>}
+      <div className="stack">{d.log.map((x) => <DreamEntry key={x.id} d={x} />)}</div>
     </>
   );
 }
@@ -270,6 +298,10 @@ function Appearance() {
       </div>
       <p className="small dim">Shows in the sidebar, on the start screen and on the taskbar.</p>
       <HiddenItems />
+      <SectionLabel>Setup</SectionLabel>
+      <SettingRow title="Run setup again" sub="Walk through the first-run screens again. Your providers and settings stay as they are.">
+        <button type="button" className="button" onClick={() => ui.set({ settings: null, onboarding: true })}>Start</button>
+      </SettingRow>
       <div className="row"><button type="button" className="button ghost compact" onClick={() => setTheme({ background: 'graphite', elements: 'gray', material: 'solid', logo: 'classic' })}>Reset to default</button></div>
     </>
   );
@@ -289,6 +321,38 @@ function HiddenItems() {
           {hidden.length > 1 && <div className="row"><button type="button" className="button ghost compact" onClick={showAllUi}>Show all</button></div>}
         </>
       )}
+    </>
+  );
+}
+
+// ---------- explore ----------
+
+/** Providers explore can call itself. Claude Code, Codex and the other apps run their own agent, so they can't. */
+const EXPLORE_RUNS_ON = new Set(['scoutcode', 'openrouter', 'nvidia', 'kilo', 'local']);
+
+function ExplorePage() {
+  const { explore } = useView('cfg');
+  const { additionalProviders } = useCore((s) => s.statics);
+  const [skipped, setSkipped] = useState('');
+  const runsHere = (p: string) => EXPLORE_RUNS_ON.has(p) || additionalProviders.some((a) => a.id === p);
+  const models: ModelRef[] = explore.models.map(({ key, provider }) => ({ key, provider }));
+  const change = (next: ModelRef[]) => {
+    const ok = next.filter((m) => runsHere(m.provider));
+    setSkipped(ok.length < next.length ? 'That model runs inside another app’s own agent, so explore can’t use it. Pick a ScoutCode, OpenRouter, NVIDIA, Kilo, local or additional provider’s model.' : '');
+    setExplore(explore.on, ok);
+  };
+  return (
+    <>
+      <Heading title="Explore" sub="Makes paid plans last longer. When a task needs a lot of searching and reading, a read-only explore agent does it on a free model, then hands back its findings and the files that matter, each checked to exist. Your paid model only reads the files it needs." />
+      <SettingRow title="Explore agents" sub="Scout’s own sub-agents run on explore’s models, and Claude Code and Codex get an explore tool they’re told to use for any task that needs 5 or more files. Explore only reads: it can’t change files or run commands.">
+        <Toggle label="Explore agents" on={explore.on} onChange={(on) => setExplore(on, models)} />
+      </SettingRow>
+      <SettingRow title="Models" sub={models.length ? 'Tried in this order: when one fails or hits a limit, the next carries the work on.' : 'Qwen 3.8 27B first, then ScoutCode’s other free models when it’s busy. Add your own to use them instead.'}>
+        {models.length > 0 && <button type="button" className="button ghost compact" onClick={() => change([])}>Use the default</button>}
+      </SettingRow>
+      <FallbackList value={models} onChange={change} max={3} />
+      <Message m={skipped ? [false, skipped] : null} />
+      <SettingRow title="Saved so far" sub={explore.tokens > 0 ? `${explore.tokens.toLocaleString()} tokens of exploring read on free models instead of your plan. New chats show this from ${explore.showFrom.toLocaleString()}.` : 'Nothing yet. New chats show what explore has saved once it passes 100,000 tokens.'} />
     </>
   );
 }
@@ -1012,8 +1076,8 @@ function Providers() {
     },
     {
       id: 'local', name: 'Local models (llama.cpp)', linked: cfg.local.models.length > 0,
-      status: localStatus(cfg.local, local.backends.some((b) => b.id === local.backend && b.installed)),
-      body: <LocalSetup />,
+      status: localStatus(cfg.local, local),
+      body: <LocalSetup mode="settings" />,
     },
     own('devin', 'Devin', DEVIN_NOTE, cfg.devin, "See Devin's plans"),
     own('kiro', 'Kiro', KIRO_NOTE, cfg.kiro, "See Kiro's plans"),
@@ -1382,10 +1446,12 @@ export function Settings() {
           {tab === 'appearance' && <Appearance />}
           {tab === 'instructions' && <Instructions />}
           {tab === 'memory' && <Memory />}
+          {tab === 'dreaming' && <Dreaming />}
           {tab === 'notifications' && <Notifications />}
           {tab === 'discord' && <Discord />}
           {tab === 'fallbacks' && <FallbacksPage />}
           {tab === 'router' && <AgentRouterPage />}
+          {tab === 'explore' && <ExplorePage />}
           {tab === 'usage' && <Usage />}
           {tab === 'account' && <Account />}
           {tab === 'providers' && <Providers />}

@@ -168,7 +168,9 @@ pub fn start(model: &str, cwd: &str, mode: &str, effort: &str, prompt: String, i
     let mut server = open(Path::new(cwd), tx.clone())?;
     let started = (|| -> Result<Value, String> {
         let wait = Duration::from_secs(60);
-        let new = server.new_session(cwd)?;
+        // It takes explore's tool as an MCP server; when to use it goes in the prompt (see `Agent::acp_run`).
+        let explore = crate::explore::acp_server(cwd).filter(|_| !quiet);
+        let new = server.new_session_full(cwd, Value::Null, explore.into_iter().collect())?;
         let session = new.get("sessionId").cloned().ok_or("Codex didn't start a session.")?;
         let set = |option: &str, value: &str| server.conn.call("session/set_config_option", json!({"sessionId": session, "configId": option, "value": value}), wait);
         let mut options = new.clone();

@@ -3,10 +3,10 @@
    overrides them with the theme picked in Settings. */
 :root {
   color-scheme: dark;
-  --bg: #1f1f1f; --sidebar: #1a1a1a; --surface: #262626; --surface-hi: #2e2e2e; --hover: rgb(255 255 255 / 4.5%); --border: rgb(255 255 255 / 6%); --border-hi: rgb(255 255 255 / 10%);
+  --bg: #151515; --sidebar: #111111; --surface: #1d1d1d; --surface-hi: #262626; --hover: rgb(255 255 255 / 4.5%); --border: rgb(255 255 255 / 6%); --border-hi: rgb(255 255 255 / 10%);
   --text: #cccccc; --strong: #ededed; --muted: #a3a3a3; --dim: #7a7a7a; --faint: #4d4d4d;
-  --accent: #f5a524; --accent-hi: #ffb845; --accent-ink: #1a1203; --usage: #5b9cf5; --code: #e5c07b; --code-bg: #1a1a1a;
-  --green: #4fbf7f; --red: #e86464; --add-bg: #15261b; --del-bg: #2b1616; --menu-hover: rgb(255 255 255 / 7%); --user-bg: #2a2a2a;
+  --accent: #f5a524; --accent-hi: #ffb845; --accent-ink: #1a1203; --usage: #5b9cf5; --code: #e5c07b; --code-bg: #111111;
+  --green: #4fbf7f; --red: #e86464; --add-bg: #15261b; --del-bg: #2b1616; --menu-hover: rgb(255 255 255 / 7%); --user-bg: #222222;
   --primary: #e8e8e8; --primary-hi: #ffffff; --primary-ink: #1a1a1a; --focus: rgb(255 255 255 / 22%);
   --raised: color-mix(in srgb, var(--surface-hi), #fff 6%); --edge: color-mix(in srgb, var(--surface-hi), #fff 14%);
   --mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
@@ -131,7 +131,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .main-body { flex: 1 1 0; display: flex; min-height: 0; }
 .chat { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
 /* No chat yet: the greeting and the box together in the middle of the window. */
-.chat.fresh { justify-content: center; padding-bottom: 10vh; }
+.chat.fresh { justify-content: center; padding-bottom: 10vh; position: relative; isolation: isolate; }
+/* Drifting letters behind the greeting; under everything else in the chat, and fading out toward the middle. */
+.ascii-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; animation: fade-in 1.2s var(--ease-out);
+  -webkit-mask-image: radial-gradient(ellipse 34% 26% at 50% 44%, rgb(0 0 0 / 50%), #000 100%); mask-image: radial-gradient(ellipse 34% 26% at 50% 44%, rgb(0 0 0 / 50%), #000 100%); }
 .chat.fresh .transcript { flex: none; overflow: visible; padding-bottom: 12px; }
 .chat.fresh .empty { height: auto; padding-bottom: 0; }
 .top-bar { display: flex; align-items: center; gap: 2px; height: 44px; padding-left: 16px; flex: none; }
@@ -147,8 +150,40 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .drop-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--sidebar) 78%, transparent); pointer-events: none; border: 1px dashed var(--edge); }
 .drop-overlay div { display: flex; gap: 10px; align-items: center; color: var(--strong); font-size: 15px; }
 
+/* the rail: Chats, Inbox, Issues, Code Review and the account, like the website's */
+.nav-rail { width: 52px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 0 10px; background: var(--sidebar); border-right: 1px solid var(--border); }
+.rail-logo { height: 44px; flex: none; display: flex; align-items: center; justify-content: center; align-self: stretch; }
+.rail-btn { position: relative; width: 36px; height: 36px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 10px; color: var(--dim); }
+.rail-btn:hover { background: var(--menu-hover); color: var(--strong); }
+.rail-btn.on { background: var(--surface-hi); color: var(--strong); box-shadow: inset 0 0 0 1px var(--border-hi); }
+.rail-btn .d-mark { color: currentColor; }
+.rail-badge { position: absolute; top: 2px; right: 1px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center; box-shadow: 0 0 0 2px var(--sidebar); }
+.nav-rail > .grow { flex: 1 1 0; align-self: stretch; }
+.rail-avatar { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
+.rail-avatar .avatar { width: 28px; height: 28px; border-radius: 8px; font-size: 12.5px; }
+.rail-avatar:hover, .rail-avatar.open { background: var(--menu-hover); }
+
+/* Inbox */
+.inbox { flex: 1 1 0; min-height: 0; overflow-y: auto; border-top: 1px solid var(--border); --d-bg: var(--bg); }
+.inbox-title { margin-left: 8px; }
+.top-bar > .icon { color: var(--dim); }
+.inbox-body { max-width: 760px; margin: 0 auto; padding: 18px 24px 40px; display: flex; flex-direction: column; gap: 18px; }
+.inbox-head { gap: 8px; height: 26px; padding: 0 4px 0 8px; margin-bottom: 4px; }
+.inbox-list { display: flex; flex-direction: column; }
+.inbox-empty { padding: 6px 12px; }
+.inbox-issue { display: flex; align-items: center; border-radius: 10px; min-height: 36px; }
+.inbox-issue:hover { background: var(--hover); }
+.inbox-issue-open { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 10px 7px 12px; font-size: 13.5px; color: var(--strong); text-align: left; }
+.inbox-key { flex: none; min-width: 52px; font-variant-numeric: tabular-nums; }
+.inbox-ws { flex: none; max-width: 140px; }
+.inbox-state { flex: none; min-width: 72px; text-align: right; }
+.inbox-errors { padding: 0 12px; }
+.inbox-zero { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 80px 0 0; color: var(--dim); text-align: center; }
+.inbox-zero .strong { color: var(--strong); font-size: 15px; margin-top: 6px; }
+
 /* sidebar */
-.sidebar { position: relative; flex: none; display: flex; flex-direction: column; background: var(--sidebar); padding: 0 10px; border-right: 1px solid var(--border); min-height: 0; }
+/* The bottom padding lines the Done row up with the rail's avatar (both centred 28px from the bottom). */
+.sidebar { position: relative; flex: none; display: flex; flex-direction: column; background: var(--sidebar); padding: 0 10px 11px; border-right: 1px solid var(--border); min-height: 0; }
 .side-head { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 0 0 4px; flex: none; }
 .brand { font-size: 14px; font-weight: 600; color: var(--strong); }
 .new-chat { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 11px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); font-size: 13px; color: var(--strong); flex: none; margin-top: 4px; }
@@ -203,6 +238,27 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .session-row:hover .when { display: none; }
 .no-chats { padding: 4px 12px; }
 .rename { padding: 3px 8px; }
+/* Recent chats across every project: title over the project's name, like T3 Code. */
+.session-row.two-line { position: relative; margin-bottom: 2px; border-radius: 10px; }
+.session-row.two-line .session-open { flex-direction: column; align-items: stretch; gap: 2px; padding: 7px 10px; text-align: left; }
+.session-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.session-title { font-size: 13.5px; font-weight: 600; color: var(--strong); }
+.session-line.sub { font-size: 12px; color: var(--dim); }
+.session-status { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; }
+.session-status.working { color: var(--muted); }
+.session-status.waiting { color: var(--accent); }
+.session-status.finished { color: var(--green); }
+.row-actions { position: absolute; right: 6px; bottom: 4px; display: none; align-items: center; gap: 1px; background: var(--hover); border-radius: 8px; }
+.session-row.two-line:hover .row-actions, .row-actions:focus-within { display: flex; }
+.session-row.selected .row-actions { background: var(--surface-hi); }
+.session-row.two-line:hover .when { visibility: hidden; }
+.side-back { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); }
+.side-back:hover { color: var(--strong); }
+.done-footer { flex: none; display: flex; align-items: center; gap: 8px; height: 34px; margin-top: 4px; padding: 0 10px 0 12px; border-radius: 8px; font-size: 13px; color: var(--muted); }
+.done-footer:hover { background: var(--hover); color: var(--strong); }
+.projects-menu-label { padding: 4px 10px 4px; }
+.projects-menu { max-height: 280px; overflow-y: auto; }
+.top-done.on { color: var(--green); }
 .daily-reward-bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-top: 6px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); }
 .daily-reward-info { text-align: left; line-height: 1.3; }
 .usage-alert { position: fixed; right: 16px; bottom: 16px; z-index: 80; width: min(340px, calc(100vw - 32px)); display: flex; align-items: center; gap: 10px; padding: 9px 8px 9px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); box-shadow: 0 8px 24px rgb(0 0 0 / 35%); }
@@ -436,6 +492,10 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 
 /* Welcome: Scout logo, "Welcome to Scout", and tagline, with Get started button. */
 .welcome { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 32px; padding: 0 24px 38px; cursor: default; background: radial-gradient(420px 220px at 50% 46%, color-mix(in srgb, var(--strong) 4%, transparent), transparent 75%); animation: fade-in 0.35s var(--ease-out); }
+.welcome { position: relative; isolation: isolate; overflow: hidden; }
+/* Saturn and a drifting space station, in letters, behind the welcome; fainter in the middle, where the words are. */
+.saturn-scene { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; animation: fade-in 1.6s var(--ease-out);
+  -webkit-mask-image: radial-gradient(ellipse 30% 34% at 50% 47%, rgb(0 0 0 / 22%), #000 100%); mask-image: radial-gradient(ellipse 30% 34% at 50% 47%, rgb(0 0 0 / 22%), #000 100%); }
 .welcome-hero { display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; animation: rise-in 0.35s var(--ease-out); }
 .welcome-logo { border-radius: 16px; box-shadow: 0 10px 30px -4px color-mix(in srgb, var(--strong) 14%, transparent); }
 .welcome-copy { display: flex; flex-direction: column; align-items: center; gap: 8px; }
@@ -598,6 +658,18 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .setup-label { font-size: 11.5px; color: var(--muted); font-weight: 600; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
 .linked-line { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--green) 9%, transparent); color: var(--green); }
 .linked-line .icon { margin-top: 3px; }
+/* Local models: quick setup's card and bar, how well a model fits, and the folded sections. */
+.local-quick { padding: 12px 14px; border: 1px solid var(--border-hi); border-radius: 10px; background: var(--surface); }
+.local-bar { height: 6px; border-radius: 3px; background: var(--border-hi); overflow: hidden; }
+.local-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s ease; }
+.fit-pill { font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: 999px; white-space: nowrap; flex: none; }
+.fit-pill.best, .fit-pill.good { color: var(--green); background: color-mix(in srgb, var(--green) 13%, transparent); }
+.fit-pill.best { font-weight: 600; }
+.fit-pill.slow { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.fit-pill.big { color: var(--red); background: color-mix(in srgb, var(--red) 13%, transparent); }
+.local-dim { opacity: .6; }
+.local-more > summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+.local-more[open] > summary { margin-bottom: 8px; }
 .terms { color: var(--dim); }
 .terms summary { cursor: pointer; }
 .terms summary a { color: var(--muted); text-decoration: underline; }
@@ -1236,3 +1308,52 @@ html[data-material="glass"] ::-webkit-scrollbar-thumb { background: rgb(255 255 
 .chatbot-chip:hover { background: var(--hover); color: var(--strong); }
 .chatbot-chip.on { background: var(--surface-hi); color: var(--strong); border-color: var(--edge); }
 .chatbot-chip img { flex: none; }
+
+/* ---------- explore ---------- */
+.explore-saved { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; padding: 3px 8px; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; opacity: .75; }
+.explore-saved:hover { opacity: 1; background: var(--hover, rgba(127,127,127,.12)); }
+.ob-option-suggested { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.ob-badge { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; vertical-align: middle; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+/* ---------- code review ---------- */
+.review-tab { flex: 1; min-height: 0; overflow-y: auto; }
+.review-inner { padding: 14px 16px 28px; gap: 8px; }
+.review-inner .section-label, .review-inner > .side-label { margin-top: 10px; }
+.review-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-choice { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 13px; }
+.review-choice:hover { background: var(--hover, rgba(127,127,127,.1)); }
+.review-choice.selected { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.review-field { display: flex; flex-direction: column; gap: 4px; }
+.review-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.review-reviewer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review-actions { margin-top: 12px; gap: 8px; }
+.review-toggle { border: 0; background: transparent; color: inherit; padding: 4px 0; cursor: pointer; text-align: left; }
+.review-setup { padding-bottom: 6px; border-bottom: 1px solid var(--border); gap: 8px; }
+.review-result { gap: 8px; }
+.review-result-head { display: flex; align-items: center; gap: 8px; }
+.review-steps { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: var(--surface-hi); }
+.review-verdict { padding: 8px 10px; border-left: 2px solid var(--accent); background: var(--surface-hi); border-radius: 0 8px 8px 0; white-space: pre-wrap; }
+.review-counts { flex-wrap: wrap; }
+.review-finding { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.review-finding.settled { opacity: .55; }
+.review-finding-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.review-finding-title { font-weight: 500; font-size: 13px; }
+.review-where { align-self: flex-start; border: 0; background: transparent; padding: 0; font-size: 12px; cursor: pointer; font-family: var(--mono, monospace); }
+.review-detail, .review-fix { white-space: pre-wrap; }
+.review-fix { color: var(--dim); }
+.review-finding-actions { margin-top: 4px; }
+.review-sev { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.review-sev.sev-critical { color: #fff; background: #d64545; }
+.review-sev.sev-high { color: #d64545; background: color-mix(in srgb, #d64545 15%, transparent); }
+.review-sev.sev-medium { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.review-sev.sev-low { color: var(--dim); background: var(--surface-hi); }
+.review-finding.sev-critical { border-color: color-mix(in srgb, #d64545 50%, var(--border)); }
+
+/* Dreaming: the Dream Log, in Settings and the Inbox. */
+.dream-entry { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.dream-entry.undone { opacity: 0.6; }
+.dream-head { gap: 8px; align-items: center; }
+.dream-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.dream-change { display: flex; flex-direction: column; gap: 1px; }
+.dream-removed { text-decoration: line-through; color: var(--dim); }
+.dream-now { gap: 8px; align-items: center; padding: 4px 0; }

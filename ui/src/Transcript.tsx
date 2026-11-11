@@ -523,7 +523,24 @@ function EmptyState() {
           <span className="splash-caret" />
         </span>
       </div>
+      <ExploreSaved />
     </div>
+  );
+}
+
+function compactTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  return `${Math.round(n / 1000)}K`;
+}
+
+/** What explore has read on free models instead of the user's plan, once that's 100K tokens or more. */
+function ExploreSaved() {
+  const { explore } = useView('cfg');
+  if (!explore || explore.tokens < explore.showFrom) return null;
+  return (
+    <button type="button" className="explore-saved tiny dim" title="Open Explore settings" onClick={() => ui.set({ settings: 'explore' })}>
+      <Icon name="search" size={11} />Explore has saved you {compactTokens(explore.tokens)} tokens of exploring, read on free models instead of your plan
+    </button>
   );
 }
 

@@ -7,7 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 type Vars = Record<string, string>;
 
 export const BACKGROUNDS: { id: string; name: string; vars: Vars }[] = [
-  { id: 'graphite', name: 'Graphite', vars: { bg: '#1f1f1f', sidebar: '#1a1a1a', surface: '#262626', 'surface-hi': '#2e2e2e', 'code-bg': '#1a1a1a', 'user-bg': '#2a2a2a', text: '#cccccc', strong: '#ededed', muted: '#a3a3a3', dim: '#7a7a7a', faint: '#4d4d4d' } },
+  { id: 'graphite', name: 'Graphite', vars: { bg: '#151515', sidebar: '#111111', surface: '#1d1d1d', 'surface-hi': '#262626', 'code-bg': '#111111', 'user-bg': '#222222', text: '#cccccc', strong: '#ededed', muted: '#a3a3a3', dim: '#7a7a7a', faint: '#4d4d4d' } },
   { id: 'midnight', name: 'Midnight', vars: { bg: '#171b24', sidebar: '#13161e', surface: '#1e2330', 'surface-hi': '#262c3b', 'code-bg': '#13161e', 'user-bg': '#232937', text: '#c9cfdb', strong: '#eceff5', muted: '#9ba3b4', dim: '#737c8f', faint: '#474e5e' } },
   { id: 'forest', name: 'Forest', vars: { bg: '#18201c', sidebar: '#141a17', surface: '#1f2924', 'surface-hi': '#27322c', 'code-bg': '#141a17', 'user-bg': '#232d28', text: '#c8d2cc', strong: '#ebf0ed', muted: '#9caaa2', dim: '#74827a', faint: '#48524c' } },
   { id: 'mocha', name: 'Mocha', vars: { bg: '#211c19', sidebar: '#1b1714', surface: '#2a2420', 'surface-hi': '#332c27', 'code-bg': '#1b1714', 'user-bg': '#2e2723', text: '#d4cbc4', strong: '#f0e9e3', muted: '#aa9f97', dim: '#82776f', faint: '#524943' } },

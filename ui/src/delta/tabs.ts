@@ -33,6 +33,8 @@ function getInitialState(): DeltaTabsState {
 
 let state: DeltaTabsState = getInitialState();
 const subs = new Set<() => void>();
+/** An issue to open once its workspace loads, as the Inbox asks for. */
+let pendingOpen: { workspaceKey: string; issueId: string } | null = null;
 
 function notify() {
   subs.forEach((f) => f());
@@ -56,8 +58,20 @@ export const deltaTabs = {
     return () => subs.delete(f);
   },
 
+  /** Opens an issue in the active tab the next time its workspace loads (or now, if it's the one loaded). */
+  openOnLoad(workspaceKey: string, issueId: string) {
+    pendingOpen = { workspaceKey, issueId };
+  },
+
   init(workspaceKey: string, doc: Doc, defaultRoute: Route) {
-    if (state.workspaceKey === workspaceKey && state.doc === doc) return;
+    if (state.workspaceKey === workspaceKey && state.doc === doc) {
+      if (pendingOpen?.workspaceKey === workspaceKey) {
+        const id = pendingOpen.issueId;
+        pendingOpen = null;
+        this.setOpenId(id);
+      }
+      return;
+    }
 
     let restoredTabs: DeltaTabItem[] | null = null;
     let restoredActiveId: string | null = null;
@@ -79,10 +93,16 @@ export const deltaTabs = {
     const initialActiveId = (restoredActiveId && initialTabs.some((t) => t.id === restoredActiveId))
       ? restoredActiveId
       : initialTabs[0].id;
+    let tabs = initialTabs;
+    if (pendingOpen?.workspaceKey === workspaceKey) {
+      const id = pendingOpen.issueId;
+      tabs = tabs.map((t) => (t.id === initialActiveId ? { ...t, openId: id } : t));
+    }
+    pendingOpen = null;
 
     state = {
       ...state,
-      tabs: initialTabs,
+      tabs,
       activeId: initialActiveId,
       workspaceKey,
       doc,

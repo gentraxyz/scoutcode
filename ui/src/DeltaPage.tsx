@@ -6,10 +6,10 @@ import type { AgentTarget, Host } from './delta/sync';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 
-/** ScoutCode Delta in the desktop app: local workspaces in ~/.scoutcode/delta, cloud ones through the account's key. */
-export function DeltaPage() {
+/** Delta's host in the desktop app: local workspaces in ~/.scoutcode/delta, cloud ones through the account's key. */
+export function useDeltaHost(): Host {
   const { username } = useView('cfg');
-  const host = useMemo<Host>(() => ({
+  return useMemo<Host>(() => ({
     kind: 'desktop',
     me: username,
     cloud: (method, path, body) => invoke('delta_cloud', { method, path, body: body ?? null }),
@@ -43,6 +43,12 @@ export function DeltaPage() {
     },
     showChat: () => ui.set({ page: 'chat' }),
   }), [username]);
+}
+
+/** ScoutCode Delta in the desktop app: the Issues page. */
+export function DeltaPage() {
+  const { username } = useView('cfg');
+  const host = useDeltaHost();
   return (
     <div className="delta-host">
       <Delta key={username ?? ''} host={host} onExit={() => ui.set({ page: 'chat' })} />

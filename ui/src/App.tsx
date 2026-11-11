@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { act, invoke } from './api';
+import { AsciiBackdrop } from './AsciiBackdrop';
 import { Composer, PermissionBody } from './Composer';
 import { Dock } from './Dock';
 import { closeGame, FloatingGame, gameShowing, openGame, useGameAutomation } from './Games';
@@ -13,11 +14,14 @@ import { Hideable, HideMenu } from './Hideable';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Transcript } from './Transcript';
 import { DeltaPage } from './DeltaPage';
+import { Inbox } from './Inbox';
+import { NavRail } from './NavRail';
 import { DeltaTabsBar } from './delta/DeltaTabsBar';
 import { deltaTabs } from './delta/tabs';
 import { FolderPicker } from './FolderPicker';
 import { UsageAlert } from './UsageAlert';
 import { Icon, IconButton, Modal } from './widgets';
+import { useActivityPing } from './Dreams';
 
 const appWindow = getCurrentWindow();
 
@@ -99,16 +103,45 @@ function MusicButton() {
   );
 }
 
+/** Marks the open chat Done, which files it under Done in the sidebar until it gets new activity. */
+function DoneButton() {
+  const chat = useView('chat');
+  const s = useView('sessions').find((x) => x.id === chat.id);
+  // A new chat isn't saved until its first message, so there's nothing to mark yet.
+  if (!s) return null;
+  const busy = s.running || s.waiting;
+  return s.done ? (
+    <button type="button" className="chip top-done on" title="Done. Click to move it back to Recent" onClick={() => act('setDone', { id: s.id, done: false })}>
+      <Icon name="check" size={14} />Done
+    </button>
+  ) : (
+    <button type="button" className="chip top-done" disabled={busy} title={busy ? 'Scout is still working on this chat' : 'Mark this chat as done'} onClick={() => act('setDone', { id: s.id, done: true })}>
+      <Icon name="check" size={14} />Done
+    </button>
+  );
+}
+
 function TopBar() {
   const sidebar = useUi((u) => u.sidebar);
   const dockOpen = useUi((u) => u.dockOpen);
   const dockTab = useUi((u) => u.dockTab);
   const chat = useView('chat');
   const page = useUi((u) => u.page);
+  // Issues and Inbox have no chats sidebar (the rail gets you back), so no button to show it either.
+  if (page === 'inbox') {
+    return (
+      <header className="top-bar" data-tauri-drag-region>
+        <Icon name="inbox" size={15} />
+        <b className="chat-title inbox-title" data-tauri-drag-region>Inbox</b>
+        <span className="grow" data-tauri-drag-region />
+        <UpdatePill />
+        <WindowButtons />
+      </header>
+    );
+  }
   if (page === 'delta') {
     return (
       <header className="top-bar delta-top-bar" data-tauri-drag-region>
-        {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
         <DeltaTabsBar />
         <span className="grow" data-tauri-drag-region />
         <UpdatePill />
@@ -123,6 +156,7 @@ function TopBar() {
       <b className="chat-title ellipsis" data-tauri-drag-region>{chat.title}</b>
       <span className="grow" data-tauri-drag-region />
       {/* The sidebar shows the folder; without it, the bar does. */}
+      <DoneButton />
       {!sidebar && <Hideable id="top.project"><button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button></Hideable>}
       <UpdatePill />
       <Hideable id="top.music"><MusicButton /></Hideable>
@@ -131,6 +165,7 @@ function TopBar() {
       <Hideable id="top.terminal"><IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} /></Hideable>
       <Hideable id="top.changes"><IconButton icon="changes" tip="Changes" active={dockOpen && dockTab === 'changes'} onClick={() => toggleDock('changes')} /></Hideable>
       <Hideable id="top.files"><IconButton icon="files" tip="Files" active={dockOpen && dockTab === 'files'} onClick={() => toggleDock('files')} /></Hideable>
+      <Hideable id="top.review"><IconButton icon="shield" tip="Code Review: a second opinion from another model" active={dockOpen && dockTab === 'review'} onClick={() => toggleDock('review')} /></Hideable>
       <WindowButtons />
     </header>
   );
@@ -228,6 +263,15 @@ function useShortcuts() {
         }
         return;
       }
+      // The Inbox has no chat on screen: only Ctrl+N, which makes one.
+      if (ui.get().page === 'inbox') {
+        if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
+          e.preventDefault();
+          ui.set({ page: 'chat' });
+          act('newChat');
+        }
+        return;
+      }
       if (e.ctrlKey && e.key === '`') {
         e.preventDefault();
         return toggleDock('terminal');
@@ -267,6 +311,7 @@ export function App() {
   const fresh = useCore((s) => s.items.length === 0);
   useShortcuts();
   useGameAutomation();
+  useActivityPing();
   useEffect(() => {
     const offs = [
       listen<string[]>('dropped', async (e) => {
@@ -297,22 +342,25 @@ export function App() {
 
   // Once it's shown, the first-run screen stays up while the user links more providers, until they press Continue. A
   // Scout Enterprise team's member skips it as soon as they've signed in: the team has set their providers up.
-  const [onboarding, setOnboarding] = useState(false);
+  // It can also be reopened on purpose ("Run setup again"), which keeps the providers already linked.
+  const onboarding = useUi((u) => u.onboarding);
   useEffect(() => {
-    if (loginNeeded) setOnboarding(true);
+    if (loginNeeded) ui.set({ onboarding: true });
   }, [loginNeeded]);
   useEffect(() => {
-    if (team) setOnboarding(false);
+    if (team) ui.set({ onboarding: false });
   }, [!!team]);
-  if (!team && (loginNeeded || onboarding)) return <Login onDone={() => setOnboarding(false)} />;
+  if (!team && (loginNeeded || onboarding)) return <Login onDone={() => ui.set({ onboarding: false })} />;
   return (
     <div className="app">
-      {sidebar && <Sidebar />}
+      <NavRail />
+      {sidebar && page === 'chat' && <Sidebar />}
       <div className="main">
         <TopBar />
-        {page === 'delta' ? <DeltaPage /> : (
+        {page === 'delta' ? <DeltaPage /> : page === 'inbox' ? <Inbox /> : (
           <div className="main-body">
             <div className={`chat ${fresh ? 'fresh' : ''}`}>
+              {fresh && <AsciiBackdrop />}
               <Transcript />
               <Composer />
             </div>

@@ -1369,6 +1369,10 @@ pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), Api
     if let Some(Value::Object(levels)) = body.get("intelligence") {
         set_intelligence(levels.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64().filter(|n| (1..=3).contains(n))? as u8))).collect());
     }
+    // Missing on a server from before Dreaming, which leaves the saved model alone.
+    if let Some(m) = body.get("dreaming_model") {
+        crate::dream::set_model(m.as_str());
+    }
     let models = body
         .get("data")
         .and_then(Value::as_array)

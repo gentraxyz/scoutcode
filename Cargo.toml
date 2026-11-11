@@ -1,6 +1,6 @@
 [package]
 name = "scout-desktop"
-version = "0.1.23"
+version = "0.1.24"
 edition = "2024"
 description = "Scout: a desktop coding agent for ScoutCode (scoutcode.dev)"
 license = "MIT"
@@ -47,6 +47,7 @@ brotli-decompressor = "5"
 [target.'cfg(windows)'.dependencies]
 # For toast notifications and dynamic taskbar icon. UI Automation, input and process names: the Claude connector setup
 # working the browser itself (claude_native.rs). The PC's memory: how much of it llama.cpp may keep prompts in (local.rs).
+# The registry also says how much memory the GPU has: which local model fits (local.rs).
 windows = { version = "0.62", features = [
     "Data_Xml_Dom",
     "UI_Notifications",

@@ -113,14 +113,16 @@ pub enum Ev {
     WhatsNew(Vec<crate::update::ReleaseNote>),
     /// Why linked additional providers didn't list their models, from the last time the lists were loaded.
     AdditionalErrors(Vec<String>),
-    /// A local model finished downloading.
-    LocalModel(crate::config::LocalModel),
+    /// A local model finished downloading, and whether to switch the chat to it (quick setup does).
+    LocalModel(crate::config::LocalModel, bool),
     /// The account the key belongs to, from the model list.
     User(String),
     /// The Scout Enterprise team the account is in, read before the model list when it changed.
     Team(Option<crate::config::Team>),
     /// The account's limits for Settings > Usage, and what to say when it follows a change.
     Usage(Result<crate::api::UsageInfo, String>, Option<String>),
+    /// A dream ended: how many memory changes it made, or why it failed.
+    Dreamed(Result<usize, String>),
     /// The account's limits, from the 30-second refresh.
     UsagePolled(Result<crate::api::UsageInfo, String>),
     LoginUrl(String),
@@ -609,9 +611,14 @@ impl Agent {
         let name = self.shared.model_name(&model);
         // A local model with the short prompt: what it says depends on its tools and whether it makes one call at a time.
         let short = (self.on_local() && self.cfg.local.short_prompt).then(|| format!("{}|{}", self.cfg.local.tools, self.cfg.local.single_call));
-        if self.sys.as_ref().is_none_or(|(cwd, e, n, s, _)| *cwd != self.session.cwd || *e != edit || *n != name || *s != short) {
+        // With explore on, task runs on a free model, and the prompt says to use it much more.
+        let explore = self.cfg.explore.on && short.is_none();
+        let has_guide = |m: &Message| matches!(m, Message::System { content } if content.contains(crate::explore::SCOUT_GUIDE));
+        if self.sys.as_ref().is_none_or(|(cwd, e, n, s, m)| *cwd != self.session.cwd || *e != edit || *n != name || *s != short || has_guide(m) != explore) {
             let content = if short.is_some() {
                 prompt::short_system_prompt(&self.session.cwd, edit, &name, &self.preferences, self.cfg.local.tools != "none", self.cfg.local.single_call)
+            } else if explore {
+                format!("{}\n\n{}", prompt::system_prompt(&self.session.cwd, edit, &name, &self.preferences), crate::explore::SCOUT_GUIDE)
             } else {
                 prompt::system_prompt(&self.session.cwd, edit, &name, &self.preferences)
             };
@@ -1018,6 +1025,9 @@ impl Agent {
             let d = args.get("description").and_then(Value::as_str).unwrap_or("task").to_string();
             let p = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
             self.sub = Some((id.to_string(), vec![]));
+            if self.cfg.explore.on {
+                return self.run_explore(&d, &p, h);
+            }
             let run = self.run_subagent(&d, &p, h);
             let steps = self.sub.take().map(|(_, s)| s).unwrap_or_default();
             let calls = steps.iter().filter(|s| !s.tool.is_empty()).count();
@@ -1092,6 +1102,39 @@ impl Agent {
         if !notes.is_empty() {
             result.output = format!("{}\n\n{notes}", result.output);
         }
+        result
+    }
+
+    /// The task tool with explore on: the sub-agent runs on explore's free models, whatever this chat runs on, and its
+    /// steps show under the call like any sub-agent's.
+    fn run_explore(&mut self, description: &str, task: &str, h: &Hooks) -> ToolResult {
+        let (cfg, cwd, cancel) = (self.cfg.clone(), self.session.cwd.clone(), self.shared.cancel.clone());
+        let mut open: Option<usize> = None;
+        let run = crate::explore::run(&cfg, &cwd, task, &cancel, &mut |step| match step {
+            crate::explore::Step::Call(tool, label) => {
+                h.send(Ev::Status(format!("explore: {description} · {tool} {label}").chars().take(140).collect()));
+                open = self.sub_step(tools::AgentStep { tool, label, ..Default::default() }, None, h);
+            }
+            crate::explore::Step::Done(summary, is_error) => {
+                if let Some(at) = open.take() {
+                    if let Some(step) = self.sub.as_ref().and_then(|(_, s)| s.get(at)).cloned() {
+                        self.sub_step(tools::AgentStep { summary, is_error, done: true, ..step }, Some(at), h);
+                    }
+                }
+            }
+            crate::explore::Step::Note(text) => {
+                self.sub_step(tools::AgentStep { text, done: true, ..Default::default() }, None, h);
+            }
+            crate::explore::Step::Fallback(text) => h.send(Ev::Status(text)),
+        });
+        let steps = self.sub.take().map(|(_, s)| s).unwrap_or_default();
+        let mut result = match run {
+            Ok(r) => ToolResult::ok(r.text, format!("explored on {} · {} tool call{} · {} files", r.model, r.calls, if r.calls == 1 { "" } else { "s" }, r.files.len())),
+            Err(_) if self.cancelled() => ToolResult::err("Interrupted by the user.", "interrupted"),
+            Err(e) => ToolResult::err(format!("Error: {e}"), e.chars().take(100).collect::<String>()),
+        };
+        let answer = if result.is_error { String::new() } else { result.output.clone() };
+        result.display = Some(Display::Agent { steps, answer });
         result
     }
 
@@ -1531,6 +1574,10 @@ impl Agent {
         let (_, mut text_in) = crate::copilot::as_prompt(messages);
         if main {
             text_in = format!("<saved_instructions>\n{}</saved_instructions>\n\n{}\n{text_in}", self.preferences.prompt(&cwd), crate::memory::prompt_for_own_tools(&cwd));
+            // Claude Code has it in its system prompt (see `claude::turn_meta`); Codex can only be told here.
+            if tool == "codex" && crate::explore::enabled() {
+                text_in = format!("<explore_tool>\n{}\n</explore_tool>\n\n{text_in}", crate::explore::GUIDE);
+            }
         }
         let run = (cli.start)(&model, &cwd, &self.shared.mode(), &effort, text_in, crate::copilot::newest_images(messages), !main).map_err(|e| fail((cli.explain)(&e)))?;
         if main {

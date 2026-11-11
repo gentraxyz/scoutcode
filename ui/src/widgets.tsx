@@ -8,6 +8,7 @@ const PATHS: Record<string, string> = {
   plus: 'M8 3v10M3 8h10',
   close: 'M4 4l8 8M12 4l-8 8',
   check: 'M3.5 8.5l3 3 6-7',
+  inbox: 'M2 9h3.5l1 2h3l1-2H14M3.5 3h9L14 9v4H2V9z',
   search: 'M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM11 11l3 3',
   chevronRight: 'M6 3.5L10.5 8 6 12.5',
   chevronDown: 'M3.5 6L8 10.5 12.5 6',

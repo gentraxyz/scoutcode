@@ -8,7 +8,7 @@
 // 6. Appearance (theme, accent, window material, logo — with Classic logo fixed)
 // 7. General Options (sectioned cards with icons: personal instructions, ScoutMote, Discord RPC, Games, Notifications & updates)
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { act, invoke, openExternal, type Games, type Music, type View } from './api';
+import { act, invoke, openExternal, setExplore, type Games, type Music, type View } from './api';
 import { closeGame } from './Games';
 import { closeMusic } from './Music';
 import {
@@ -75,8 +75,9 @@ function StepFrame({ title, sub, wide, children, back, next }: {
   );
 }
 
-/** What leaving setup always does, from its last step or from Skip: keep the notification defaults, and fall back to guest mode with no account. */
-function finishSetup(cfg: Cfg) {
+/** What leaving setup always does, from its last step or from Skip: keep the notification defaults, record Dreaming as off unless it was turned on, and fall back to guest mode with no account. */
+function finishSetup(cfg: Cfg, dreaming: boolean | null) {
+  if (dreaming === null) act('setDreaming', { on: false });
   if (cfg.notifyFlash === null || cfg.notifyToast === null) {
     act('setNotify', { flash: cfg.notifyFlash ?? true, toast: cfg.notifyToast ?? false });
   }
@@ -255,7 +256,7 @@ function Setup({ p, linked }: { p: Provider; linked: boolean }) {
       if (linked) return done('Signed in to Devin.');
       return <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>;
     case 'local':
-      return <LocalSetup compact />;
+      return <LocalSetup mode="onboarding" />;
     default:
       return null;
   }
@@ -1060,13 +1061,13 @@ function AppearanceStep({ onBack, onNext }: { onBack: () => void; onNext: () => 
 
 // ---------- Step 7: General Options (sectioned cards with icons) ----------
 
-function OptionSection({ icon, title, desc, children }: { icon: string; title: string; desc?: string; children: ReactNode }) {
+function OptionSection({ icon, title, desc, badge, children }: { icon: string; title: string; desc?: string; badge?: string; children: ReactNode }) {
   return (
-    <div className="ob-card ob-option-card stack">
+    <div className={`ob-card ob-option-card stack ${badge ? 'ob-option-suggested' : ''}`}>
       <div className="ob-option-head row">
         <span className="ob-option-icon"><Icon name={icon} size={15} /></span>
         <div className="stack tight grow min0">
-          <b className="strong">{title}</b>
+          <b className="strong">{title}{badge && <span className="ob-badge">{badge}</span>}</b>
           {desc && <span className="tiny dim">{desc}</span>}
         </div>
       </div>
@@ -1093,6 +1094,7 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
   const { cwd } = useView('chat');
   const sm = useView('scoutMote');
   const updater = useView('updater');
+  const dreaming = useView('dreaming');
   const { t } = useTranslation();
   const [instructions, setInstructions] = useState<string | null>(null);
   const [savedInstructions, setSavedInstructions] = useState('');
@@ -1121,7 +1123,7 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
 
   const finish = async () => {
     await saveInstructions();
-    finishSetup(cfg);
+    finishSetup(cfg, dreaming.on);
     onDone();
   };
 
@@ -1134,6 +1136,18 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
       next={{ label: t('opt_finish'), onClick: finish }}
     >
       <div className="ob-options-grid">
+        <OptionSection icon="search" title={t('opt_explore_title')} desc={t('opt_explore_desc')} badge={t('opt_suggested')}>
+          <OptionRow icon="bolt" title={t('opt_explore_enable')} sub={t('opt_explore_enable_sub')}>
+            <Toggle label={t('opt_explore_enable')} on={cfg.explore.on} onChange={(on) => setExplore(on, cfg.explore.models)} />
+          </OptionRow>
+        </OptionSection>
+
+        <OptionSection icon="sparkle" title={t('opt_dreaming_title')} desc={t('opt_dreaming_desc')}>
+          <OptionRow icon="sparkle" title={t('opt_dreaming_enable')} sub={t('opt_dreaming_enable_sub')}>
+            <Toggle label={t('opt_dreaming_enable')} on={dreaming.on === true} onChange={(on) => act('setDreaming', { on })} />
+          </OptionRow>
+        </OptionSection>
+
         <OptionSection icon="pencil" title={t('opt_instructions_title')} desc={t('opt_instructions_desc')}>
           <textarea
             className="input"
@@ -1255,6 +1269,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<number>(0);
   const { t } = useTranslation();
   const cfg = useView('cfg');
+  const dreaming = useView('dreaming').on;
 
   // Preload folder places and detected Claude Code / Codex chats right at the start of onboarding
   // so they are ready by the time the user reaches the Project step.
@@ -1266,7 +1281,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     invoke<DetectedChat[]>('detect_external_chats').then(setDetected).catch(() => {});
   }, []);
 
-  if (step === 0) return <WelcomeIntro onStart={() => setStep(1)} onSkip={() => { finishSetup(cfg); onDone(); }} />;
+  if (step === 0) return <WelcomeIntro onStart={() => setStep(1)} onSkip={() => { finishSetup(cfg, dreaming); onDone(); }} />;
   const current = STEPS[step - 1].id;
   const back = () => setStep(step - 1);
   const next = () => setStep(step + 1);

@@ -61,6 +61,8 @@ const recall = (k: string) => {
     return null;
   }
 };
+/** Makes the workspace (`storage:id`) the one Delta opens next time it mounts. */
+export const rememberWorkspace = (key: string) => remember(LAST, key);
 
 const isTyping = (t: EventTarget | null) => {
   const el = t as HTMLElement | null;

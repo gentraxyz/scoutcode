@@ -24,6 +24,14 @@ export type Item =
 
 /** A model in the picker: its list key and where it runs. */
 export type ModelRef = { key: string; provider: string };
+/** Explore: read-only research on free models. `models` empty is its default (Qwen 3.8 27B, then free models). */
+export type Explore = { on: boolean; models: (ModelRef & { model: string })[]; tokens: number; showFrom: number };
+/** Code Review's agent, per chat: its reviews, newest first. */
+export type ReviewFinding = { id: number; severity: 'critical' | 'high' | 'medium' | 'low'; file: string; line: number | null; title: string; detail: string; fix: string; status: 'open' | 'sent' | 'dismissed' };
+export type Review = { id: number; finished: number | null; state: 'running' | 'done' | 'failed' | 'stopped'; label: string; model: string; steps: { tool: string; label: string; done: boolean; failed: boolean }[]; findings: ReviewFinding[]; verdict: string; error: string | null; tokens: number };
+export type ReviewView = { chat: string; running: boolean; reviews: Review[] };
+/** Turns explore on or off, keeping or replacing its models. */
+export const setExplore = (on: boolean, models: ModelRef[]) => act('setExplore', { on, models: models.map(({ key, provider }) => ({ key, provider })) });
 /** The models to try, in order, when the chosen one fails. */
 export type Fallbacks = { chosen: boolean; all: ModelRef[]; models: [ModelRef, ModelRef[]][] };
 /** One step in the Agent Router. */
@@ -124,13 +132,23 @@ export type LocalSettings = {
   singleCall: boolean; shortPrompt: boolean; reasoningBudget: number; models: { id: string; name: string; path: string; size: number }[];
 };
 export type Progress = { done: number; total: number };
+/** How well a model would run on this PC: all on the GPU (or small enough for the CPU), partly in its memory, or not at all. */
+export type Fit = 'good' | 'slow' | 'big';
+/** A GGUF file in a Hugging Face repo, from `local_hf_files`. */
+export type HfFile = { path: string; size: number; sha256: string; quant: string | null; split: boolean; fit: Fit };
+export type HfRepo = { repo: string; file: string | null; files: HfFile[] };
 /** What `local::view` says: the llama.cpp builds, downloads and the running server. */
 export type LocalView = {
   build: string; backend: string | null;
   backends: { id: string; name: string; about: string; size: number; installed: boolean }[];
   installing: (Progress & { backend: string }) | null; installError: string | null;
-  curated: { id: string; name: string; about: string; size: number; have: boolean }[];
-  downloads: Record<string, Progress>; downloadErrors: Record<string, string>;
+  hardware: { ramGb: number; gpuGb: number; gpuName: string | null; shared: boolean };
+  /** The curated model quick setup picks for this PC. */
+  recommended: string | null;
+  freeDisk: number | null;
+  curated: { id: string; name: string; about: string; size: number; fit: Fit; have: boolean }[];
+  downloads: Record<string, Progress & { name: string }>; downloadErrors: Record<string, string>;
+  setup: (Progress & { model: string; name: string; phase: 'engine' | 'model' }) | null; setupError: string | null;
   server: { state: 'stopped' | 'loading' | 'ready' | 'error'; model: string | null; error: string | null; offloaded: [number, number] | null; cpuFaster: boolean };
 };
 
@@ -146,9 +164,11 @@ export type View = {
   cfg: {
     loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; games: Games; music: Music; local: LocalSettings;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; explore: Explore; games: Games; music: Music; local: LocalSettings;
   };
   local: LocalView;
+  review: ReviewView;
+  dreaming: import('./Dreams').DreamingView;
   mode: string;
   model: { id: string; provider: string; key: string; short: string };
   effort: string;
@@ -169,7 +189,7 @@ export type View = {
   questions: Question[] | null;
   queue: { text: string; files: number }[];
   steering: string[];
-  sessions: { id: string; cwd: string; title: string; ago: string; running: boolean; waiting: boolean; unread: boolean }[];
+  sessions: { id: string; cwd: string; title: string; ago: string; running: boolean; waiting: boolean; unread: boolean; done?: boolean }[];
   projects: { name: string; path: string }[];
   chat: { id: string | null; cwd: string; project: string; title: string; epoch: number };
   filesEpoch: number;

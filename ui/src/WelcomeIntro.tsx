@@ -2,6 +2,7 @@
 import { useEffect } from 'react';
 import { useTranslation } from './i18n';
 import { ScoutLogo } from './logo';
+import { SaturnScene } from './SaturnScene';
 import { Icon } from './widgets';
 
 /** `onSkip` takes every default and goes straight to the chat; everything is still in Settings. */
@@ -20,6 +21,7 @@ export function WelcomeIntro({ onStart, onSkip }: { onStart: () => void; onSkip:
 
   return (
     <div className="welcome">
+      <SaturnScene />
       <div className="welcome-hero">
         <ScoutLogo size={64} className="welcome-logo" />
         <div className="welcome-copy">

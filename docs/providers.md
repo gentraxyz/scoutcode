@@ -252,6 +252,25 @@ turns go through `api::stream_chat` like any other provider. The provider id is 
   into `~/.scoutcode/models/`, checked against Hugging Face's SHA-256. Downloads come in 32 MB chunks, four at a time
   (one long connection to Hugging Face's CDN gets about a quarter of the line's speed); the finished chunks are listed
   in `<file>.part.done`, so a paused download carries on, and the hash is checked once the file is whole. The user can also add any `.gguf` file, which stays where it is.
+- **Quick setup.** What most users see, in onboarding and in the model menu until there's a model: one Set up
+  button (`localSetup` → `local::start_setup`) that installs the best build if none is installed, downloads the model
+  Scout picked and moves the chat to it (`Ev::LocalModel(m, true)`), as one bar over both. It refuses up front when
+  the drive is short (`free_space`: `GetDiskFreeSpaceExW`, or `df -Pk`). Any download without llama.cpp installed goes
+  through it too. The pick (`local::recommend`) is by `local::hardware()`: the GPU with the most memory of its own (on
+  Windows the display adapters' `HardwareInformation.qwMemorySize` in the registry; on Linux `nvidia-smi`, or amdgpu's
+  `mem_info_vram_total`; less than 2 GB counts as no GPU), or on Apple silicon 60% of its memory. `PICKS`: Qwen3.8 27B
+  from 20 GB, Gemma 4 12B from 10 GB, Qwen3.5 9B from 7 GB, else Qwen3.5 4B with at least 6 GB of memory, else none.
+  Each curated model's `needs_mib` gives its fit (`local::fit`: good on the GPU or, under 4 GB, with 12 GB of memory;
+  slow when it only fits with two thirds of the computer's memory added; else too big), shown on every model.
+- **Hugging Face.** Under Get more models, a link or `owner/name` (`local::parse_hf`) lists a repo's GGUF files
+  (`local_hf_files`: `/api/models/<repo>` for `gated`, then `/tree/main?recursive=1`; `local::hf_tree` leaves out
+  `mmproj` files and the later parts of split models, and the first part is shown but can't be downloaded yet). A
+  file downloads like a curated model, checked against its `lfs.oid`, into `models/hf/<owner>/<name>/`, with the id
+  `hf-<repo>-<file>`. Gated and private repos are refused with a pointer to Add a GGUF file.
+- **Where it's shown.** `ui/src/Local.tsx`'s `LocalSetup` has three modes: `onboarding` (quick setup, Scout's other
+  models folded under "Choose a different model"), `menu` (quick setup, then Get more models behind the Local tab's
+  button) and `settings` (your models, Get more models, and the build, offload, context and small-model settings
+  under Advanced).
 - **Server.** `local::ensure` starts `llama-server` on a free port on 127.0.0.1 with `-ngl auto` (llama.cpp's `--fit`
   puts as many layers on the GPU as fit) or the user's layer count, `-c <context>`, `-np 1`, `--jinja` (tool calls
   need the model's own template), `--api-key` with a random key made up for each start (llama-server allows every
@@ -297,4 +316,5 @@ turns go through `api::stream_chat` like any other provider. The provider id is 
 
 To move to a new llama.cpp build: change `BUILD`, then copy each asset's name, size and `digest` from
 `https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/<build>` into `ALL_BACKENDS`. To change a curated
-model, take its `size` and `lfs.oid` from `https://huggingface.co/api/models/<repo>/tree/main`.
+model, take its `size` and `lfs.oid` from `https://huggingface.co/api/models/<repo>/tree/main`, and set `needs_mib`
+to the memory it runs in; to change which model setup picks, edit `PICKS`.

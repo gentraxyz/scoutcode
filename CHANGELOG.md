@@ -4,6 +4,19 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.24
+Scout on Linux, an Inbox for everything in progress, Code Review in the side panel, free Explore agents, and Dreaming.
+
+- Scout for Linux, on x64 and ARM64: install it with `curl -fsSL https://scoutcode.dev/install.sh | sh`. It installs for your user and keeps itself up to date like on Windows. On Linux, keys stay in Scout's settings file, since Credential Manager is Windows-only.
+- Inbox: chats that need an answer, are still working, or aren't marked done, plus the Issues assigned to you, across every workspace.
+- A new rail down the left edge for Chats, Inbox and Issues, with your account at the bottom. It stays when the chats sidebar is hidden.
+- Code Review: a separate agent reviews a chat's code from the side panel, reports each finding as it goes, and ends with a verdict. Send the findings you want fixed to the chat's agent.
+- Explore agents: big tasks are researched by a read-only agent on a free model, so your paid plan isn't spent on searching and reading. Works with Claude Code and Codex too.
+- Dreaming: after 20 minutes away, at most once a day, a free model tidies your user and project memory, keeping only lasting facts. See what changed in the Dream Log, with Undo.
+- Local models: Scout checks your GPU's memory and free disk space, recommends the strongest model that fits, and sets up llama.cpp and a model in one step.
+- A new welcome screen: Saturn in a starry sky, with a shaded wheel station drifting in front. Its ring spins and now and then the whole station turns round.
+- A field of drifting letters behind the new-chat screen; click the empty space to send a ripple through it.
+
 ## 0.1.23
 Run models on your own PC with llama.cpp, Experiential Labs as a provider, and your keys kept in Windows Credential Manager.
 

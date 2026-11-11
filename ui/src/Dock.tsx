@@ -12,6 +12,7 @@ import { languages } from '@codemirror/language-data';
 import { tags } from '@lezer/highlight';
 import { invoke, type DiffLines } from './api';
 import { GamesTab } from './Games';
+import { ReviewTab } from './ReviewTab';
 import { Resizer } from './Sidebar';
 import { ui, useUi, useView, type DockTab } from './store';
 import { subscribeTheme, themeColor } from './theme';
@@ -382,7 +383,7 @@ function FilesTab({ cwd }: { cwd: string }) {
 
 // ---------- the panel ----------
 
-const TABS: [DockTab, string, string][] = [['terminal', 'Terminal', 'terminal'], ['changes', 'Changes', 'changes'], ['files', 'Files', 'files']];
+const TABS: [DockTab, string, string][] = [['terminal', 'Terminal', 'terminal'], ['changes', 'Changes', 'changes'], ['files', 'Files', 'files'], ['review', 'Review', 'shield']];
 /** Only while the experimental games are on and set to show in the panel. */
 const GAMES_TAB: [DockTab, string, string] = ['games', 'Games', 'game'];
 
@@ -411,6 +412,7 @@ export function Dock() {
       {termStarted && <TerminalTab cwd={cwd} visible={open && tab === 'terminal'} />}
       {open && tab === 'changes' && <ChangesTab cwd={cwd} />}
       {open && tab === 'games' && <GamesTab />}
+      {open && tab === 'review' && <ReviewTab />}
       {/* Kept mounted once used: it may hold unsaved edits. */}
       <div className="dock-keep" style={{ display: tab === 'files' ? undefined : 'none' }}><FilesTab cwd={cwd} /></div>
     </aside>

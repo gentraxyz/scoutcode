@@ -123,6 +123,17 @@ fn session_meta() -> Value {
     json!({"claudeCode": {"options": {"settingSources": [], "strictMcpConfig": true, "persistSession": false}}})
 }
 
+/// A turn's session: with explore on, its tool (allowed without asking, since it only reads) and the prompt that says
+/// when to use it.
+fn turn_meta(explore: bool) -> Value {
+    let mut meta = session_meta();
+    if explore {
+        meta["claudeCode"]["options"]["allowedTools"] = json!([format!("mcp__{}__{}", crate::explore::SERVER, crate::explore::TOOL)]);
+        meta["systemPrompt"] = json!({"append": crate::explore::GUIDE});
+    }
+    meta
+}
+
 fn open(cwd: &Path, tx: Sender<Msg>) -> Result<Server, String> {
     let mut c = command();
     c.current_dir(cwd);
@@ -169,7 +180,9 @@ pub fn start(model: &str, cwd: &str, mode: &str, effort: &str, prompt: String, i
     let mut server = open(Path::new(cwd), tx.clone())?;
     let started = (|| -> Result<Value, String> {
         let wait = Duration::from_secs(60);
-        let new = server.new_session_with(cwd, session_meta())?;
+        // A one-off answer has no use for it.
+        let explore = crate::explore::acp_server(cwd).filter(|_| !quiet);
+        let new = server.new_session_full(cwd, turn_meta(explore.is_some()), explore.into_iter().collect())?;
         let session = new.get("sessionId").cloned().ok_or("Claude Code didn't start a session.")?;
         let set = |option: &str, value: &str| server.conn.call("session/set_config_option", json!({"sessionId": session, "configId": option, "value": value}), wait);
         let mut options = new.clone();

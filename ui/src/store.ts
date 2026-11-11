@@ -22,13 +22,15 @@ function createStore<T>(initial: T) {
 export type CoreState = { view: View; models: Model[]; items: Item[]; statics: Statics };
 export const core = createStore<CoreState>(null as unknown as CoreState);
 
-export type DockTab = 'terminal' | 'changes' | 'files' | 'games';
-export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'notifications' | 'discord' | 'fallbacks' | 'router' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'scoutmote' | 'experimental' | 'privacy' | 'updates';
+export type DockTab = 'terminal' | 'changes' | 'files' | 'games' | 'review';
+export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'dreaming' | 'notifications' | 'discord' | 'fallbacks' | 'router' | 'explore' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'scoutmote' | 'experimental' | 'privacy' | 'updates';
 
 export const ui = createStore({
   sidebar: true,
   /** The chat, or ScoutCode Delta (the issue tracker) in its place. */
-  page: 'chat' as 'chat' | 'delta',
+  page: 'chat' as 'chat' | 'delta' | 'inbox',
+  /** The first-run setup is showing: on first run, or reopened from Settings or the account menu. */
+  onboarding: false,
   dockOpen: false,
   dockTab: 'terminal' as DockTab,
   /** A file the Files tab should open, from a double click in Changes or a file link in a reply. */

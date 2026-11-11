@@ -1,12 +1,14 @@
 //! Keeps the installed app current. A worker thread reads the release manifest at startup and every few hours, and
 //! downloads anything newer next to the exe. The new build takes over when the user clicks "Restart to update", or when
-//! the window closes. Windows lets a running exe be renamed, so it's moved aside and the new one put in its place.
+//! the window closes. Windows and Linux both let a running exe be renamed, so it's moved aside and the new one put in its
+//! place.
 //!
 //! Builds are signed with a key kept off the servers (see scripts/release-desktop.ts), so whoever controls the site or
 //! the bucket still can't push code to installed copies. The signature covers the version too, which stops an old
 //! build being passed off as a new one.
 //!
-//! The same exe doubles as the installer: downloaded as ScoutSetup.exe, it installs itself and starts the real copy.
+//! On Windows the same exe doubles as the installer: downloaded as ScoutSetup.exe, it installs itself and starts the real
+//! copy. On Linux the site's install.sh puts it at ~/.local/share/scout/scout, where it updates itself the same way.
 
 use crate::api::http;
 use base64::Engine;
@@ -128,11 +130,22 @@ fn exe_stem() -> String {
 
 /// Only an installed release build updates itself, never `cargo run` or a copy under target/.
 pub fn self_updating() -> bool {
-    cfg!(windows) && !cfg!(debug_assertions) && exe_stem() == "scout" && std::env::var_os("SCOUT_NO_UPDATE").is_none()
+    (cfg!(windows) || cfg!(target_os = "linux")) && !cfg!(debug_assertions) && exe_stem() == "scout" && std::env::var_os("SCOUT_NO_UPDATE").is_none()
 }
 
 fn pending_path(exe: &Path, version: &str) -> PathBuf {
-    exe.with_file_name(format!("update-{version}.exe"))
+    exe.with_file_name(if cfg!(windows) { format!("update-{version}.exe") } else { format!("update-{version}") })
+}
+
+/// A download has to be marked runnable before it can take the exe's place, except on Windows.
+fn make_runnable(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    }
+    let _ = file;
+    Ok(())
 }
 
 pub fn is_newer(candidate: &str, current: &str) -> bool {
@@ -374,6 +387,7 @@ impl Worker {
                 }
             }
             file.sync_all().map_err(|e| e.to_string())?;
+            make_runnable(&file).map_err(|e| e.to_string())?;
             if hex(&hasher.finalize()) != release.build.sha256 {
                 return Err("The download was damaged, so it wasn't installed.".to_string());
             }
@@ -427,6 +441,9 @@ pub fn notes_since(since: &str) -> Result<Vec<ReleaseNote>, String> {
 
 /// What Settings > Apps shows. Purely cosmetic, so a failure is ignored.
 fn set_display_version(version: &str) {
+    if !cfg!(windows) {
+        return;
+    }
     let mut c = std::process::Command::new("reg");
     c.args(["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ScoutDesktop", "/v", "DisplayVersion", "/t", "REG_SZ", "/d", version, "/f"]);
     crate::tools::no_window(&mut c);
@@ -460,7 +477,7 @@ foreach ($k in $props.Keys) { New-ItemProperty $key -Name $k -Value $props[$k] -
 
 /// When this exe is the downloaded installer, installs it, starts the installed copy and returns true.
 pub fn run_setup_if_needed() -> bool {
-    if !exe_stem().starts_with("scoutsetup") {
+    if !cfg!(windows) || !exe_stem().starts_with("scoutsetup") {
         return false;
     }
     #[cfg(windows)]

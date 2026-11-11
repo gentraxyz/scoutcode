@@ -224,6 +224,8 @@ pub struct Config {
     pub starred_models: Vec<String>,
     /// Desktop app only: named folders that chats are grouped under.
     pub projects: Vec<Project>,
+    /// Desktop app only: chats marked Done, by id, with when. A chat updated after that is back in Recent.
+    pub done_chats: HashMap<String, u64>,
     /// Desktop app only: how to get the user's attention when a turn ends or needs them while the window is in the
     /// background. None until they choose, which the first run asks.
     pub notify_flash: Option<bool>,
@@ -245,6 +247,9 @@ pub struct Config {
     pub experimental_images: bool,
     /// The server's image model generate_image uses. None for the server's default.
     pub image_model: Option<String>,
+    /// Explore: read-only research on a free model, for Scout's sub-agents and as a tool in Claude Code and Codex. Off
+    /// until turned on.
+    pub explore: crate::explore::Settings,
     /// Desktop app only, experimental: a game to play while Scout works.
     pub games: Games,
     /// Desktop app only, experimental: music player for uploaded MP3s and SoundCloud.
@@ -255,6 +260,9 @@ pub struct Config {
     pub scout_mote: bool,
     /// Desktop app only: what ScoutMote calls this computer on the site, kept so it stays the same PC.
     pub scout_mote_id: Option<String>,
+    /// Desktop app only: Dreaming, which tidies memory from recent chats while Scout sits idle (see dream.rs). None until
+    /// the user chooses, which setup asks; off until then.
+    pub dreaming: Option<bool>,
     /// Desktop app only: the link that lets web chatbots (claude.ai and others) use Scout here. On unless turned off,
     /// and started again at every launch, so a restart or an update doesn't cut chatbots off.
     pub chatbot_link: bool,
@@ -603,6 +611,7 @@ pub fn load_config() -> Config {
         temperature: s.get("temperature").and_then(Value::as_f64),
         starred_models: s.get("starredModels").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         projects: s.get("desktopProjects").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        done_chats: s.get("desktopDone").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         notify_flash: s.get("desktopFlash").and_then(Value::as_bool),
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
         discord_presence: s.get("discordPresence").and_then(Value::as_bool).unwrap_or(true),
@@ -613,16 +622,19 @@ pub fn load_config() -> Config {
         agent_routers: saved_agent_routers(&s),
         experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
         image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
+        explore: s.get("explore").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         games: s.get("games").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         music: s.get("music").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         team: s.get("team").and_then(|v| serde_json::from_value(v.clone()).ok()),
         scout_mote: s.get("scoutMote").and_then(Value::as_bool).unwrap_or(false),
         scout_mote_id: s.get("scoutMoteId").and_then(Value::as_str).filter(|v| !v.is_empty()).map(String::from),
+        dreaming: s.get("dreaming").and_then(Value::as_bool),
         chatbot_link: s.get("chatbotLink").and_then(Value::as_bool).unwrap_or(true),
         chatbot_link_mode: s.get("chatbotLinkMode").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or("default").to_string(),
         usage_analytics: s.get("usageAnalytics").and_then(Value::as_bool).unwrap_or(true),
         local: s.get("local").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
     };
+    crate::explore::set_enabled(cfg.explore.on);
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
         cfg.api_key = Some(k);
@@ -756,6 +768,7 @@ impl Config {
         self.agent_routers = other.agent_routers.clone();
         self.experimental_images = other.experimental_images;
         self.image_model = other.image_model.clone();
+        self.explore = other.explore.clone();
         self.games = other.games.clone();
         self.music = other.music.clone();
         self.team = other.team.clone();

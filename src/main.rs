@@ -18,9 +18,12 @@ mod core;
 mod delta;
 mod devin;
 mod discord;
+mod explore;
+mod review;
 mod kiro;
 mod local;
 mod diff;
+mod dream;
 mod dock;
 mod folders;
 mod grok;
@@ -78,6 +81,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "mcp") {
         mcp::serve_stdio(&args[1..]);
+        return;
+    }
+    if args.first().is_some_and(|a| a == "explore-mcp") {
+        explore::serve_stdio(&args[1..]);
         return;
     }
     if update::run_setup_if_needed() {

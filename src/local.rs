@@ -97,19 +97,214 @@ pub struct Curated {
     file: &'static str,
     sha256: &'static str,
     pub size: u64,
+    /// The memory it runs in, in MiB, with Scout's usual context: what `fit` checks the PC against.
+    pub needs_mib: u64,
 }
 
+const GIB: u64 = 1024;
+
 pub static CURATED: [Curated; 6] = [
-    Curated { id: "qwen3.5-4b", name: "Qwen3.5 4B", about: "Small and quick. Runs on most PCs, even without a GPU. About 4 GB of memory.", repo: "unsloth/Qwen3.5-4B-GGUF", file: "Qwen3.5-4B-Q4_K_M.gguf", sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4", size: 2740937888 },
-    Curated { id: "qwen3.5-9b", name: "Qwen3.5 9B", about: "A good balance for 8 GB GPUs. About 7 GB of memory.", repo: "unsloth/Qwen3.5-9B-GGUF", file: "Qwen3.5-9B-Q4_K_M.gguf", sha256: "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8", size: 5680522464 },
-    Curated { id: "omnicoder-9b", name: "OmniCoder 9B", about: "Tesslate's coding model: Qwen3.5 9B trained further on agentic coding. About 7 GB of memory.", repo: "Tesslate/OmniCoder-9B-GGUF", file: "omnicoder-9b-q4_k_m.gguf", sha256: "550e8f7253c8e07997fbce2570d37259b69b0d21faf77e5ed518d4ee4c73d8b3", size: 5737242944 },
-    Curated { id: "gemma-4-12b", name: "Gemma 4 12B", about: "Google's mid-size model. About 9 GB of memory.", repo: "unsloth/gemma-4-12b-it-GGUF", file: "gemma-4-12b-it-Q4_K_M.gguf", sha256: "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42", size: 7121861440 },
-    Curated { id: "qwen3.8-27b", name: "Qwen3.8 27B", about: "The strongest coder here. Best on a 24 GB GPU. About 19 GB of memory.", repo: "unsloth/Qwen3.8-27B-GGUF", file: "Qwen3.8-27B-UD-Q4_K_M.gguf", sha256: "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482", size: 16464440224 },
-    Curated { id: "qwen3.6-35b-a3b", name: "Qwen3.6 35B A3B", about: "Mixture of experts: only 3B of it works at a time, so it stays quick with part of it on the CPU. About 24 GB of memory.", repo: "unsloth/Qwen3.6-35B-A3B-GGUF", file: "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", sha256: "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61", size: 22134528992 },
+    Curated { id: "qwen3.5-4b", name: "Qwen3.5 4B", about: "Small and quick. Runs on most PCs, even without a GPU. About 4 GB of memory.", repo: "unsloth/Qwen3.5-4B-GGUF", file: "Qwen3.5-4B-Q4_K_M.gguf", sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4", size: 2740937888, needs_mib: 4 * GIB },
+    Curated { id: "qwen3.5-9b", name: "Qwen3.5 9B", about: "A good balance for 8 GB GPUs. About 7 GB of memory.", repo: "unsloth/Qwen3.5-9B-GGUF", file: "Qwen3.5-9B-Q4_K_M.gguf", sha256: "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8", size: 5680522464, needs_mib: 7 * GIB },
+    Curated { id: "omnicoder-9b", name: "OmniCoder 9B", about: "Tesslate's coding model: Qwen3.5 9B trained further on agentic coding. About 7 GB of memory.", repo: "Tesslate/OmniCoder-9B-GGUF", file: "omnicoder-9b-q4_k_m.gguf", sha256: "550e8f7253c8e07997fbce2570d37259b69b0d21faf77e5ed518d4ee4c73d8b3", size: 5737242944, needs_mib: 7 * GIB },
+    Curated { id: "gemma-4-12b", name: "Gemma 4 12B", about: "Google's mid-size model. About 9 GB of memory.", repo: "unsloth/gemma-4-12b-it-GGUF", file: "gemma-4-12b-it-Q4_K_M.gguf", sha256: "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42", size: 7121861440, needs_mib: 9 * GIB },
+    Curated { id: "qwen3.8-27b", name: "Qwen3.8 27B", about: "The strongest coder here. Best on a 24 GB GPU. About 19 GB of memory.", repo: "unsloth/Qwen3.8-27B-GGUF", file: "Qwen3.8-27B-UD-Q4_K_M.gguf", sha256: "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482", size: 16464440224, needs_mib: 19 * GIB },
+    Curated { id: "qwen3.6-35b-a3b", name: "Qwen3.6 35B A3B", about: "Mixture of experts: only 3B of it works at a time, so it stays quick with part of it on the CPU. About 24 GB of memory.", repo: "unsloth/Qwen3.6-35B-A3B-GGUF", file: "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", sha256: "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61", size: 22134528992, needs_mib: 24 * GIB },
 ];
 
 pub fn curated(id: &str) -> Option<&'static Curated> {
     CURATED.iter().find(|c| c.id == id)
+}
+
+impl Curated {
+    pub fn download(&self) -> Download {
+        Download { id: self.id.into(), name: self.name.into(), url: format!("https://huggingface.co/{}/resolve/main/{}", self.repo, self.file), dest: models_dir().join(self.file), sha256: self.sha256.into(), size: self.size }
+    }
+}
+
+// ---------- this PC, and which model suits it ----------
+
+/// What a model has to run in here.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hardware {
+    pub ram_mib: u64,
+    /// The GPU's own memory in MiB, or on a Mac the share of its memory the GPU gets. 0 for no GPU worth using.
+    pub gpu_mib: u64,
+    pub gpu_name: Option<String>,
+    /// The GPU uses the computer's memory (Apple silicon), so the two aren't added up.
+    pub shared: bool,
+}
+
+/// Looked up once: the GPU doesn't change while Scout runs.
+pub fn hardware() -> &'static Hardware {
+    static HW: OnceLock<Hardware> = OnceLock::new();
+    HW.get_or_init(|| {
+        let ram_mib = total_ram_mib().unwrap_or(0);
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return Hardware { ram_mib, gpu_mib: ram_mib * 6 / 10, gpu_name: Some("Apple silicon".into()), shared: true };
+        }
+        let (gpu_name, gpu_mib) = gpu().unwrap_or_default();
+        // A built-in GPU's own memory is a sliver; it runs the model from the computer's memory, about as fast as the CPU.
+        let gpu_mib = if gpu_mib < 2 * GIB { 0 } else { gpu_mib };
+        Hardware { ram_mib, gpu_mib, gpu_name: (gpu_mib > 0).then_some(gpu_name).filter(|n| !n.is_empty()), shared: false }
+    })
+}
+
+/// The GPU with the most memory of its own: its name and MiB. Windows keeps each display adapter's under its driver's
+/// key: `HardwareInformation.qwMemorySize` in bytes, or on older drivers the 32-bit `HardwareInformation.MemorySize`.
+#[cfg(windows)]
+fn gpu() -> Option<(String, u64)> {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_ANY, RegGetValueW};
+    use windows::core::HSTRING;
+    const CLASS: &str = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
+    let read = |key: &str, name: &str, buf: &mut [u8]| -> Option<usize> {
+        let mut size = buf.len() as u32;
+        // SAFETY: `buf` is `size` bytes, and the strings outlive the call.
+        unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, &HSTRING::from(key), &HSTRING::from(name), RRF_RT_ANY, None, Some(buf.as_mut_ptr().cast()), Some(&mut size)) }.is_ok().then_some(size as usize)
+    };
+    let mut best: Option<(String, u64)> = None;
+    for i in 0..16 {
+        let key = format!(r"{CLASS}\{i:04}");
+        let mut buf = [0u8; 512];
+        let bytes = match read(&key, "HardwareInformation.qwMemorySize", &mut buf) {
+            Some(8) => u64::from_le_bytes(buf[..8].try_into().ok()?),
+            _ => match read(&key, "HardwareInformation.MemorySize", &mut buf) {
+                Some(n) if n >= 4 => u32::from_le_bytes(buf[..4].try_into().ok()?) as u64,
+                _ => continue,
+            },
+        };
+        let name = read(&key, "DriverDesc", &mut buf)
+            .map(|n| {
+                let wide: Vec<u16> = buf[..n].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+                String::from_utf16_lossy(&wide).trim().to_string()
+            })
+            .unwrap_or_default();
+        let mib = bytes / (1024 * 1024);
+        if best.as_ref().is_none_or(|(_, m)| mib > *m) {
+            best = Some((name, mib));
+        }
+    }
+    best
+}
+
+#[cfg(target_os = "linux")]
+fn gpu() -> Option<(String, u64)> {
+    if has_nvidia() {
+        let out = Command::new("nvidia-smi").args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]).output().ok()?;
+        let best = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let (name, mib) = l.rsplit_once(',')?;
+                Some((name.trim().to_string(), mib.trim().parse::<u64>().ok()?))
+            })
+            .max_by_key(|(_, m)| *m);
+        if best.is_some() {
+            return best;
+        }
+    }
+    // AMD's driver says how much memory its card has.
+    std::fs::read_dir("/sys/class/drm")
+        .ok()?
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path().join("device/mem_info_vram_total")).ok()?.trim().parse::<u64>().ok())
+        .max()
+        .map(|b| ("AMD GPU".to_string(), b / (1024 * 1024)))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn gpu() -> Option<(String, u64)> {
+    None
+}
+
+/// How well a model would run here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fit {
+    /// All of it fits on the GPU, or it's small enough for the CPU to keep up.
+    Good,
+    /// It fits only with part of it in the computer's memory, which is slower.
+    Slow,
+    TooBig,
+}
+
+impl Fit {
+    pub fn id(self) -> &'static str {
+        match self {
+            Fit::Good => "good",
+            Fit::Slow => "slow",
+            Fit::TooBig => "big",
+        }
+    }
+}
+
+/// How well a model needing `needs_mib` runs on `hw`. The OS and other apps keep about a third of the computer's memory.
+pub fn fit(needs_mib: u64, hw: &Hardware) -> Fit {
+    let spare_ram = hw.ram_mib * 2 / 3;
+    if hw.gpu_mib >= needs_mib || (needs_mib <= 4 * GIB && hw.ram_mib >= 12 * GIB) {
+        Fit::Good
+    } else if (if hw.shared { spare_ram } else { hw.gpu_mib + spare_ram }) >= needs_mib {
+        Fit::Slow
+    } else {
+        Fit::TooBig
+    }
+}
+
+/// The memory a GGUF file of `bytes` needs: the weights, with room for the context.
+pub fn needs_for_file(bytes: u64) -> u64 {
+    bytes / (1024 * 1024) * 115 / 100 + GIB
+}
+
+/// Which model setup picks, by the GPU memory it needs: the strongest that fits. OmniCoder (a fine-tune) and the 35B
+/// (a 22 GB download) are only ever picked by hand.
+const PICKS: [(&str, u64); 3] = [("qwen3.8-27b", 20 * GIB), ("gemma-4-12b", 10 * GIB), ("qwen3.5-9b", 7 * GIB)];
+/// Without a GPU that fits one of those, the small model, if the PC has the memory for it.
+const SMALLEST: (&str, u64) = ("qwen3.5-4b", 6 * GIB);
+
+/// The model setup picks for `hw`, or None when even the smallest won't fit.
+pub fn recommend(hw: &Hardware) -> Option<&'static Curated> {
+    let id = PICKS.iter().find(|(_, gpu)| hw.gpu_mib >= *gpu).map(|(id, _)| *id).or((hw.ram_mib >= SMALLEST.1).then_some(SMALLEST.0))?;
+    curated(id)
+}
+
+/// Bytes free on the drive that holds `dir`, from its nearest folder that exists. Looked up at most every few seconds.
+pub fn free_space(dir: &Path) -> Option<u64> {
+    static LAST: Mutex<Option<(Instant, Option<u64>)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, v)) = *last {
+        if at.elapsed() < Duration::from_secs(5) {
+            return v;
+        }
+    }
+    let at = dir.ancestors().find(|p| p.is_dir())?;
+    let v = free_bytes(at);
+    *last = Some((Instant::now(), v));
+    v
+}
+
+#[cfg(windows)]
+fn free_bytes(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    // Declared here rather than through the windows crate, whose file-system module is too big to build on some PCs.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(dir: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
+    }
+    let path: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    let mut free = 0u64;
+    // SAFETY: `path` is NUL-terminated and outlives the call; the null pointers are the values it may skip.
+    let ok = unsafe { GetDiskFreeSpaceExW(path.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(free)
+}
+
+#[cfg(not(windows))]
+fn free_bytes(dir: &Path) -> Option<u64> {
+    let out = Command::new("df").arg("-Pk").arg(dir).output().ok()?;
+    parse_df(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `df -Pk`'s free space, in bytes: the fourth column of its second line.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn parse_df(out: &str) -> Option<u64> {
+    out.lines().nth(1)?.split_whitespace().nth(3)?.parse::<u64>().ok().map(|kb| kb * 1024)
 }
 
 // ---------- tool presets ----------
@@ -173,6 +368,14 @@ struct Progress {
     cancel: Arc<AtomicBool>,
 }
 
+struct Setup {
+    model: String,
+    name: String,
+    /// "engine" while llama.cpp installs, then "model".
+    phase: &'static str,
+    progress: Progress,
+}
+
 #[derive(Default)]
 struct State {
     /// The build being installed, and how far.
@@ -180,8 +383,12 @@ struct State {
     install_error: Option<String>,
     /// Which builds are installed. None until looked up, and again after an install or removal.
     installed: Option<Vec<String>>,
-    downloads: HashMap<String, Progress>,
+    /// Downloads by model id, with the model's name.
+    downloads: HashMap<String, (String, Progress)>,
     download_errors: HashMap<String, String>,
+    /// Quick setup: llama.cpp if it isn't installed, then a model, as one bar.
+    setup: Option<Setup>,
+    setup_error: Option<String>,
     server: ServerView,
     /// When the window was last woken for progress, so a download doesn't wake it for every chunk.
     woke: Option<Instant>,
@@ -214,6 +421,11 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 /// Lets downloads and the server tell the window something changed.
 pub fn set_waker(w: Waker) {
     let _ = WAKER.set(w);
+    // Looking up the GPU can take a moment, so it's done before Settings or onboarding first asks.
+    std::thread::spawn(|| {
+        hardware();
+        wake();
+    });
 }
 
 fn wake() {
@@ -242,17 +454,24 @@ fn installed_backends() -> Vec<String> {
 pub fn view(local: &Local) -> Value {
     let installed = installed_backends();
     let chosen = backend_for(local);
+    let hw = hardware();
+    let free = free_space(&models_dir());
     let s = state();
-    let prog = |p: &Progress| json!({ "done": p.done, "total": p.total });
+    let gb = |mib: u64| (mib as f64 / 1024.0 * 10.0).round() / 10.0;
     json!({
         "build": BUILD,
         "backend": chosen,
         "backends": backends().iter().map(|b| json!({ "id": b.id, "name": b.name, "about": b.about, "size": b.archives.iter().map(|a| a.size).sum::<u64>(), "installed": installed.iter().any(|i| i == b.id) })).collect::<Vec<_>>(),
         "installing": s.install.as_ref().map(|(b, p)| json!({ "backend": b, "done": p.done, "total": p.total })),
         "installError": s.install_error,
-        "curated": CURATED.iter().map(|c| json!({ "id": c.id, "name": c.name, "about": c.about, "size": c.size, "have": local.models.iter().any(|m| m.id == c.id) })).collect::<Vec<_>>(),
-        "downloads": s.downloads.iter().map(|(k, p)| (k.clone(), prog(p))).collect::<serde_json::Map<_, _>>(),
+        "hardware": { "ramGb": gb(hw.ram_mib), "gpuGb": gb(hw.gpu_mib), "gpuName": hw.gpu_name, "shared": hw.shared },
+        "recommended": recommend(hw).map(|c| c.id),
+        "freeDisk": free,
+        "curated": CURATED.iter().map(|c| json!({ "id": c.id, "name": c.name, "about": c.about, "size": c.size, "fit": fit(c.needs_mib, hw).id(), "have": local.models.iter().any(|m| m.id == c.id) })).collect::<Vec<_>>(),
+        "downloads": s.downloads.iter().map(|(k, (name, p))| (k.clone(), json!({ "done": p.done, "total": p.total, "name": name }))).collect::<serde_json::Map<_, _>>(),
         "downloadErrors": s.download_errors,
+        "setup": s.setup.as_ref().map(|x| json!({ "model": x.model, "name": x.name, "phase": x.phase, "done": x.progress.done, "total": x.progress.total })),
+        "setupError": s.setup_error,
         "server": { "state": s.server.state, "model": s.server.model, "error": s.server.error, "offloaded": s.server.offloaded.map(|(a, b)| [a, b]), "cpuFaster": s.server.cpu_faster },
     })
 }
@@ -514,7 +733,13 @@ pub fn start_install(backend_id: &str) {
     }
     wake();
     std::thread::spawn(move || {
-        let r = install(b, &cancel);
+        let r = install(b, &cancel, &mut |n| {
+            let mut s = state();
+            if let Some((_, p)) = &mut s.install {
+                p.done = n;
+            }
+            wake_for_progress(&mut s);
+        });
         let mut s = state();
         s.install = None;
         s.installed = None;
@@ -524,20 +749,15 @@ pub fn start_install(backend_id: &str) {
     });
 }
 
-fn install(b: &Backend, cancel: &AtomicBool) -> Result<(), String> {
+/// Downloads and unpacks a build. `progress` hears the bytes downloaded so far, over all its archives.
+fn install(b: &Backend, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Result<(), String> {
     let root = runtime_root();
     let tmp = root.join(format!("{BUILD}-{}.partial", b.id));
     let _ = std::fs::remove_dir_all(&tmp);
     let mut before = 0;
     for a in b.archives {
         let file = root.join(a.file);
-        download(&format!("{RELEASE_URL}/{BUILD}/{}", a.file), &file, a.sha256, a.size, cancel, &mut |n| {
-            let mut s = state();
-            if let Some((_, p)) = &mut s.install {
-                p.done = before + n;
-            }
-            wake_for_progress(&mut s);
-        })?;
+        download(&format!("{RELEASE_URL}/{BUILD}/{}", a.file), &file, a.sha256, a.size, cancel, &mut |n| progress(before + n))?;
         crate::devin::unpack(&file, a.file, &tmp).map_err(|e| format!("Couldn't unpack llama.cpp: {e}"))?;
         before += a.size;
     }
@@ -570,40 +790,65 @@ pub fn remove_backend(backend_id: &str) {
     wake();
 }
 
-/// Downloads one of the curated models in the background, and hands it to `done` once it's all there.
-pub fn start_download(id: &str, done: impl FnOnce(LocalModel) + Send + 'static) {
-    let Some(c) = curated(id) else { return };
+/// A model file to download: one of the curated ones, or one picked from Hugging Face.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Download {
+    /// The model's id, without "local/".
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub dest: PathBuf,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl Download {
+    fn model(&self) -> LocalModel {
+        LocalModel { id: self.id.clone(), name: self.name.clone(), path: self.dest.to_string_lossy().into(), size: self.size }
+    }
+
+    /// The disk space it still needs: a download that's begun has already taken its full size.
+    fn still_needs(&self) -> u64 {
+        if self.dest.metadata().is_ok_and(|m| m.len() == self.size) {
+            return 0;
+        }
+        let name = self.dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let part = self.dest.with_file_name(format!("{name}.part")).metadata().map(|m| m.len()).unwrap_or(0);
+        self.size.saturating_sub(part)
+    }
+}
+
+/// Downloads a model in the background, and hands it to `done` once it's all there.
+pub fn start_download(d: Download, done: impl FnOnce(LocalModel) + Send + 'static) {
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut s = state();
-        if s.downloads.contains_key(c.id) {
+        if s.downloads.contains_key(&d.id) || s.setup.as_ref().is_some_and(|x| x.model == d.id) {
             return;
         }
-        s.downloads.insert(c.id.to_string(), Progress { done: 0, total: c.size, cancel: cancel.clone() });
-        s.download_errors.remove(c.id);
+        s.downloads.insert(d.id.clone(), (d.name.clone(), Progress { done: 0, total: d.size, cancel: cancel.clone() }));
+        s.download_errors.remove(&d.id);
     }
     wake();
     std::thread::spawn(move || {
-        let dest = models_dir().join(c.file);
-        let url = format!("https://huggingface.co/{}/resolve/main/{}", c.repo, c.file);
-        let r = download(&url, &dest, c.sha256, c.size, &cancel, &mut |n| {
+        let r = download(&d.url, &d.dest, &d.sha256, d.size, &cancel, &mut |n| {
             let mut s = state();
-            if let Some(p) = s.downloads.get_mut(c.id) {
+            if let Some((_, p)) = s.downloads.get_mut(&d.id) {
                 p.done = n;
             }
             wake_for_progress(&mut s);
         });
         {
             let mut s = state();
-            s.downloads.remove(c.id);
+            s.downloads.remove(&d.id);
             if let Err(e) = &r {
                 if e != CANCELLED {
-                    s.download_errors.insert(c.id.to_string(), e.clone());
+                    s.download_errors.insert(d.id.clone(), e.clone());
                 }
             }
         }
         if r.is_ok() {
-            done(LocalModel { id: c.id.into(), name: c.name.into(), path: dest.to_string_lossy().into(), size: c.size });
+            done(d.model());
         }
         wake();
     });
@@ -612,12 +857,83 @@ pub fn start_download(id: &str, done: impl FnOnce(LocalModel) + Send + 'static) 
 /// Stops a download. What's downloaded stays, so starting it again carries on.
 pub fn cancel_download(id: &str) {
     let mut s = state();
-    if let Some(p) = s.downloads.remove(id) {
+    if let Some((_, p)) = s.downloads.remove(id) {
         p.cancel.store(true, Ordering::Relaxed);
     }
     s.download_errors.remove(id);
     drop(s);
     wake();
+}
+
+/// Quick setup: installs `backend_id` if it isn't installed, then downloads `d`, as one bar, and hands the model to
+/// `done`. Says up front when the drive is too full for it. Cancelled, what came in stays, so setup again carries on.
+pub fn start_setup(backend_id: Option<&str>, d: Download, done: impl FnOnce(LocalModel) + Send + 'static) {
+    let fail = |e: String| setup_failed(&e);
+    let Some(b) = backend_id.and_then(backend) else { return fail("llama.cpp has no build for this computer, so models can't run on it.".into()) };
+    let engine = server_exe(b.id).is_none();
+    let engine_size: u64 = if engine { b.archives.iter().map(|a| a.size).sum() } else { 0 };
+    // The archives and what they unpack to are both on the drive for a moment.
+    let need = d.still_needs() + engine_size * 3;
+    if let Some(free) = free_space(&models_dir()).filter(|f| *f < need) {
+        return fail(format!("{} needs {} of space, and this drive has {} free. Free some up and try again.", d.name, size_label(need), size_label(free)));
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut s = state();
+        if s.setup.is_some() || s.install.is_some() || s.downloads.contains_key(&d.id) {
+            return;
+        }
+        let phase = if engine { "engine" } else { "model" };
+        s.setup = Some(Setup { model: d.id.clone(), name: d.name.clone(), phase, progress: Progress { done: 0, total: engine_size + d.size, cancel: cancel.clone() } });
+        s.setup_error = None;
+        s.download_errors.remove(&d.id);
+    }
+    wake();
+    std::thread::spawn(move || {
+        let set = |done: u64, phase: &'static str| {
+            let mut s = state();
+            if let Some(x) = &mut s.setup {
+                x.progress.done = done;
+                x.phase = phase;
+            }
+            wake_for_progress(&mut s);
+        };
+        let mut r = Ok(());
+        if engine {
+            r = install(b, &cancel, &mut |n| set(n, "engine"));
+            state().installed = None;
+        }
+        if r.is_ok() {
+            r = download(&d.url, &d.dest, &d.sha256, d.size, &cancel, &mut |n| set(engine_size + n, "model"));
+        }
+        {
+            let mut s = state();
+            s.setup = None;
+            s.setup_error = r.as_ref().err().filter(|e| *e != CANCELLED).cloned();
+        }
+        if r.is_ok() {
+            done(d.model());
+        }
+        wake();
+    });
+}
+
+/// Shows why quick setup can't start.
+pub fn setup_failed(why: &str) {
+    state().setup_error = Some(why.to_string());
+    wake();
+}
+
+/// Stops quick setup, wherever it is.
+pub fn cancel_setup() {
+    if let Some(x) = &state().setup {
+        x.progress.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Whether a llama.cpp build is installed for this PC.
+pub fn engine_installed(local: &Local) -> bool {
+    backend_for(local).is_some_and(|b| server_exe(b).is_some())
 }
 
 /// A model from a GGUF file the user picked. The file stays where it is.
@@ -642,17 +958,155 @@ pub fn model_from_file(path: &Path, taken: &[LocalModel]) -> Result<LocalModel, 
     Ok(LocalModel { id, name, path: path.to_string_lossy().into(), size })
 }
 
+// ---------- Hugging Face ----------
+
+/// A GGUF file in a Hugging Face repo.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HfFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+    /// "Q4_K_M", "IQ4_XS", "BF16"…, from its name.
+    pub quant: Option<String>,
+    /// The first part of a model split over several files, which Scout doesn't download yet.
+    pub split: bool,
+}
+
+fn hf_segment_ok(s: &str) -> bool {
+    !s.is_empty() && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+}
+
+/// The repo ("owner/name") and maybe the file a Hugging Face link or name points at. None when it isn't one.
+pub fn parse_hf(input: &str) -> Option<(String, Option<String>)> {
+    let s = input.trim().split(['?', '#']).next()?.trim_end_matches('/');
+    let rest = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://")).unwrap_or(s);
+    let path = ["huggingface.co/", "www.huggingface.co/", "hf.co/"].iter().find_map(|h| rest.strip_prefix(h));
+    let parts: Vec<&str> = match path {
+        Some(p) => p.split('/').collect(),
+        // Not a link: just "owner/name".
+        None if !s.contains("://") && s.matches('/').count() == 1 => s.split('/').collect(),
+        None => return None,
+    };
+    let (owner, name) = (*parts.first()?, *parts.get(1)?);
+    if !hf_segment_ok(owner) || !hf_segment_ok(name) || ["datasets", "spaces", "models"].contains(&owner) {
+        return None;
+    }
+    // ".../resolve/main/<file>" or ".../blob/main/<file>" names a file; anything else under the repo is the repo.
+    let file = match parts.get(2) {
+        Some(&"resolve" | &"blob") if parts.len() > 4 => Some(parts[4..].join("/")).filter(|f| f.split('/').all(hf_segment_ok)),
+        _ => None,
+    };
+    Some((format!("{owner}/{name}"), file))
+}
+
+/// "Qwen3.5-4B-UD-Q4_K_XL.gguf" is Q4_K_XL.
+pub fn quant_of(file: &str) -> Option<String> {
+    let stem = file.rsplit('/').next()?.trim_end_matches(".gguf");
+    let stem = stem.split("-00001-of-").next()?;
+    stem.split(['-', '.']).rev().find_map(|p| {
+        let u = p.to_uppercase();
+        let q = u.strip_prefix("IQ").or_else(|| u.strip_prefix('Q')).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+        (q || ["BF16", "F16", "F32"].contains(&u.as_str())).then_some(u)
+    })
+}
+
+/// The GGUF files in Hugging Face's tree of a repo, smallest first. Leaves out vision projectors and the later parts of
+/// split models.
+pub fn hf_tree(body: &Value) -> Vec<HfFile> {
+    let mut files: Vec<HfFile> = body
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.get("path")?.as_str()?;
+            let lower = path.to_lowercase();
+            if e.get("type")?.as_str()? != "file" || !lower.ends_with(".gguf") || lower.contains("mmproj") {
+                return None;
+            }
+            let split = lower.contains("-of-0");
+            if split && !lower.contains("-00001-of-") {
+                return None;
+            }
+            let lfs = e.get("lfs")?;
+            Some(HfFile { path: path.to_string(), size: lfs.get("size")?.as_u64()?, sha256: lfs.get("oid")?.as_str()?.to_string(), quant: quant_of(path), split })
+        })
+        .collect();
+    files.sort_by_key(|f| f.size);
+    files
+}
+
+fn hf_get(url: &str) -> Result<(u16, Value), String> {
+    let res = crate::api::http().get(url).config().timeout_global(Some(Duration::from_secs(30))).build().call().map_err(|e| format!("Couldn't reach Hugging Face: {e}"))?;
+    let status = res.status().as_u16();
+    Ok((status, res.into_body().read_json::<Value>().unwrap_or(Value::Null)))
+}
+
+/// What the window lists for a Hugging Face link or "owner/name": the repo, its GGUF files with how each would fit
+/// here, and the file the link pointed at.
+pub fn hf_files(input: &str) -> Result<Value, String> {
+    let (repo, file) = parse_hf(input).ok_or("That isn't a Hugging Face model. Paste a link like huggingface.co/unsloth/Qwen3.5-4B-GGUF, or just unsloth/Qwen3.5-4B-GGUF.")?;
+    let (status, info) = hf_get(&format!("https://huggingface.co/api/models/{repo}"))?;
+    match status {
+        200 => {}
+        401 | 403 | 404 => return Err(format!("Couldn't find {repo} on Hugging Face. Check the name; private models can't be downloaded here.")),
+        s => return Err(format!("Hugging Face answered HTTP {s}. Try again in a moment.")),
+    }
+    if info.get("gated").is_some_and(|g| g != &Value::Bool(false)) {
+        return Err(format!("{repo} needs a Hugging Face sign-in to download. Download the file yourself on huggingface.co, then use Add a GGUF file."));
+    }
+    let (status, tree) = hf_get(&format!("https://huggingface.co/api/models/{repo}/tree/main?recursive=1"))?;
+    if status != 200 {
+        return Err(format!("Couldn't list {repo}'s files (HTTP {status})."));
+    }
+    let files = hf_tree(&tree);
+    if files.is_empty() {
+        return Err(format!("{repo} has no GGUF files, which is what llama.cpp runs. Look for a repo whose name ends in -GGUF."));
+    }
+    let hw = hardware();
+    Ok(json!({
+        "repo": repo,
+        "file": file.filter(|f| files.iter().any(|x| &x.path == f)),
+        "files": files.iter().map(|f| json!({ "path": f.path, "size": f.size, "sha256": f.sha256, "quant": f.quant, "split": f.split, "fit": fit(needs_for_file(f.size), hw).id() })).collect::<Vec<_>>(),
+    }))
+}
+
+/// The download for a file from Hugging Face. Each repo gets its own folder under models.
+pub fn hf_download(repo: &str, path: &str, sha256: &str, size: u64) -> Result<Download, String> {
+    let bad = || "That isn't a Hugging Face model file.".to_string();
+    let (owner, name) = repo.split_once('/').filter(|(o, n)| hf_segment_ok(o) && hf_segment_ok(n)).ok_or_else(bad)?;
+    if !path.to_lowercase().ends_with(".gguf") || !path.split('/').all(hf_segment_ok) || sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let stem = base.trim_end_matches(".gguf").trim_end_matches(".GGUF");
+    let slug = |s: &str| s.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '-' }).collect::<String>();
+    Ok(Download {
+        id: format!("hf-{}-{}", slug(repo), slug(stem)),
+        name: stem.to_string(),
+        url: format!("https://huggingface.co/{repo}/resolve/main/{path}"),
+        dest: models_dir().join("hf").join(owner).join(name).join(base),
+        sha256: sha256.to_lowercase(),
+        size,
+    })
+}
+
 /// Deletes a model's file if Scout downloaded it, along with any half-finished download of it.
 pub fn delete_model_file(m: &LocalModel) {
     if server_model().as_deref() == Some(m.id.as_str()) {
         stop();
     }
     let path = Path::new(&m.path);
-    if path.parent().is_some_and(|p| crate::session::same_dir(&p.to_string_lossy(), &models_dir().to_string_lossy())) {
-        let _ = std::fs::remove_file(path);
+    let ours = path.ancestors().skip(1).any(|p| crate::session::same_dir(&p.to_string_lossy(), &models_dir().to_string_lossy()));
+    if !ours {
+        return;
     }
-    if let Some(c) = curated(&m.id) {
-        let _ = std::fs::remove_file(models_dir().join(format!("{}.part", c.file)));
+    let _ = std::fs::remove_file(path);
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let _ = std::fs::remove_file(path.with_file_name(format!("{name}.part")));
+    let _ = std::fs::remove_file(path.with_file_name(format!("{name}.part.done")));
+    // A Hugging Face download has a folder of its own: gone with its last file.
+    if let Some(dir) = path.parent().filter(|p| !crate::session::same_dir(&p.to_string_lossy(), &models_dir().to_string_lossy())) {
+        let _ = std::fs::remove_dir(dir);
     }
 }
 
@@ -934,7 +1388,7 @@ pub fn parse_buffer(line: &str) -> Option<(bool, f64)> {
 fn explain(log: &VecDeque<String>) -> (bool, String) {
     let all = log.iter().cloned().collect::<Vec<_>>().join("\n").to_lowercase();
     if ["out of memory", "outofdevicememory", "failed to allocate", "unable to allocate", "alloc failed", "cudamalloc failed"].iter().any(|s| all.contains(s)) {
-        return (true, "There isn't enough memory for this model. Lower GPU layers or the context size in Settings > Providers > Local models, or pick a smaller model.".into());
+        return (true, "There isn't enough memory for this model. Pick a smaller one in the model menu, or lower GPU layers or the context size in Settings > Providers > Local models > Advanced.".into());
     }
     let line = log.iter().rev().find(|l| { let l = l.to_lowercase(); l.contains("error") || l.contains("failed") }).or(log.back()).cloned().unwrap_or_default();
     (false, format!("llama.cpp stopped: {}", line.trim()))
@@ -1008,10 +1462,10 @@ fn ensure_now(local: &Local, model: &str, cancel: &AtomicBool, status: &mut dyn 
     let id = model.strip_prefix(&format!("{PROVIDER}/")).unwrap_or(model);
     let m = local.models.iter().find(|m| m.id == id).ok_or("That local model isn't set up on this PC any more. Pick another in the model menu.")?;
     if !Path::new(&m.path).is_file() {
-        return Err(format!("{} isn't there any more. Download it again or add the file in Settings > Providers > Local models.", m.path));
+        return Err(format!("{} isn't there any more. Remove it and download it again from Local models in the model menu.", m.path));
     }
     let b = backend_for(local).ok_or("llama.cpp has no build for this computer.")?;
-    let exe = server_exe(b).ok_or("llama.cpp isn't installed yet. Install it in Settings > Providers > Local models.")?;
+    let exe = server_exe(b).ok_or("llama.cpp isn't installed. Open Local models in the model menu and press Set up.")?;
     let mut said = false;
     let _one = loop {
         match ENSURE.try_lock() {
@@ -1492,6 +1946,116 @@ mod tests {
         assert_eq!(speed_from(&json!({ "error": "no" })), None);
     }
 
+    fn hw(ram_gb: u64, gpu_gb: u64) -> Hardware {
+        Hardware { ram_mib: ram_gb * GIB, gpu_mib: gpu_gb * GIB, gpu_name: None, shared: false }
+    }
+
+    #[test]
+    fn setup_picks_the_strongest_model_this_pc_runs_well() {
+        let pick = |h: &Hardware| recommend(h).map(|c| c.id);
+        assert_eq!(pick(&hw(4, 0)), None, "not enough memory for any of them");
+        assert_eq!(pick(&hw(8, 0)), Some("qwen3.5-4b"), "no GPU");
+        assert_eq!(pick(&hw(16, 6)), Some("qwen3.5-4b"), "a 6 GB GPU");
+        assert_eq!(pick(&hw(16, 8)), Some("qwen3.5-9b"));
+        assert_eq!(pick(&hw(32, 12)), Some("gemma-4-12b"));
+        assert_eq!(pick(&hw(32, 16)), Some("gemma-4-12b"));
+        assert_eq!(pick(&hw(64, 24)), Some("qwen3.8-27b"));
+        let mac = Hardware { ram_mib: 16 * GIB, gpu_mib: 16 * GIB * 6 / 10, gpu_name: None, shared: true };
+        assert_eq!(pick(&mac), Some("qwen3.5-9b"), "a 16 GB Mac gives its GPU about 9.6 GB");
+        for h in [hw(8, 0), hw(16, 8), hw(32, 12), hw(64, 24), mac] {
+            let c = recommend(&h).unwrap();
+            assert_ne!(fit(c.needs_mib, &h), Fit::TooBig, "{} on {h:?}", c.id);
+        }
+    }
+
+    #[test]
+    fn a_model_fits_on_the_gpu_or_the_cpu_or_not_at_all() {
+        let c = |id| curated(id).unwrap().needs_mib;
+        assert_eq!(fit(c("qwen3.5-9b"), &hw(16, 8)), Fit::Good);
+        assert_eq!(fit(c("qwen3.8-27b"), &hw(32, 8)), Fit::Slow, "most of it in the computer's memory");
+        assert_eq!(fit(c("qwen3.8-27b"), &hw(16, 0)), Fit::TooBig);
+        assert_eq!(fit(c("qwen3.5-4b"), &hw(16, 0)), Fit::Good, "small enough for a CPU");
+        assert_eq!(fit(c("qwen3.5-4b"), &hw(8, 0)), Fit::Slow);
+        let mac = Hardware { ram_mib: 16 * GIB, gpu_mib: 9 * GIB, gpu_name: None, shared: true };
+        assert_eq!(fit(c("qwen3.6-35b-a3b"), &mac), Fit::TooBig, "a Mac's GPU memory isn't on top of its own");
+        assert_eq!(needs_for_file(2_740_937_888), 2613 * 115 / 100 + GIB);
+    }
+
+    #[test]
+    fn hugging_face_links_and_names_give_the_repo_and_maybe_a_file() {
+        let p = |s: &str| parse_hf(s);
+        let repo = |r: &str| Some((r.to_string(), None));
+        assert_eq!(p("unsloth/Qwen3.5-4B-GGUF"), repo("unsloth/Qwen3.5-4B-GGUF"));
+        assert_eq!(p(" https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/ "), repo("unsloth/Qwen3.5-4B-GGUF"));
+        assert_eq!(p("huggingface.co/unsloth/Qwen3.5-4B-GGUF/tree/main"), repo("unsloth/Qwen3.5-4B-GGUF"));
+        assert_eq!(p("https://hf.co/unsloth/Qwen3.5-4B-GGUF?show_file_info=x"), repo("unsloth/Qwen3.5-4B-GGUF"));
+        assert_eq!(
+            p("https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/blob/main/Qwen3.5-4B-Q4_K_M.gguf"),
+            Some(("unsloth/Qwen3.5-4B-GGUF".into(), Some("Qwen3.5-4B-Q4_K_M.gguf".into())))
+        );
+        assert_eq!(p("https://huggingface.co/a/b/resolve/main/sub/m.gguf").unwrap().1.as_deref(), Some("sub/m.gguf"));
+        assert_eq!(p("https://example.com/unsloth/Qwen"), None);
+        assert_eq!(p("https://huggingface.co/datasets/a/b"), None);
+        assert_eq!(p("just-a-name"), None);
+        assert_eq!(p("a/b/c"), None);
+        assert_eq!(p("../etc"), None);
+        assert_eq!(p("https://huggingface.co/a/b/resolve/main/../x.gguf").unwrap().1, None, "no climbing out");
+    }
+
+    #[test]
+    fn a_repos_gguf_files_are_listed_smallest_first() {
+        let lfs = |size: u64| json!({ "oid": "a".repeat(64), "size": size });
+        let tree = json!([
+            { "type": "file", "path": ".gitattributes", "size": 3060 },
+            { "type": "file", "path": "Qwen3.5-4B-BF16.gguf", "size": 8, "lfs": lfs(8_424_393_632) },
+            { "type": "file", "path": "Qwen3.5-4B-UD-Q4_K_XL.gguf", "size": 8, "lfs": lfs(2_700_000_000) },
+            { "type": "file", "path": "mmproj-F16.gguf", "size": 8, "lfs": lfs(600_000_000) },
+            { "type": "directory", "path": "BF16" },
+            { "type": "file", "path": "BF16/big-BF16-00001-of-00002.gguf", "size": 8, "lfs": lfs(40_000_000_000) },
+            { "type": "file", "path": "BF16/big-BF16-00002-of-00002.gguf", "size": 8, "lfs": lfs(30_000_000_000) },
+        ]);
+        let files = hf_tree(&tree);
+        assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["Qwen3.5-4B-UD-Q4_K_XL.gguf", "Qwen3.5-4B-BF16.gguf", "BF16/big-BF16-00001-of-00002.gguf"]);
+        assert_eq!(files[0].quant.as_deref(), Some("Q4_K_XL"));
+        assert_eq!((files[2].split, files[2].quant.as_deref()), (true, Some("BF16")));
+        assert_eq!(quant_of("omnicoder-9b-q4_k_m.gguf").as_deref(), Some("Q4_K_M"));
+        assert_eq!(quant_of("Qwen3.5-4B-IQ4_XS.gguf").as_deref(), Some("IQ4_XS"));
+        assert_eq!(quant_of("Qwen3.5-4B.gguf"), None, "4B isn't a quant");
+    }
+
+    #[test]
+    fn a_hugging_face_file_gets_its_own_folder_and_id() {
+        let d = hf_download("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", &"AB".repeat(32), 10).unwrap();
+        assert_eq!(d.id, "hf-unsloth-qwen3.5-4b-gguf-qwen3.5-4b-q4-k-m");
+        assert_eq!(d.name, "Qwen3.5-4B-Q4_K_M");
+        assert_eq!(d.url, "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf");
+        assert!(d.dest.ends_with(Path::new("hf").join("unsloth").join("Qwen3.5-4B-GGUF").join("Qwen3.5-4B-Q4_K_M.gguf")));
+        assert_eq!(d.sha256, "ab".repeat(32));
+        assert!(hf_download("unsloth/x", "../../evil.gguf", &"a".repeat(64), 1).is_err());
+        assert!(hf_download("unsloth/x", "notes.txt", &"a".repeat(64), 1).is_err());
+        assert!(hf_download("unsloth/x", "m.gguf", "short", 1).is_err());
+    }
+
+    /// What this PC looks like to setup: `cargo test -- --ignored this_pc --nocapture`.
+    #[test]
+    #[ignore]
+    fn this_pc() {
+        let hw = hardware();
+        println!("{hw:?}\npick {:?}\nfree {:?}", recommend(hw).map(|c| c.id), free_space(&models_dir()).map(size_label));
+        for c in &CURATED {
+            println!("{:>16} {:?}", c.id, fit(c.needs_mib, hw));
+        }
+        assert!(hw.ram_mib > 0);
+    }
+
+    #[test]
+    fn free_space_is_read_from_df() {
+        let out = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100000 40000 60000 40% /\n";
+        assert_eq!(parse_df(out), Some(60000 * 1024));
+        assert_eq!(parse_df(""), None);
+        assert!(free_space(&std::env::temp_dir().join("not-there-yet")).is_some_and(|f| f > 0), "from the nearest folder that exists");
+    }
+
     #[test]
     fn offload_is_read_from_the_log() {
         assert_eq!(parse_offload("load_tensors: offloaded 20/33 layers to GPU"), Some((20, 33)));
@@ -1550,7 +2114,7 @@ mod tests {
         let id = std::env::var("LOCAL_BACKEND").unwrap_or_else(|_| backends()[0].id.to_string());
         let b = backend(&id).expect("a build for this platform");
         if server_exe(b.id).is_none() {
-            install(b, &no).unwrap();
+            install(b, &no, &mut |_| {}).unwrap();
             state().installed = None;
         }
         let c = curated(&std::env::var("LOCAL_MODEL").unwrap_or_else(|_| "qwen3.5-4b".into())).expect("a curated model's id");

@@ -186,7 +186,7 @@ function ModelCard({ m, top, left }: { m: Model; top: number; left: number }) {
 
 function SignedOut({ tab }: { tab: Tab }) {
   if (tab === 'additional') return <AdditionalOptions />;
-  if (tab === 'local') return <LocalSetup compact />;
+  if (tab === 'local') return <LocalSetup mode="menu" />;
   const name = TABS.find(([t]) => t === tab)![1];
   const status = providerStatus(tab);
   return (
@@ -289,7 +289,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   }, [models, q, tab, starred, additionalProviders, sort, freeOnly, hidden]);
   // ScoutCode always lists its free models; signing in only adds the rest and a banner suggests it.
   // A chatbot's page shows its own sign-in (ChatbotPage), so it never gets the plain sign-in screen.
-  const signIn = !q && !isBotPage(tab) && tab !== 'scoutcode' && (!signedIn(tab) || (tab === 'additional' && adding));
+  const signIn = !q && !isBotPage(tab) && tab !== 'scoutcode' && (!signedIn(tab) || ((tab === 'additional' || tab === 'local') && adding));
   // A chatbot's page holds its link; ChatGPT and Claude also list their models under it. Chatbots bring their own model.
   const botPage = !q && isBotPage(tab);
   const chatbotOnly = !q && CHATBOT_ONLY_PAGES.includes(tab);
@@ -406,6 +406,12 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
             {opencodeError && <div className="tiny red">{opencodeError}</div>}
             {!cfg.opencodeSignedIn && <SignInEntry which="opencode" />}
           </>
+        )}
+        {tab === 'local' && !q && signedIn('local') && !team && (
+          <div className="row">
+            <b className="strong grow">Local models</b>
+            <button type="button" className="button" onClick={() => setAdding(!adding)}>{adding ? 'Back' : 'Get more models'}</button>
+          </div>
         )}
         {tab === 'additional' && !q && (
           <>

@@ -77,6 +77,7 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         music_remove,
         music_soundcloud_add,
         local_add_file,
+        local_hf_files,
     ]
 }
 
@@ -94,6 +95,7 @@ enum Action {
     NewChat,
     OpenChat { id: String },
     DeleteChat { id: String },
+    SetDone { id: String, done: bool },
     Resend { at: usize, text: String },
     SendQueued { at: usize },
     RetryTurn { key: Option<String>, provider: Option<String> },
@@ -136,6 +138,13 @@ enum Action {
     TestNotification,
     SetDiscord { presence: bool, project: bool },
     SetImages { on: bool, model: Option<String> },
+    SetExplore { on: bool, models: Vec<ModelRef> },
+    /// Code Review in the chat's side panel: `task` is what to review and how, `label` its name in the list.
+    ReviewStart { label: String, task: String, models: Vec<ModelRef> },
+    ReviewStop,
+    ReviewFinding { review: u64, finding: u32, status: String },
+    /// One review, or all of the chat's when `review` is missing.
+    ReviewRemove { review: Option<u64> },
     SetGames { games: crate::config::Games },
     SetMusic { music: crate::config::Music },
     UsageRefresh,
@@ -143,6 +152,13 @@ enum Action {
     UsageChange { body: Value, said: String },
     ToggleLink { mode: String },
     SetScoutMote { on: bool },
+    /// The user touched the window, for Dreaming's idle timer. Sent at most about once a minute.
+    Activity,
+    SetDreaming { on: bool },
+    DreamNow,
+    DreamUndo { id: String },
+    /// "all" for every dream in the log.
+    DreamSeen { id: String },
     McpSetEnabled { name: String, on: bool },
     McpRemove { name: String },
     McpReconnect,
@@ -158,7 +174,10 @@ enum Action {
     LocalCancelInstall,
     LocalRemoveBackend { backend: String },
     LocalDownload { id: String },
+    LocalDownloadHf { repo: String, path: String, sha256: String, size: u64 },
     LocalCancelDownload { id: String },
+    LocalSetup { model: Option<String> },
+    LocalCancelSetup,
     LocalRemove { id: String },
     LocalUnload,
 }
@@ -178,7 +197,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
     // to the ones the team allows.
     if let Some(t) = c.team() {
         let own = match &action {
-            Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SetGuest { on: true } | Action::LocalInstall { .. } | Action::LocalDownload { .. } => true,
+            Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SetGuest { on: true } | Action::LocalInstall { .. } | Action::LocalDownload { .. } | Action::LocalDownloadHf { .. } | Action::LocalSetup { .. } => true,
             Action::SaveNvidiaKey { key } | Action::SaveGrokKey { key } | Action::SaveHermesKey { key } => key.is_some(),
             Action::SetOpencode { on, .. } => *on && !t.acp.iter().any(|a| a == "opencode"),
             Action::SignIn { which } => !t.acp.iter().any(|a| a == which),
@@ -194,6 +213,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::NewChat => c.new_chat(),
         Action::OpenChat { id } => c.open_chat(&id),
         Action::DeleteChat { id } => c.delete_chat(&id),
+        Action::SetDone { id, done } => c.set_done(&id, done),
         Action::Resend { at, text } => c.resend(at, text),
         Action::SendQueued { at } => c.send_queued(at),
         Action::RetryTurn { key, provider } => c.retry(key.zip(provider)),
@@ -256,6 +276,11 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::SetNotify { flash, toast } => c.set_notify(flash, toast),
         Action::SetDiscord { presence, project } => c.set_discord(presence, project),
         Action::SetImages { on, model } => c.set_images(on, model),
+        Action::SetExplore { on, models } => c.set_explore(on, models),
+        Action::ReviewStart { label, task, models } => c.review_start(label, task, models)?,
+        Action::ReviewStop => crate::review::stop(&c.review_chat()),
+        Action::ReviewFinding { review, finding, status } => crate::review::set_finding(&c.review_chat(), review, finding, &status),
+        Action::ReviewRemove { review } => crate::review::remove(&c.review_chat(), review),
         Action::SetGames { games } => c.set_games(games),
         Action::SetMusic { music } => c.set_music(music),
         Action::TestNotification => crate::notify::toast("Scout", "This is how Scout will tell you it's done."),
@@ -264,6 +289,11 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::UsageChange { body, said } => c.usage_request(Some((body, said))),
         Action::ToggleLink { mode } => c.toggle_link(&mode),
         Action::SetScoutMote { on } => c.set_scout_mote(on),
+        Action::Activity => c.activity(),
+        Action::SetDreaming { on } => c.set_dreaming(on),
+        Action::DreamNow => c.dream_now(),
+        Action::DreamUndo { id } => c.dream_undo(&id),
+        Action::DreamSeen { id } => c.dream_seen(&id),
         Action::McpSetEnabled { name, on } => {
             let found = mcp_client::hub().views().into_iter().find(|s| s.name == name);
             if let Some(mut cfg) = found.map(|s| s.cfg) {
@@ -292,7 +322,10 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::LocalCancelInstall => crate::local::cancel_install(),
         Action::LocalRemoveBackend { backend } => c.local_remove_backend(&backend),
         Action::LocalDownload { id } => c.local_download(&id),
+        Action::LocalDownloadHf { repo, path, sha256, size } => c.local_download_hf(&repo, &path, &sha256, size)?,
         Action::LocalCancelDownload { id } => crate::local::cancel_download(&id),
+        Action::LocalSetup { model } => c.local_setup(model),
+        Action::LocalCancelSetup => crate::local::cancel_setup(),
         Action::LocalRemove { id } => c.local_remove(&id),
         Action::LocalUnload => crate::local::stop(),
     }
@@ -311,6 +344,12 @@ fn local_add_file(core: Shared<'_>) -> Result<(), String> {
     let r = c.local_add_file(&path);
     c.wake();
     r
+}
+
+/// The GGUF files in a Hugging Face repo, from a link or "owner/name", for Get more models. Off the core's lock.
+#[tauri::command(async)]
+fn local_hf_files(input: String) -> Result<Value, String> {
+    crate::local::hf_files(&input)
 }
 
 /// False when the message wasn't taken and should stay in the box.

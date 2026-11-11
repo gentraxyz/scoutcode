@@ -1,5 +1,7 @@
 /**
- * Publish the desktop app: build it for x64 and ARM64, sign both and put them where every installed copy will find them.
+ * Publish the desktop app: build it for Windows and Linux on x64 and ARM64, sign each and put them where every installed
+ * copy will find them. Windows is built here; Linux on GitHub's runners (.github/workflows/linux.yml in the scoutcode
+ * mirror, which has to hold this commit's gui/ already), then downloaded and signed here with the rest.
  *
  *   npm run release -- --summary "One line" --changelog "- What changed"   # builds Cargo.toml's version and publishes it
  *   npm run release -- --skip-build --summary "…" --changelog-file CHANGES.md   # publishes the builds already in target
@@ -17,7 +19,8 @@
  * Bump `version` in Cargo.toml first. Installed apps only take a higher version, so to undo a bad release, publish
  * the old code under a new number.
  *
- * Building needs rustup's x86_64-pc-windows-gnullvm and aarch64-pc-windows-gnullvm targets and llvm-mingw on the PATH.
+ * Building needs rustup's x86_64-pc-windows-gnullvm and aarch64-pc-windows-gnullvm targets and llvm-mingw on the PATH,
+ * and the GitHub CLI signed in for the Linux builds. --no-linux publishes Windows alone.
  * Publishing needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (the environment, or .env here) and the private signing key:
  * ~/.scoutcode/desktop-release-key.pem, or SCOUT_RELEASE_KEY for another path. Keep a backup of that key somewhere
  * safe and out of the repo. Installed apps only accept builds signed with it, so without it they can't be updated.
@@ -42,6 +45,17 @@ const HISTORY_PATH = 'releases.json';
 /** The keys in `platforms`: Rust's OS and architecture names, which the app looks itself up by. */
 const WINDOWS_X64 = 'windows-x86_64';
 const WINDOWS_ARM = 'windows-aarch64';
+const LINUX_X64 = 'linux-x86_64';
+const LINUX_ARM = 'linux-aarch64';
+/** Where the Linux builds are made: the gui-only mirror on GitHub, as a git remote here and as a repo there. */
+const MIRROR_REMOTE = 'scoutcode';
+const MIRROR_REPO = 'gentraxyz/scoutcode';
+const LINUX_WORKFLOW = 'linux.yml';
+/** `e_machine` in an ELF header, for each Linux platform. */
+const LINUX_TARGETS = [
+  { platform: LINUX_X64, machine: 0x3e },
+  { platform: LINUX_ARM, machine: 0xb7 },
+];
 
 interface DesktopBuild {
   url: string;
@@ -89,6 +103,8 @@ const TOOLCHAIN_DLLS = ['libunwind.dll', 'libc++.dll', 'libgcc_s', 'libwinpthrea
 interface Built {
   platform: string;
   exe: Buffer;
+  /** Its name in the bucket and in a download. */
+  file: string;
 }
 
 function fail(message: string): never {
@@ -208,7 +224,57 @@ function loadBuilds(commit: string): Built[] {
     // Updates only replace the exe, so it can't need this beside it. See src/webview2.rs, and don't look for the
     // name in the whole file as above: the exe carries the DLL itself.
     if (importedDlls(exe).some((d) => d.toLowerCase().startsWith('webview2loader'))) fail(`${file} imports WebView2Loader.dll. Check src/webview2.rs.`);
-    return { platform, exe };
+    return { platform, exe, file: 'Scout.exe' };
+  });
+}
+
+function gh(args: string[], inherit = false): string {
+  const r = spawnSync('gh', args, { cwd: GUI, encoding: 'utf8', stdio: inherit ? 'inherit' : 'pipe' });
+  if (r.error) fail(`the GitHub CLI (gh) is needed for the Linux builds: ${r.error.message}. Or pass --no-linux.`);
+  if (r.status !== 0) fail(`gh ${args.join(' ')} failed${inherit ? '' : `: ${r.stderr.trim()}`}`);
+  return (r.stdout ?? '').trim();
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Starts the Linux builds for `commit` on GitHub and returns the run's id. The mirror's main has to hold exactly this
+ * commit's gui/, so they're built from the same source as the Windows ones.
+ */
+async function startLinux(commit: string): Promise<string> {
+  git(['fetch', '--quiet', MIRROR_REMOTE, 'main']);
+  const ref = git(['rev-parse', `${MIRROR_REMOTE}/main`]);
+  if (git(['rev-parse', `${ref}^{tree}`]) !== git(['rev-parse', 'HEAD:gui'])) {
+    fail(`${MIRROR_REMOTE}/main doesn't hold this commit's gui/. Push the mirror first, or pass --no-linux.`);
+  }
+  const since = Date.now() - 60_000;
+  gh(['workflow', 'run', LINUX_WORKFLOW, '-R', MIRROR_REPO, '--ref', 'main', '-f', `commit=${commit}`, '-f', `ref=${ref}`]);
+  // The run shows up a few seconds after it's asked for; its title names the commit.
+  for (let i = 0; i < 30; i++) {
+    await sleep(2_000);
+    const runs = JSON.parse(gh(['run', 'list', '-R', MIRROR_REPO, '--workflow', LINUX_WORKFLOW, '-L', '10', '--json', 'databaseId,displayTitle,createdAt'])) as { databaseId: number; displayTitle: string; createdAt: string }[];
+    const run = runs.find((r) => r.displayTitle.includes(commit) && Date.parse(r.createdAt) >= since);
+    if (run) {
+      console.log(`Building Linux on GitHub: https://github.com/${MIRROR_REPO}/actions/runs/${run.databaseId}`);
+      return String(run.databaseId);
+    }
+  }
+  return fail(`the Linux build didn't show up on GitHub. See https://github.com/${MIRROR_REPO}/actions.`);
+}
+
+/** Waits for the Linux run, downloads what it made and checks each build, as loadBuilds does for Windows. */
+function finishLinux(run: string, commit: string): Built[] {
+  gh(['run', 'watch', run, '-R', MIRROR_REPO, '--exit-status', '--interval', '30'], true);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-linux-'));
+  gh(['run', 'download', run, '-R', MIRROR_REPO, '-D', dir]);
+  return LINUX_TARGETS.map(({ platform, machine }) => {
+    const file = path.join(dir, platform, 'scout');
+    if (!fs.existsSync(file)) fail(`the Linux run made no ${platform} build.`);
+    const exe = fs.readFileSync(file);
+    if (exe.length > MAX_BYTES) fail(`the ${platform} build is ${exe.length} bytes, over Supabase's limit of ${MAX_BYTES}.`);
+    if (exe.readUInt32BE(0) !== 0x7f454c46 || exe.readUInt16LE(18) !== machine) fail(`the ${platform} build isn't a ${platform} program.`);
+    if (!exe.includes(Buffer.from(commit))) fail(`the ${platform} build wasn't built as ${commit}.`);
+    return { platform, exe, file: 'scout' };
   });
 }
 
@@ -261,8 +327,8 @@ async function publish(version: string, notes: Notes, builds: Built[], key: cryp
   }
 
   const platforms: Record<string, DesktopBuild> = {};
-  for (const { platform, exe } of builds) {
-    const exePath = `${platform}/${version}/Scout.exe`;
+  for (const { platform, exe, file } of builds) {
+    const exePath = `${platform}/${version}/${file}`;
     console.log(`Uploading ${exePath} (${(exe.length / 1024 / 1024).toFixed(1)} MB)…`);
     const up = await db.storage.from(RELEASE_BUCKET).upload(exePath, exe, { upsert: true, contentType: 'application/octet-stream', cacheControl: '31536000' });
     if (up.error) fail(`upload failed: ${up.error.message}`);
@@ -285,10 +351,10 @@ async function publish(version: string, notes: Notes, builds: Built[], key: cryp
 
 function writeToFolder(out: string, version: string, notes: Notes, urlBase: string, builds: Built[], key: crypto.KeyObject, commit: string) {
   const platforms: Record<string, DesktopBuild> = {};
-  for (const { platform, exe } of builds) {
+  for (const { platform, exe, file } of builds) {
     fs.mkdirSync(path.join(out, platform), { recursive: true });
-    fs.writeFileSync(path.join(out, platform, 'Scout.exe'), exe);
-    platforms[platform] = describe(platform, version, `${urlBase.replace(/\/$/, '')}/${platform}/Scout.exe`, exe, key, commit);
+    fs.writeFileSync(path.join(out, platform, file), exe);
+    platforms[platform] = describe(platform, version, `${urlBase.replace(/\/$/, '')}/${platform}/${file}`, exe, key, commit);
   }
   const published = new Date().toISOString();
   const historyFile = path.join(out, HISTORY_PATH);
@@ -344,6 +410,8 @@ async function main() {
   };
   if (notes.summary.includes('\n')) fail('--summary is one line. Put the rest in --changelog.');
   const commit = releaseCommit(Boolean(out));
+  // Started first, so GitHub builds Linux while Windows builds here.
+  const linuxRun = process.argv.includes('--no-linux') ? null : await startLinux(commit);
 
   if (!process.argv.includes('--skip-build')) {
     // The web UI goes into each exe, so it's built first.
@@ -361,7 +429,7 @@ async function main() {
       if (build.status !== 0) fail(`cargo build failed for ${target}`);
     }
   }
-  const builds = loadBuilds(commit);
+  const builds = [...loadBuilds(commit), ...(linuxRun ? finishLinux(linuxRun, commit) : [])];
 
   if (out) return writeToFolder(out, version, notes, option('url-base') ?? fail('--out needs --url-base'), builds, key, commit);
   await publish(version, notes, builds, key, commit);

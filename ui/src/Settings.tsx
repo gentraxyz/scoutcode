@@ -192,7 +192,7 @@ function Discord() {
                 openExternal(DISCORD_INVITE_URL);
               }}
             >
-              discord.gg/T9Ch9wVAUc
+              discord.gg/qJ8kjUntMV
             </a>{' '}
             to chat with the team, get support, and link your account for a $0.25 balance reward.
           </>

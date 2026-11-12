@@ -68,7 +68,7 @@ export type Referrals = {
   code: string; partner: boolean; bonus: number; credit: number; receivedCredit: number; expiryDays: number; earned: number;
   referredBy: string | null; canRedeem?: boolean | null; referred: ReferralEntry[];
 };
-export const DISCORD_INVITE_URL = 'https://discord.gg/T9Ch9wVAUc';
+export const DISCORD_INVITE_URL = 'https://discord.gg/qJ8kjUntMV';
 
 export type DiscordLink = {
   linked: boolean;

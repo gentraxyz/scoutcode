@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { act, invoke, usd, type View } from './api';
 import { ui, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
@@ -28,10 +28,23 @@ function SessionState({ s }: { s: SessionInfo }) {
   return null;
 }
 
-export function SessionRow({ s, current, project }: { s: SessionInfo; current: boolean; project: string }) {
+/** A row in a list that can be reordered by dragging: how it looks now, and where a press on it starts a drag. */
+type RowDnd = {
+  dragging: boolean;
+  style: CSSProperties;
+  onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
+};
+
+export function SessionRow({ s, current, project, dnd }: { s: SessionInfo; current: boolean; project: string; dnd?: RowDnd }) {
   const busy = s.running || s.waiting;
   return (
-    <div className={`session-row two-line ${current ? 'selected' : ''}`} title={`${s.title}\n${s.cwd}`}>
+    <div
+      className={`session-row two-line ${current ? 'selected' : ''} ${dnd?.dragging ? 'dragging' : ''}`}
+      title={`${s.title}\n${s.cwd}`}
+      data-chat-id={s.id}
+      style={dnd?.style}
+      onPointerDown={dnd?.onPointerDown}
+    >
       <button type="button" className="session-open" onClick={() => { ui.set({ page: 'chat' }); act('openChat', { id: s.id }); }}>
         <span className="session-line">
           <span className="session-title ellipsis grow">{s.title}</span>
@@ -62,15 +75,132 @@ export function SessionRow({ s, current, project }: { s: SessionInfo; current: b
   );
 }
 
-/** Every chat across every project, newest first: Recent, or the ones marked Done. */
+/** A chat being dragged: where every chat sat when the drag began, and how far the pointer has moved. */
+type Drag = {
+  id: string;
+  dy: number;
+  rows: { id: string; top: number; h: number }[];
+  /** Dropped: the chats are sliding into their new places before the list is saved as that. */
+  settling: boolean;
+};
+
+/** The order a drag would leave the chats in: the dragged one goes where its middle is, among the others' middles. */
+function dragOrder(d: Drag): string[] {
+  const me = d.rows.find((r) => r.id === d.id)!;
+  const mid = me.top + me.h / 2 + d.dy;
+  const others = d.rows.filter((r) => r.id !== d.id);
+  const at = others.filter((r) => r.top + r.h / 2 < mid).length;
+  const ids = others.map((r) => r.id);
+  ids.splice(at, 0, d.id);
+  return ids;
+}
+
+const SLIDE = 'transform 180ms cubic-bezier(.2, .8, .2, 1)';
+
+/** Every chat across every project, newest first: Recent, or the ones marked Done. Press and drag a chat to move it within its list. */
 function ChatList({ done }: { done: boolean }) {
   const sessions = useView('sessions');
   const chat = useView('chat');
   const projectName = useProjectName();
   const rows = sessions.filter((s) => !!s.done === done);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const listRef = useRef<HTMLDivElement>(null);
+  const [drag, setDrag] = useState<Drag | null>(null);
+  // Read by the window listeners, which outlive any one render.
+  const dragRef = useRef<Drag | null>(null);
+  const put = (d: Drag | null) => { dragRef.current = d; setDrag(d); };
+  // The order the last drop left, shown until the saved list comes back from the app.
+  const [order, setOrder] = useState<string[] | null>(null);
+  const suppressClick = useRef(false);
+  const stopListening = useRef<(() => void) | null>(null);
+  useEffect(() => { setOrder(null); }, [sessions]);
+  useEffect(() => () => stopListening.current?.(), []);
+
+  const shown = order && order.length === rows.length && order.every((id) => byId.has(id)) ? order : rows.map((r) => r.id);
+  const ids = drag ? drag.rows.map((r) => r.id) : shown;
+  const next = drag ? dragOrder(drag) : null;
+  // How far a chat has to move to reach its slot in the new order (the dragged one follows the pointer until the drop).
+  const shift = (id: string): number => {
+    if (!drag || !next) return 0;
+    if (id === drag.id && !drag.settling) return drag.dy;
+    const own = drag.rows.find((r) => r.id === id)!;
+    return drag.rows[next.indexOf(id)].top - own.top;
+  };
+
+  const onPointerDown = (id: string, e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('.row-actions')) return;
+    const startY = e.clientY;
+    const clamp = (rowsNow: Drag['rows'], dy: number) => {
+      const me = rowsNow.find((r) => r.id === id)!;
+      const first = rowsNow[0];
+      const last = rowsNow[rowsNow.length - 1];
+      return Math.max(first.top - me.top, Math.min(last.top + last.h - (me.top + me.h), dy));
+    };
+    const move = (m: PointerEvent) => {
+      const cur = dragRef.current;
+      if (cur) { put({ ...cur, dy: clamp(cur.rows, m.clientY - startY) }); return; }
+      // A small wobble is still a click on the chat; only a real move starts the drag.
+      if (Math.abs(m.clientY - startY) < 5) return;
+      const els = listRef.current?.querySelectorAll<HTMLElement>('[data-chat-id]');
+      if (!els) return;
+      const rowsNow = [...els].map((el) => {
+        const r = el.getBoundingClientRect();
+        return { id: el.dataset.chatId!, top: r.top, h: r.height };
+      });
+      put({ id, dy: clamp(rowsNow, m.clientY - startY), rows: rowsNow, settling: false });
+    };
+    const up = () => {
+      stopListening.current?.();
+      stopListening.current = null;
+      const d = dragRef.current;
+      if (!d || d.settling) return;
+      // The click that ends a drag shouldn't open the chat.
+      suppressClick.current = true;
+      setTimeout(() => { suppressClick.current = false; }, 100);
+      const ids = dragOrder(d);
+      if (ids.every((x, i) => x === d.rows[i].id)) { put(null); return; }
+      put({ ...d, settling: true });
+      act('reorderChats', { ids });
+      setTimeout(() => { put(null); setOrder(ids); }, 180);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    stopListening.current = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+    };
+  };
+
   return (
-    <div className="side-scroll">
-      {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} project={projectName(s.cwd)} />)}
+    <div
+      ref={listRef}
+      className={`side-scroll ${drag && !drag.settling ? 'reordering' : ''}`}
+      onClickCapture={(e) => { if (suppressClick.current) { e.preventDefault(); e.stopPropagation(); } }}
+    >
+      {ids.map((id) => {
+        const s = byId.get(id);
+        if (!s) return null;
+        const dragging = drag?.id === id;
+        return (
+          <SessionRow
+            key={id}
+            s={s}
+            current={id === chat.id}
+            project={projectName(s.cwd)}
+            dnd={{
+              dragging,
+              style: {
+                transform: shift(id) ? `translateY(${shift(id)}px)` : undefined,
+                transition: dragging && !drag?.settling ? 'none' : SLIDE,
+                zIndex: dragging ? 2 : undefined,
+              },
+              onPointerDown: (e) => onPointerDown(id, e),
+            }}
+          />
+        );
+      })}
       {rows.length === 0 && <div className="small dim no-chats">{done ? 'Nothing marked done yet.' : 'No chats yet. Start one above.'}</div>}
     </div>
   );

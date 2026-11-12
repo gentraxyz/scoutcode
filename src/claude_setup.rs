@@ -10,7 +10,7 @@
 //! lets Claude reach this computer, stay with the user.
 //!
 //! Scout keeps one job at a time here. In extension mode, the extension's content script on claude.ai asks for it through the extension's
-//! local server (`/claude/sync`, see deepseek.rs), and reports each step back, which Scout's UI shows.
+//! local server (`/claude/sync`, see browser_ext.rs), and reports each step back, which Scout's UI shows.
 
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -109,7 +109,7 @@ pub fn start<R: tauri::Runtime>(app: &tauri::AppHandle<R>, bot: &str, name: &str
         return Err("Give the connector a short name.".into());
     }
     // The extension stays ready either way: it's the fallback.
-    crate::deepseek::extension_folder()?;
+    crate::browser_ext::extension_folder()?;
     let native = cfg!(windows);
     let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(1);
     *JOB.lock().unwrap() = Some(Job {
@@ -373,7 +373,7 @@ pub fn status() -> Value {
         "note": j.note,
         "extensionSeen": j.seen.is_some(),
         "waitedSecs": j.started.elapsed().as_secs(),
-        "extensionPath": crate::deepseek::extension_path(),
+        "extensionPath": crate::browser_ext::extension_path(),
     })
 }
 

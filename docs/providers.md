@@ -190,51 +190,33 @@ platform.experientiallabs.ai, sent to its OpenAI-compatible gateway at `https://
 **Testing:** `cargo test experiential` covers reading the list, and
 `EXPLABS_API_KEY=xpl_… cargo test -- --ignored live_experiential --nocapture` reads the real one.
 
-## DeepSeek API and DeepSeek Web
+## DeepSeek API
 
 **DeepSeek API** is an additional provider like Google AI Studio: the user's own key from platform.deepseek.com, sent
 straight to `https://api.deepseek.com/v1`, OpenAI-style, so Scout's tools, permissions, diffs and undo all apply.
 
-**DeepSeek Web** (`src/deepseek.rs`) uses the user's own chat.deepseek.com account, with no key, through the website. It's
-desktop only, off until turned on in Settings > Providers, and its settings are in `~/.scoutcode/deepseek-web.json`.
+There is no DeepSeek Web provider any more. It drove the user's chat.deepseek.com account through the website, and
+DeepSeek bans accounts that do that.
 
-- **A driver script runs in the page** (`src/deepseek/driver.js`). For each request it opens the right DeepSeek chat, types a
-  short line into the composer and sends it like the user would, so the page does its own sign-in and proof-of-work. As
-  the page's `/api/v0/chat/completion` request goes out, the driver swaps in Scout's full prompt and the mode
-  (`thinking_enabled`, `search_enabled`), and reads a copy of the streamed answer. The model menu's four entries are
-  those modes: DeepSeek, DeepThink, and each with Search.
-- **Scout runs the tool loop.** The website has no tool calling, so the first message of each DeepSeek chat lists Scout's
-  tools (and the user's MCP servers') and asks for calls in DSML, DeepSeek's own function-call format
-  (`<｜DSML｜invoke name="…">` with `<｜DSML｜parameter name="…" string="true|false">`), which its models write by habit
-  anyway. `dsml_calls` reads them, and earlier calls go back to it written the same way. `<tool_call>` blocks are still
-  read, through `tools::recover_calls`. Results go back as `<tool_result>` blocks. A Scout conversation stays in one
-  DeepSeek chat while its history matches (the system prompt isn't compared), so each step only sends what's new.
-- **Two places it can run.**
-  - *In Scout:* a hidden window, `deepseek`, on chat.deepseek.com with the driver as its initialization script. It has no
-    capability, so the page can't call Scout's IPC. Scout starts jobs and reads events by `eval`, polling
-    `window.__scoutDS.drain()`. Closing the window hides it, which keeps the sign-in. Background throttling is off.
-  - *Browser extension* (`src/deepseek/extension`, MV3, Chrome or Edge): Settings writes it to
-    `~/.scoutcode/deepseek-extension` with `scout.json` (port and token) for Load unpacked. `driver.js` and `main.js` run
-    in the page's main world, `bridge.js` links them to the background worker, and the worker long-polls
-    `POST http://127.0.0.1:47615/deepseek/sync` (or another free port, written to `scout.json`). The server answers only
-    requests with the token in `X-Scout-Token` and no web-page `Origin`. It only starts while the extension mode is on.
-    The extension's `claude.js` is also the fallback for Claude's "Add to Claude for me" setup (claude_setup.rs). On
-    Windows that setup first runs without it (claude_native.rs): UI Automation finds claude.ai's buttons and fields by
-    name in the browser window in front. Scout's own cursor (`setup-cursor`, a click-through window) moves to each one,
-    and the real cursor hops there only for the click and straight back. Keys are typed with the real keyboard, and
-    buttons below the fold are scrolled to (the form's Add on its second page). Low-level input hooks hold back the
-    user's clicks, wheel and keys over the browser while it works (no admin needed); Esc, the `setup-bar` window's
-    Pause, or leaving the browser pauses it and gives the browser back. The setup card picks the browser: the default
-    one unless another is chosen, from those Windows lists under `StartMenuInternet` (Internet Explorer left out). A
-    chosen browser is started with the address, and only windows whose program is in its folder are worked. When no
-    browser with claude.ai comes to the front within 25 seconds, the job goes to the extension.
-- **The warning.** DeepSeek's terms don't allow automated use of the website, so the account could be limited or banned, and
-  Settings says so before it can be turned on. It also breaks when DeepSeek changes the page or its stream format. The
-  stream reader follows the formats seen so far (OpenAI-style `choices`, and the JSON-patch `{p, o, v}` updates with and
-  without `fragments`).
+## Browser extension (Claude and Gemini connector setup)
 
-**Testing:** `cargo test deepseek` covers the prompt bookkeeping and reading tool calls back. Nothing can test the page
-without a signed-in account: after a change, sign in, pick DeepSeek Web, and ask for something that needs a tool.
+`src/browser_ext.rs` and `src/browser_ext/` hold the Scout browser extension (MV3, Chrome or Edge). It only serves the
+Claude connector setup (claude_setup.rs): `claude.js` runs on claude.ai and Gemini, and `background.js` does the real
+clicks and typing that the setup needs, through Chrome's debugger.
+
+- Settings writes it to `~/.scoutcode/scout-extension` with `scout.json` (port and token) for Load unpacked.
+- The worker talks to Scout over `POST http://127.0.0.1:47615/claude/sync` (or another free port, written to
+  `scout.json`). The server answers only requests with the token in `X-Scout-Token` and no web-page `Origin`. Its token
+  is kept in `~/.scoutcode/browser-extension.json`.
+- On Windows the setup first runs without the extension (claude_native.rs): UI Automation finds claude.ai's buttons and
+  fields by name in the browser window in front. Scout's own cursor (`setup-cursor`, a click-through window) moves to each
+  one, and the real cursor hops there only for the click and straight back. Keys are typed with the real keyboard, and
+  buttons below the fold are scrolled to. Low-level input hooks hold back the user's clicks, wheel and keys over the
+  browser while it works (no admin needed); Esc, the `setup-bar` window's Pause, or leaving the browser pauses it and
+  gives the browser back. The setup card picks the browser: the default one unless another is chosen. When no browser
+  with claude.ai comes to the front within 25 seconds, the job goes to the extension.
+
+The setup has no automated tests: check it by running it against a signed-in claude.ai account.
 
 ## Local models (llama.cpp)
 

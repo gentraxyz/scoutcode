@@ -682,27 +682,6 @@ impl Agent {
             let content = self.acp_run(&GROK, messages, false, h)?;
             return Ok(StreamResult { content, ..Default::default() });
         }
-        // DeepSeek Web runs through chat.deepseek.com, with Scout's tool loop: see deepseek.rs.
-        if provider == crate::deepseek::PROVIDER {
-            if !quiet {
-                h.send(Ev::RequestStart);
-            }
-            let tools = if read_only { self.read_only_specs.clone() } else if no_tools { vec![] } else { self.all_specs() };
-            let mut on = |d: Delta| {
-                if quiet {
-                    return;
-                }
-                match d {
-                    Delta::Text(t) => h.send(Ev::Text(t.to_string())),
-                    Delta::Reasoning(t) => h.send(Ev::Reasoning(t.to_string())),
-                }
-            };
-            let r = crate::deepseek::chat(&model, messages, &tools, &mut on, &self.shared.cancel, !quiet)?;
-            if !quiet {
-                self.last_request_at = Some(Instant::now());
-            }
-            return Ok(r);
-        }
         // A model that can't see images would refuse the whole request, so it gets a note in their place.
         let without_images: Vec<Message>;
         let messages = if self.shared.no_vision.lock().unwrap().contains(&model) && messages.iter().any(|m| matches!(m, Message::User { content } if !content.images().is_empty())) {
@@ -738,6 +717,14 @@ impl Agent {
                 }
                 Err(_) if self.cancelled() => return Err(ApiError::aborted()),
                 Err(message) => return Err(ApiError { message, status: 0, retry_after: None, aborted: false }),
+            }
+        }
+        // A ScoutCode model on its own Modal GPUs may be offline: start it and show how far it's got, rather than a
+        // request that seems stuck for minutes. Whatever goes wrong here, the request itself gets the server's answer.
+        if provider == "scoutcode" {
+            let mut status = |s: String| h.send(Ev::Status(s));
+            if api::modal_wait(&cfgs[0], &model, &self.shared.cancel, &mut status).is_err() && self.cancelled() {
+                return Err(ApiError::aborted());
             }
         }
         let mut key = 0;
@@ -2138,7 +2125,6 @@ impl Agent {
                 }
                 return Ok(());
             }
-            let mut denied = false;
             for (i, c) in calls.iter().enumerate() {
                 if self.cancelled() {
                     for c in &calls[i..] {
@@ -2147,7 +2133,6 @@ impl Agent {
                     break;
                 }
                 let res = self.run_tool(c, h);
-                denied |= res.summary.as_deref() == Some("denied");
                 // A local model's result gets at most about an eighth of its context (4 characters a token): reading it is
                 // the wait before its next step, and a quarter filled a small context in two results.
                 let max = if self.on_local() { (self.cfg.local.context as usize / 2).clamp(2048, MAX_TOOL_CHARS) } else { MAX_TOOL_CHARS };
@@ -2157,11 +2142,6 @@ impl Agent {
             save_session(&mut self.session);
             if self.cancelled() {
                 return Err(ApiError::aborted());
-            }
-            // DeepSeek Web's page doesn't reliably take a "don't retry" note, so after a denial the turn ends and the
-            // user decides what happens next, instead of asking the model to carry on.
-            if denied && self.session.provider.as_deref() == Some(crate::deepseek::PROVIDER) {
-                return Ok(());
             }
         }
         h.send(Ev::Notice("Stopped after 200 steps. Say \"continue\" to keep going.".into()));

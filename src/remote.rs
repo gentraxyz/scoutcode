@@ -61,6 +61,12 @@ fn post(cfg: &Config, body: &Value, timeout: u64) -> Result<Value, (u16, String)
     res.into_body().read_json().map_err(|e| (0, e.to_string()))
 }
 
+/// How long to wait before the next poll: what the site asks for (`next`, in ms), kept to a sane range. Sites from
+/// before quick polling don't say, so a few seconds.
+pub fn next_poll(reply: &Value) -> u64 {
+    reply["next"].as_u64().unwrap_or(3000).clamp(500, 30_000)
+}
+
 fn nap(stop: &AtomicBool, ms: u64) {
     for _ in 0..ms / 100 {
         if stop.load(Ordering::Relaxed) {
@@ -84,14 +90,18 @@ pub fn start(cfg: &Config, device_id: &str, tell: impl Fn(RemoteEvent) + Send + 
         let (cfg, stop, tell, id, name, resend) = (cfg.clone(), stop.clone(), tell.clone(), device_id.to_string(), name.clone(), resend.clone());
         std::thread::spawn(move || {
             let mut failures = 0u32;
+            let mut up = false;
             let ended = loop {
                 if stop.load(Ordering::Relaxed) {
                     break None;
                 }
-                match post(&cfg, &json!({ "deviceId": id, "name": name, "wait": true }), 60) {
+                // Quick polls with a pause the site picks (`next`), rather than one held open: on shared hosting a held
+                // request takes one of the few connections the host lets through, and the website waits for them.
+                match post(&cfg, &json!({ "deviceId": id, "name": name }), 30) {
                     Ok(reply) => {
-                        if failures > 0 || reply.get("commands").is_some() {
+                        if failures > 0 || !up {
                             failures = 0;
+                            up = true;
                             tell(RemoteEvent::Status("On. Open ScoutCode in a browser to use Scout here.".into(), true));
                         }
                         if reply["needState"] == true {
@@ -102,9 +112,13 @@ pub fn start(cfg: &Config, device_id: &str, tell: impl Fn(RemoteEvent) + Send + 
                         if stop.load(Ordering::Relaxed) {
                             break None;
                         }
-                        for c in reply["commands"].as_array().cloned().unwrap_or_default() {
+                        let commands = reply["commands"].as_array().cloned().unwrap_or_default();
+                        let busy = !commands.is_empty();
+                        for c in commands {
                             tell(RemoteEvent::Command(c));
                         }
+                        // Right after a command another often follows (an answer to a prompt it raised), so look again soon.
+                        nap(&stop, if busy { 300 } else { next_poll(&reply) });
                     }
                     Err((401, _)) => break Some("ScoutCode refused this sign-in. Sign in again.".to_string()),
                     Err((_, e)) => {

@@ -453,9 +453,10 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
             }
             res.into_body().read_json().map_err(|e| (0, e.to_string()))
         };
-        // A poll that doesn't wait shows the link is up at once. The first waiting poll below is held open for up to
-        // POLL_MS when no chatbot is calling, which would leave the window on "Connecting…" that long.
+        // The first poll shows the link is up at once, with the chatbots that use it.
+        let mut up = false;
         if let Ok(r) = post(json!({}), &chats.shared.mode()) {
+            up = true;
             tell(LinkEvent::Status("On. Chatbots on your account can use Scout here.".into(), true));
             if let Some(list) = r["chatbots"].as_array() {
                 let bots = list.iter().map(|b| Chatbot { name: b["name"].as_str().unwrap_or("").to_string(), seen: b["seen"].as_u64() }).collect();
@@ -467,7 +468,9 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
                 break "Off.".to_string();
             }
             let mode = chats.shared.mode();
-            let reply = match post(json!({"wait": true, "results": results}), &mode) {
+            // Quick polls with a pause the site picks (`next`), rather than one held open: on shared hosting a held request
+            // takes one of the few connections the host lets through, and the website waits for them.
+            let reply = match post(json!({"results": results}), &mode) {
                 Ok(r) => r,
                 Err((401, _)) => break "ScoutCode refused this sign-in. Sign in again.".to_string(),
                 Err((_, e)) => {
@@ -485,8 +488,9 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
                 }
             };
             results.clear();
-            if failures > 0 || reply.get("calls").is_some() {
+            if failures > 0 || !up {
                 failures = 0;
+                up = true;
                 tell(LinkEvent::Status("On. Chatbots on your account can use Scout here.".into(), true));
             }
             if let Some(list) = reply["chatbots"].as_array() {
@@ -512,6 +516,16 @@ pub fn start_link(cfg: &Config, cwd: &str, mode: &str, tell: impl Fn(LinkEvent) 
                     chat,
                 }));
                 results.push(json!({"id": id, "output": r.output, "isError": r.is_error}));
+            }
+            // Results go back straight away. Otherwise wait as long as the site asks (`next`) before looking again.
+            if results.is_empty() {
+                let wait = crate::remote::next_poll(&reply);
+                for _ in 0..wait / 100 {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
             }
         };
         let _ = post(json!({"done": true}), "");

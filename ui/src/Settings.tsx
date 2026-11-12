@@ -10,7 +10,6 @@ import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme 
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
 import { ClaudeSetup } from './ClaudeSetup';
 import { LocalSetup, localStatus } from './Local';
-import { DeepSeekWebPanel, useDeepSeek } from './DeepSeek';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
 import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
@@ -961,7 +960,6 @@ function Providers() {
   const login = useView('login');
   const local = useView('local');
   const { plans, kiloWarning, additionalProviders } = useCore((s) => s.statics);
-  const deepseek = useDeepSeek();
   const [open, setOpen] = useState<string | null>(null);
   const own = (which: OwnWhich, name: string, note: string, on: boolean, planText: string, who = 'Signed in'): ProviderEntry => ({
     id: which, name, linked: on, status: login[which] ? 'Signing in…' : on ? who : providerStatus(which),
@@ -1068,11 +1066,6 @@ function Providers() {
           <Link href={plans.hermes} className="small">Open Nous Portal</Link>
         </>
       ),
-    },
-    {
-      id: 'deepseek-web', name: 'DeepSeek Web', linked: !!deepseek?.enabled,
-      status: !deepseek?.enabled ? providerStatus('deepseek-web') : `Browser extension · ${deepseek.signedIn ? 'Signed in' : 'Not signed in'}`,
-      body: <DeepSeekWebPanel />,
     },
     {
       id: 'local', name: 'Local models (llama.cpp)', linked: cfg.local.models.length > 0,

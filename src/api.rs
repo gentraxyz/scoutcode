@@ -759,7 +759,9 @@ fn experiential_listing(ids: &Value, catalog: &[Value]) -> Value {
         let slug = m.get("slug").and_then(Value::as_str).unwrap_or("");
         let has = |k: &str, v: &str| m.get(k).and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some(v)));
         let description = m.get("description").and_then(Value::as_str).unwrap_or("").to_lowercase();
-        m.get("status").and_then(Value::as_str).unwrap_or("active") == "active"
+        // GLM 5.3 is off Desktop, its free promo included.
+        !slug.starts_with("glm-5.3")
+            && m.get("status").and_then(Value::as_str).unwrap_or("active") == "active"
             && !has("tags", "retired")
             && !slug.ends_with("-batch")
             && !description.contains("not a chat")
@@ -1004,7 +1006,7 @@ mod tests {
     #[test]
     fn experiential_lists_callable_chat_models_and_free_promos() {
         let exp = crate::config::additional_provider("experiential").unwrap();
-        let data: Vec<Value> = ["gpt-6-luna", "claude-fable-5.2", "clef", "claude-opus-5-batch", "old-model", "chatgpt-image-latest"].map(|id| json!({ "id": id })).into();
+        let data: Vec<Value> = ["gpt-6-luna", "claude-fable-5.2", "clef", "claude-opus-5-batch", "old-model", "chatgpt-image-latest", "glm-5.3-uncensored"].map(|id| json!({ "id": id })).into();
         let ids = json!({ "data": data });
         let host = |i: f64, o: f64| json!({ "billing_source": "host_managed", "status": "active", "input_nano_usd_per_million": i, "output_nano_usd_per_million": o });
         let byok = json!({ "billing_source": "customer_managed", "status": "active", "input_nano_usd_per_million": null, "output_nano_usd_per_million": null });
@@ -1022,12 +1024,14 @@ mod tests {
                 { "model": chat("old-model", json!({ "tags": ["retired"] })), "providers": [] },
                 { "model": chat("chatgpt-image-latest", json!({ "output_modalities": ["image"] })), "providers": [] },
                 { "model": chat("not-for-this-key", json!({})), "providers": [] },
+                { "model": chat("glm-5.3-uncensored", json!({})), "providers": [host(1e9, 4e9)] },
             ],
             "promotions": [
                 { "free": true, "display_only": false, "slugs": ["claude-fable-5.2"], "requires_payment_method": true },
+                { "free": true, "display_only": false, "slugs": ["glm-5.3-uncensored"] },
                 { "free": false, "display_only": false, "slugs": ["gpt-6-luna"] },
             ],
-            "total": 7,
+            "total": 8,
         })];
         let listed = additional_models(exp, true, &experiential_listing(&ids, &catalog));
         assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["experiential/claude-fable-5.2:free", "experiential/gpt-6-luna", "experiential/claude-fable-5.2"]);
@@ -1379,7 +1383,69 @@ pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), Api
         // The server's "auto" router is not offered in the picker.
         .map(|a| a.iter().filter_map(ModelInfo::from_json).filter(|m| m.id != "auto").map(|m| ModelInfo { hosted: true, ..m }).collect())
         .unwrap_or_default();
+    if let Some(a) = body.get("data").and_then(Value::as_array) {
+        *cold_starts().lock().unwrap() = a.iter().filter(|m| m.get("cold_start").and_then(Value::as_bool) == Some(true)).filter_map(|m| m.get("id").and_then(Value::as_str).map(String::from)).collect();
+    }
     Ok((models, user))
+}
+
+/// ScoutCode's models that run on its own Modal GPUs (`cold_start` in /v1/models): they can take minutes to start.
+fn cold_starts() -> &'static Mutex<std::collections::HashSet<String>> {
+    static SET: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+/// The status line while a Modal model starts. The composer draws a bar for it, reading the percentage back.
+pub fn modal_status_line(name: &str, label: &str, progress: u64, eta_ms: Option<u64>) -> String {
+    let eta = eta_ms.map(|ms| ms / 1000).map(|s| if s >= 90 { format!(" · about {} min left", (s + 30) / 60) } else { format!(" · about {s}s left") }).unwrap_or_default();
+    format!("Starting {name} on Modal… {progress}% · {label}{eta}")
+}
+
+/// Before sending to a ScoutCode model on Modal, start it if it's offline and wait, reporting progress through `status`,
+/// so the wait shows as a bar rather than a request that seems stuck. Anything unexpected (an older server, a model that
+/// isn't on Modal after all, a failed start) returns Ok: the chat request then gets the server's own answer or fallback.
+pub fn modal_wait(cfg: &Config, model: &str, cancel: &Arc<AtomicBool>, status: &mut dyn FnMut(String)) -> Result<(), ApiError> {
+    if !cold_starts().lock().unwrap().contains(model) {
+        return Ok(());
+    }
+    let query: String = model.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    let read = |res: Result<ureq::http::Response<ureq::Body>, ApiError>| -> Option<Value> {
+        let res = res.ok()?;
+        if !res.status().is_success() {
+            return None;
+        }
+        res.into_body().read_json::<Value>().ok()
+    };
+    let start = auth(http().post(&format!("{}/modal/start", cfg.base_url)), cfg)
+        .and_then(|r| r.config().timeout_global(Some(Duration::from_secs(60))).build().send_json(serde_json::json!({ "model": model })).map_err(transport));
+    let Some(mut s) = read(start) else { return Ok(()) };
+    let deadline = std::time::Instant::now() + Duration::from_secs(20 * 60);
+    loop {
+        let state = s.get("state").and_then(Value::as_str).unwrap_or("");
+        if state != "starting" {
+            return Ok(());
+        }
+        let name = s.get("name").and_then(Value::as_str).unwrap_or(model);
+        let label = s.get("label").and_then(Value::as_str).unwrap_or("Starting");
+        let progress = s.get("progress").and_then(Value::as_u64).unwrap_or(0).min(100);
+        status(modal_status_line(name, label, progress, s.get("eta_ms").and_then(Value::as_u64)));
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < until {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(ApiError::aborted());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if std::time::Instant::now() > deadline {
+            return Ok(());
+        }
+        let poll = auth(http().get(&format!("{}/modal/status?model={query}", cfg.base_url)), cfg).and_then(|r| r.call().map_err(transport));
+        match read(poll) {
+            Some(next) => s = next,
+            // A blip reading the status: keep the last one and try again.
+            None => continue,
+        }
+    }
 }
 
 fn usage_from(u: &Value) -> Usage {

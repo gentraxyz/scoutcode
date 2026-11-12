@@ -4,6 +4,12 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.25
+ScoutMote and the chatbot link go easier on scoutcode.dev, so the site stays fast for everyone.
+
+- ScoutMote and the chatbot link now check in with short requests instead of holding one open, and check more often while you're using them from the website or a chatbot. The website was slowing down because every open copy of Scout kept requests waiting on it.
+- The status line under Settings > ScoutMote and Settings > Chatbots no longer refreshes on every check, only when it changes.
+
 ## 0.1.24
 Scout on Linux, an Inbox for everything in progress, Code Review in the side panel, free Explore agents, and Dreaming.
 

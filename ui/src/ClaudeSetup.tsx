@@ -85,7 +85,7 @@ export function ClaudeSetup({ address, disabled, bare, bot = 'claude' }: { addre
   };
   const stop = () => invoke<SetupStatus>('claude_setup_stop').then(setS, () => {});
   const pause = (paused: boolean) => invoke<SetupStatus>('claude_setup_pause', { paused }).then(setS, () => {});
-  const setUpExtension = () => invoke<string>('deepseek_extension').then(setFolder, (e) => setError(String(e)));
+  const setUpExtension = () => invoke<string>('claude_setup_extension').then(setFolder, (e) => setError(String(e)));
   const noExtension = s.mode === 'extension' && s.state === 'waiting' && !s.extensionSeen && (s.waitedSecs ?? 0) >= NO_EXTENSION_SECS;
   const finish = s.label === `Added to ${site}`
     ? `Finish in the ScoutCode window ${site} opened: sign in if it asks, then approve Link.`

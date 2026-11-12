@@ -389,9 +389,6 @@ fn model_sources(cfg: &Config) -> Vec<&'static str> {
     }
     let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
     out.extend(on.into_iter().filter(|(_, on)| *on).map(|(s, _)| s));
-    if crate::deepseek::enabled() {
-        out.push(crate::deepseek::PROVIDER);
-    }
     out
 }
 
@@ -456,7 +453,6 @@ fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>,
             Err(format!("OpenRouter: {failed}"))
         }
         "nvidia" => crate::api::list_nvidia(cfg).map_err(|e| format!("NVIDIA NIM: {}", e.message)),
-        crate::deepseek::PROVIDER => Ok(crate::deepseek::models()),
         crate::local::PROVIDER => Ok(crate::local::models(&cfg.local)),
         "kilo" => crate::api::list_kilo(cfg).map_err(|e| format!("Kilo Code: {}", e.message)),
         "copilot" => Ok(with_default(crate::copilot::list_models(cfg.copilot_token.as_deref().unwrap_or_default()))),
@@ -820,11 +816,6 @@ impl Core {
     /// Asks every provider that's on for its models and merges them. The chosen model's provider goes first and the list
     /// is sent as soon as it's in; the rest are asked together after it. A list that can't be read is the one saved last
     /// time, and every list that's read is saved for the next start.
-    /// Whether the account is in a Scout Enterprise team, whose providers replace the user's own.
-    pub fn in_team(&self) -> bool {
-        self.cfg.team.is_some()
-    }
-
     pub fn fetch_models(&mut self) {
         self.models_loading += 1;
         let cfg = self.cfg.clone();
@@ -2331,6 +2322,27 @@ impl Core {
         config::save_one("desktopDone", json!(self.cfg.done_chats));
     }
 
+    /// Saves the order a list of chats was dragged into: `ids` go first, in that order, ahead of the rest of the saved order.
+    pub fn reorder_chats(&mut self, ids: &[String]) {
+        let known = |id: &str| self.sessions.iter().any(|s| s.id == id);
+        let mut order: Vec<String> = vec![];
+        for id in ids.iter().map(String::as_str).chain(self.cfg.chat_order.iter().map(String::as_str)) {
+            if known(id) && !order.iter().any(|o| o == id) {
+                order.push(id.to_string());
+            }
+        }
+        self.cfg.chat_order = order;
+        config::save_one("desktopChatOrder", json!(self.cfg.chat_order));
+    }
+
+    /// Chats newest first, except those the user has dragged: they go in their saved order, after the rest.
+    fn sessions_in_order(&self) -> Vec<&SessionInfo> {
+        let pos: HashMap<&str, usize> = self.cfg.chat_order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let mut out: Vec<&SessionInfo> = self.sessions.iter().collect();
+        out.sort_by_key(|s| pos.get(s.id.as_str()).copied());
+        out
+    }
+
     pub fn delete_chat(&mut self, id: &str) {
         let current = self.chat.session_id == id;
         // The chat Scout is working in stays until it's done: it would only be saved again.
@@ -2411,7 +2423,6 @@ impl Core {
             .name("scout-agent".into())
             .spawn(move || {
                 let r = work(&mut agent, &h);
-                crate::deepseek::release();
                 h.send(Ev::Finished(Box::new(agent), r));
             })
             .expect("spawn agent thread");
@@ -3342,7 +3353,6 @@ impl Core {
             "grok" => c.grok_signed_in || c.grok_key.is_some(),
             "hermes" => c.hermes_signed_in || c.hermes_key.is_some(),
             "kilo" => true,
-            crate::deepseek::PROVIDER => crate::deepseek::enabled(),
             other => c.additional.iter().any(|l| l.id == other),
         }
     }
@@ -3382,9 +3392,6 @@ impl Core {
                 if on {
                     add(p, &m.id, m.free, m.tier);
                 }
-            }
-            if m.id.starts_with("deepseek-web/") {
-                add(crate::deepseek::PROVIDER, &m.id, true, None);
             }
             if let Some((p, _)) = &m.additional {
                 add(p, &m.id, m.free, m.tier);
@@ -3583,7 +3590,7 @@ impl Core {
             ("questions", self.questions_json()),
             ("queue", json!(self.chat.queue.iter().map(|q| json!({ "text": q.text, "files": q.files.len() })).collect::<Vec<_>>())),
             ("steering", json!(steering)),
-            ("sessions", json!(self.sessions.iter().map(|s| {
+            ("sessions", json!(self.sessions_in_order().into_iter().map(|s| {
                 let live = std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == s.id);
                 let (running, waiting) = (live.is_some_and(|c| c.running), live.is_some_and(Chat::waiting));
                 let done = !running && !waiting && self.cfg.done_chats.get(&s.id).is_some_and(|&t| t >= s.updated);
@@ -3785,6 +3792,7 @@ mod tests {
             starred_models: vec![],
             projects: vec![],
             done_chats: HashMap::new(),
+            chat_order: vec![],
             notify_flash: None,
             notify_toast: None,
             discord_presence: false,

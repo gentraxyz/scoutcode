@@ -9,6 +9,20 @@ import { CodeBlock, Icon, IconButton, Popover, ShowDisplay, Spinner, TodoList } 
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** How far a ScoutCode model on Modal has got starting, from the status line api::modal_status_line writes, or null. */
+const modalProgress = (status: string): number | null => {
+  const m = /^Starting .+ on Modal… (\d+)%/.exec(status);
+  return m ? Math.min(100, Number(m[1])) : null;
+};
+
+function ModalBar({ pct }: { pct: number }) {
+  return (
+    <span className="meter" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} style={{ width: 90, flex: 'none' }}>
+      <span style={{ width: `${pct}%`, transition: 'width .6s ease' }} />
+    </span>
+  );
+}
+
 function Todos() {
   const todos = useView('todos');
   const { running } = useView('run');
@@ -502,6 +516,7 @@ function Footer() {
       {running ? (
         <>
           <Spinner size={11} />
+          {modalProgress(status) != null && <ModalBar pct={modalProgress(status)!} />}
           <span className="tiny muted ellipsis">{status || (waiting ? 'Waiting for you' : 'Working…')}</span>
           <span className="tiny dim nowrap">{typing ? '· Enter to queue · Ctrl+Enter to send now' : '· Esc to stop'}</span>
         </>

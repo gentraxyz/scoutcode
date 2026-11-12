@@ -56,7 +56,7 @@ pub static ADDITIONAL: [AdditionalProvider; 5] = [
         name: "DeepSeek API",
         url: "https://api.deepseek.com/v1",
         needs_key: true,
-        note: "DeepSeek's official API, with your own key and credit. Saved on this PC. To use a free chat.deepseek.com account instead, link DeepSeek Web.",
+        note: "DeepSeek's official API, with your own key and credit. Saved on this PC.",
         key_url: "https://platform.deepseek.com/api_keys",
         key_link: "Make a key on DeepSeek's platform",
         key_hint: "sk-…",
@@ -226,6 +226,8 @@ pub struct Config {
     pub projects: Vec<Project>,
     /// Desktop app only: chats marked Done, by id, with when. A chat updated after that is back in Recent.
     pub done_chats: HashMap<String, u64>,
+    /// Desktop app only: chats in the order the user dragged them into, by id. Chats not in it stay above these, newest first.
+    pub chat_order: Vec<String>,
     /// Desktop app only: how to get the user's attention when a turn ends or needs them while the window is in the
     /// background. None until they choose, which the first run asks.
     pub notify_flash: Option<bool>,
@@ -612,6 +614,7 @@ pub fn load_config() -> Config {
         starred_models: s.get("starredModels").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         projects: s.get("desktopProjects").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         done_chats: s.get("desktopDone").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        chat_order: s.get("desktopChatOrder").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         notify_flash: s.get("desktopFlash").and_then(Value::as_bool),
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
         discord_presence: s.get("discordPresence").and_then(Value::as_bool).unwrap_or(true),

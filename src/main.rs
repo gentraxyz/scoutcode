@@ -13,7 +13,7 @@ mod api;
 mod bridge;
 mod config;
 mod copilot;
-mod deepseek;
+mod browser_ext;
 mod core;
 mod delta;
 mod devin;
@@ -110,7 +110,6 @@ fn main() {
             let core = Arc::new(Mutex::new(core::Core::new(app.handle().clone(), tx, waker::Waker::new(wake_tx))));
             app.manage(core.clone());
             std::thread::Builder::new().name("scout-pump".into()).spawn(move || core::pump(core, rx, wake_rx))?;
-            deepseek::init();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Scout")
                 .inner_size(1180.0, 780.0)

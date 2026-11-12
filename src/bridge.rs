@@ -47,6 +47,7 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         skill_search,
         skill_install,
         mcp_save,
+        uncensored_accept,
         mcp_show_file,
         claude_setup_extension,
         claude_setup_start,
@@ -161,6 +162,9 @@ enum Action {
     McpSetEnabled { name: String, on: bool },
     McpRemove { name: String },
     McpReconnect,
+    McpSignIn { name: String },
+    McpSignOut { name: String },
+    McpCancelSignIn,
     CheckUpdates,
     DismissWhatsNew,
     DownloadUpdate,
@@ -307,10 +311,15 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::McpRemove { name } => {
             if let Err(e) = mcp_client::set(None, &name, None) {
                 c.set_status(e);
+            } else {
+                crate::mcp_auth::forget(&name);
             }
             mcp_client::hub().reload(&c.waker(), false);
         }
         Action::McpReconnect => mcp_client::hub().reload(&c.waker(), true),
+        Action::McpSignIn { name } => mcp_client::hub().sign_in(&name, &c.waker()),
+        Action::McpSignOut { name } => mcp_client::hub().sign_out(&name, &c.waker()),
+        Action::McpCancelSignIn => mcp_client::hub().cancel_sign_in(),
         Action::CheckUpdates => c.updater().check_now(),
         Action::DismissWhatsNew => c.dismiss_whats_new(),
         Action::DownloadUpdate => c.updater().download_now(),
@@ -864,10 +873,32 @@ fn mcp_save(core: Shared, form: McpForm) -> Result<(), String> {
         c.env = parse_pairs(&form.env, '=')?;
         (c.url, c.headers) = Default::default();
     }
+    let remote = !c.url.is_empty();
     mcp_client::set(form.editing.as_deref(), &name, Some(c))?;
+    if let Some(old) = form.editing.as_deref().filter(|o| *o != name) {
+        crate::mcp_auth::forget(old);
+    }
+    if remote {
+        // Saved with no token: if the server wants a sign-in, the browser opens for it straight away.
+        hub().sign_in_when_needed(&name);
+    }
     let core = core.lock().unwrap();
     hub().reload(&core.waker(), false);
     core.wake();
+    Ok(())
+}
+
+/// The account agrees to `version` of the uncensored model terms the popup showed. Off the main thread, as it waits
+/// on the network.
+#[tauri::command]
+async fn uncensored_accept(core: Shared<'_>, version: String) -> Result<(), String> {
+    let core = core.inner().clone();
+    let cfg = core.lock().unwrap().scoutcode_cfg();
+    tauri::async_runtime::spawn_blocking(move || crate::api::accept_uncensored(&cfg, &version))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.message)?;
+    core.lock().unwrap().wake();
     Ok(())
 }
 

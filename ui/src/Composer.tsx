@@ -26,8 +26,9 @@ function ModalBar({ pct }: { pct: number }) {
 function Todos() {
   const todos = useView('todos');
   const { running } = useView('run');
-  if (todos.length === 0 || (todos.every((t) => t.status === 'completed') && !running)) return null;
-  const done = todos.filter((t) => t.status === 'completed').length;
+  const finished = (s: string) => s === 'completed' || s === 'cancelled';
+  if (todos.length === 0 || (todos.every((t) => finished(t.status)) && !running)) return null;
+  const done = todos.filter((t) => finished(t.status)).length;
   return (
     <div className="panel">
       <div className="row">

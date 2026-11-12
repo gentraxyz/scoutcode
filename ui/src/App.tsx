@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { act, invoke } from './api';
+import { act, invoke, openExternal } from './api';
 import { AsciiBackdrop } from './AsciiBackdrop';
 import { Composer, PermissionBody } from './Composer';
 import { Dock } from './Dock';
@@ -202,6 +202,81 @@ function DeleteDialog() {
   );
 }
 
+/** A paragraph of the server's terms: text with <a href="https://…">links</a>, drawn without trusting it as HTML. */
+function TermsText({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  const re = /<a href="(https:\/\/[^"]+)">([^<]+)<\/a>/g;
+  let at = 0;
+  for (const m of text.matchAll(re)) {
+    parts.push(text.slice(at, m.index).replace(/<[^>]*>/g, ''));
+    const url = m[1];
+    parts.push(<a key={m.index} href={url} onClick={(e) => { e.preventDefault(); openExternal(url); }}>{m[2]}</a>);
+    at = m.index! + m[0].length;
+  }
+  parts.push(text.slice(at).replace(/<[^>]*>/g, ''));
+  return <p>{parts}</p>;
+}
+
+/**
+ * Picking a model an admin marked uncensored: it needs a ScoutCode account that agreed to the uncensored model terms.
+ * Signed out, this says so and offers the sign-in; signed in, it shows the terms, and agreeing records it on the server
+ * (for the whole account, API keys included) and then picks the model.
+ */
+function UncensoredDialog() {
+  const pending = useUi((u) => u.uncensored);
+  const terms = useView('uncensored');
+  const login = useView('login');
+  const [agreed, setAgreed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setAgreed(false); setError(null); }, [pending]);
+  // Signing in from here carries on to the terms once the new list says so.
+  useEffect(() => {
+    if (pending && terms?.signedIn && terms.accepted) {
+      pending.pick();
+      ui.set({ uncensored: null });
+    }
+  }, [pending, terms?.signedIn, terms?.accepted]);
+  if (!pending) return null;
+  const close = () => ui.set({ uncensored: null });
+  if (!terms?.signedIn) {
+    return (
+      <Modal onClose={close} className="uncensored-dialog">
+        <b className="strong big">Sign in to use {pending.name}</b>
+        <p className="small dim">{pending.name} is an uncensored model. Uncensored models need a ScoutCode account, and agreeing to their terms.</p>
+        <div className="row end">
+          <button type="button" className="button" onClick={close}>Cancel</button>
+          <button type="button" className="button primary" disabled={login.busy} onClick={() => act('browserLogin')}>{login.busy ? 'Signing in…' : 'Sign in with your browser'}</button>
+        </div>
+      </Modal>
+    );
+  }
+  const agree = () => {
+    setBusy(true);
+    setError(null);
+    invoke('uncensored_accept', { version: terms.version })
+      .then(() => { pending.pick(); close(); }, (e) => setError(String(e)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <Modal onClose={close} className="uncensored-dialog">
+      <b className="strong big">{pending.name} is uncensored</b>
+      <div className="uncensored-terms small">
+        {terms.text.map((t, i) => <TermsText key={i} text={t} />)}
+      </div>
+      <label className="row small uncensored-agree">
+        <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+        <span>I'm 18 or older and I agree to these terms. I won't use uncensored models for anything illegal.</span>
+      </label>
+      {error && <div className="small red">{error}</div>}
+      <div className="row end">
+        <button type="button" className="button" onClick={close}>Cancel</button>
+        <button type="button" className="button primary" disabled={!agreed || busy} onClick={agree}>{busy ? 'Saving…' : 'Agree and use it'}</button>
+      </div>
+    </Modal>
+  );
+}
+
 /** A linked chatbot's call that needs the user's OK. It can come while Scout is on something else. */
 function LinkPermission() {
   const { permission } = useView('link');
@@ -372,6 +447,7 @@ export function App() {
       <FloatingMusic />
       <Settings />
       <DeleteDialog />
+      <UncensoredDialog />
       <HideMenu />
       <FolderPicker />
       <LinkPermission />

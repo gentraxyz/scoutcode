@@ -26,6 +26,10 @@ const MAX_DESCRIPTION: usize = 2000;
 /// A session the server has forgotten, which a new `initialize` fixes.
 const EXPIRED: &str = "The server ended the session.";
 const CANCELLED: &str = "Interrupted by the user.";
+/// The server wants a sign-in that Scout doesn't have, or that ran out.
+pub const NEEDS_SIGN_IN: &str = "This server needs you to sign in. Open Settings > MCP servers and press Sign in.";
+/// A 401 on a server Scout may sign in to, before a refresh is tried.
+const UNAUTHORIZED: &str = "unauthorized";
 
 /// One entry of mcp.json. Fields Scout doesn't use, like `type`, are kept when it saves the file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -320,17 +324,40 @@ fn find_program(cmd: &str, env: &BTreeMap<String, String>) -> PathBuf {
 }
 
 struct HttpLink {
+    /// The server's name in mcp.json, which its sign-in is kept under.
+    name: String,
     url: String,
+    /// Whether Scout signs in itself: the user gave no Authorization header.
+    oauth: bool,
     headers: Vec<(String, String)>,
     session: Mutex<Option<String>>,
     protocol: Mutex<Option<String>>,
 }
 
 impl HttpLink {
+    /// Sends with the kept sign-in, refreshing it once if the server turns it down.
     fn post(&self, msg: &Value, timeout: Duration) -> Result<Value, String> {
+        if !self.oauth {
+            return self.post_once(msg, timeout, None);
+        }
+        let token = crate::mcp_auth::token(&self.name, &self.url);
+        let unauthorized = |r: Result<Value, String>| r.map_err(|e| if e == UNAUTHORIZED { NEEDS_SIGN_IN.to_string() } else { e });
+        match self.post_once(msg, timeout, token.as_deref()) {
+            Err(e) if e == UNAUTHORIZED && token.is_some() => match crate::mcp_auth::refresh(&self.name, &self.url) {
+                Ok(t) => unauthorized(self.post_once(msg, timeout, Some(&t))),
+                Err(_) => Err(NEEDS_SIGN_IN.into()),
+            },
+            r => unauthorized(r),
+        }
+    }
+
+    fn post_once(&self, msg: &Value, timeout: Duration, token: Option<&str>) -> Result<Value, String> {
         let mut req = http().post(&self.url).config().timeout_global(Some(timeout)).build().header("Accept", "application/json, text/event-stream");
         for (k, v) in &self.headers {
             req = req.header(k.as_str(), v.as_str());
+        }
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("Bearer {t}"));
         }
         let session = self.session.lock().unwrap().clone();
         if let Some(s) = &session {
@@ -345,7 +372,9 @@ impl HttpLink {
             *self.session.lock().unwrap() = Some(s.to_string());
         }
         match status {
-            401 | 403 => return Err(format!("The server refused access (HTTP {status}). If it takes a token, add it under Headers, like Authorization: Bearer <token>. Signing in with OAuth isn't supported.")),
+            401 if self.oauth => return Err(UNAUTHORIZED.into()),
+            401 | 403 if !self.oauth => return Err(format!("The server refused the token under Headers (HTTP {status}). Check it, or take the Authorization header out to sign in through the browser instead.")),
+            403 => return Err("The server refused access (HTTP 403). Your account may not be allowed to use it; try signing out and in again.".into()),
             404 if session.is_some() => {
                 *self.session.lock().unwrap() = None;
                 return Err(EXPIRED.into());
@@ -519,7 +548,8 @@ fn connect(name: &str, cfg: &ServerConfig) -> Result<(Conn, Vec<Tool>), String> 
         return Err("This server uses the older SSE transport, which Scout doesn't support. Look for a Streamable HTTP address.".into());
     }
     let link = if !cfg.url.is_empty() {
-        Link::Http(Arc::new(HttpLink { url: cfg.url.clone(), headers: cfg.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(), session: Mutex::new(None), protocol: Mutex::new(None) }))
+        let oauth = !cfg.headers.keys().any(|k| k.eq_ignore_ascii_case("authorization"));
+        Link::Http(Arc::new(HttpLink { name: name.to_string(), url: cfg.url.clone(), oauth, headers: cfg.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(), session: Mutex::new(None), protocol: Mutex::new(None) }))
     } else if !cfg.command.is_empty() {
         Link::Stdio(StdioLink::start(cfg)?)
     } else {
@@ -547,6 +577,10 @@ pub enum Status {
     Off,
     Connecting,
     Ready,
+    /// A remote server that wants the user to sign in through the browser.
+    NeedsSignIn,
+    /// Waiting on the browser.
+    SigningIn,
     Failed(String),
 }
 
@@ -558,6 +592,8 @@ struct Server {
     conn: Option<Arc<Conn>>,
     /// Which connection attempt it's waiting for, so one that was replaced can't report in.
     attempt: u64,
+    /// Whether a browser sign-in is kept for it, as of its last connection.
+    signed_in: bool,
 }
 
 /// A server as Settings shows it.
@@ -566,6 +602,8 @@ pub struct ServerView {
     pub cfg: ServerConfig,
     pub status: Status,
     pub tools: Vec<String>,
+    /// Scout has a browser sign-in kept for it.
+    pub signed_in: bool,
 }
 
 #[derive(Default)]
@@ -573,6 +611,10 @@ struct Inner {
     servers: Vec<Server>,
     error: Option<String>,
     attempts: u64,
+    /// Servers just saved from Settings, whose sign-in starts by itself if they turn out to need one.
+    sign_in_on_connect: std::collections::HashSet<String>,
+    /// Bumped to stop the sign-in that's waiting on the browser.
+    sign_in_gen: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -601,34 +643,110 @@ impl Hub {
         let old = std::mem::take(&mut inner.servers);
         for (name, cfg) in file.servers {
             if let Some(s) = old.iter().find(|s| !force && s.name == name && s.cfg == cfg && s.status != Status::Connecting && !matches!(s.status, Status::Failed(_))) {
-                inner.servers.push(Server { name, cfg, status: s.status.clone(), tools: s.tools.clone(), conn: s.conn.clone(), attempt: s.attempt });
+                inner.servers.push(Server { name, cfg, status: s.status.clone(), tools: s.tools.clone(), conn: s.conn.clone(), attempt: s.attempt, signed_in: s.signed_in });
                 continue;
             }
-            inner.attempts += 1;
-            let attempt = inner.attempts;
-            let status = if cfg.disabled { Status::Off } else { Status::Connecting };
-            if !cfg.disabled {
-                let (n, c, ctx) = (name.clone(), cfg.clone(), ctx.clone());
-                std::thread::spawn(move || {
-                    let result = connect(&n, &c);
-                    self.connected(&n, attempt, result);
-                    ctx.request_repaint();
-                });
-            }
-            inner.servers.push(Server { name, cfg, status, tools: vec![], conn: None, attempt });
+            inner.servers.push(Server { name, cfg, status: Status::Off, tools: vec![], conn: None, attempt: 0, signed_in: false });
+            let i = inner.servers.len() - 1;
+            self.start(&mut inner, i, ctx);
         }
     }
 
-    fn connected(&self, name: &str, attempt: u64, result: Result<(Conn, Vec<Tool>), String>) {
+    /// Connects the server at `i` in the background, unless it's turned off.
+    fn start(&'static self, inner: &mut Inner, i: usize, ctx: &crate::waker::Waker) {
+        inner.attempts += 1;
+        let attempt = inner.attempts;
+        let s = &mut inner.servers[i];
+        s.attempt = attempt;
+        s.tools.clear();
+        s.conn = None;
+        s.status = if s.cfg.disabled { Status::Off } else { Status::Connecting };
+        if !s.cfg.disabled {
+            let (n, c, ctx) = (s.name.clone(), s.cfg.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let result = connect(&n, &c);
+                let signed_in = !c.url.is_empty() && crate::mcp_auth::signed_in(&n, &c.url);
+                self.connected(&n, attempt, result, signed_in, &ctx);
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    fn connected(&'static self, name: &str, attempt: u64, result: Result<(Conn, Vec<Tool>), String>, signed_in: bool, ctx: &crate::waker::Waker) {
         let mut inner = self.inner.lock().unwrap();
         let Some(s) = inner.servers.iter_mut().find(|s| s.name == name && s.attempt == attempt) else { return };
+        s.signed_in = signed_in;
         match result {
             Ok((conn, tools)) => {
                 s.conn = Some(Arc::new(conn));
                 s.tools = tools;
                 s.status = Status::Ready;
             }
+            Err(e) if e == NEEDS_SIGN_IN => s.status = Status::NeedsSignIn,
             Err(e) => s.status = Status::Failed(e.chars().take(400).collect()),
+        }
+        let needs = s.status == Status::NeedsSignIn;
+        let auto = inner.sign_in_on_connect.remove(name);
+        if needs && auto {
+            drop(inner);
+            self.sign_in(name, ctx);
+        }
+    }
+
+    /// Starts the browser sign-in for this server if it needs one the moment Settings saves it.
+    pub fn sign_in_when_needed(&self, name: &str) {
+        self.inner.lock().unwrap().sign_in_on_connect.insert(name.to_string());
+    }
+
+    /// Opens the browser to sign in to a remote server, then connects it. Only one sign-in waits at a time.
+    pub fn sign_in(&'static self, name: &str, ctx: &crate::waker::Waker) {
+        let (url, my_gen, gen_now) = {
+            let mut inner = self.inner.lock().unwrap();
+            let gen_now = inner.sign_in_gen.clone();
+            let my_gen = gen_now.fetch_add(1, Ordering::SeqCst) + 1;
+            // A server left waiting by a sign-in this one replaces goes back to asking.
+            for s in inner.servers.iter_mut().filter(|s| s.status == Status::SigningIn) {
+                s.status = Status::NeedsSignIn;
+            }
+            let Some(s) = inner.servers.iter_mut().find(|s| s.name == name && !s.cfg.url.is_empty()) else { return };
+            s.status = Status::SigningIn;
+            (s.cfg.url.clone(), my_gen, gen_now)
+        };
+        let (name, ctx) = (name.to_string(), ctx.clone());
+        ctx.request_repaint();
+        std::thread::spawn(move || {
+            let cancelled = || gen_now.load(Ordering::SeqCst) != my_gen;
+            let result = crate::mcp_auth::sign_in(&name, &url, |_| {}, &cancelled);
+            if cancelled() {
+                return;
+            }
+            let mut inner = self.inner.lock().unwrap();
+            let Some(i) = inner.servers.iter().position(|s| s.name == name && s.cfg.url == url) else { return };
+            match result {
+                Ok(()) => self.start(&mut inner, i, &ctx),
+                Err(e) => inner.servers[i].status = Status::Failed(format!("Sign-in didn't work: {e}").chars().take(400).collect()),
+            }
+            drop(inner);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Stops waiting on the browser.
+    pub fn cancel_sign_in(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.sign_in_gen.fetch_add(1, Ordering::SeqCst);
+        for s in inner.servers.iter_mut().filter(|s| s.status == Status::SigningIn) {
+            s.status = Status::NeedsSignIn;
+        }
+    }
+
+    /// Forgets the server's sign-in and connects it again, which then asks for one.
+    pub fn sign_out(&'static self, name: &str, ctx: &crate::waker::Waker) {
+        crate::mcp_auth::forget(name);
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(i) = inner.servers.iter().position(|s| s.name == name) {
+            inner.servers[i].signed_in = false;
+            self.start(&mut inner, i, ctx);
         }
     }
 
@@ -638,7 +756,17 @@ impl Hub {
 
     pub fn views(&self) -> Vec<ServerView> {
         let inner = self.inner.lock().unwrap();
-        inner.servers.iter().map(|s| ServerView { name: s.name.clone(), cfg: s.cfg.clone(), status: s.status.clone(), tools: s.tools.iter().map(|t| t.name.clone()).collect() }).collect()
+        inner
+            .servers
+            .iter()
+            .map(|s| ServerView {
+                name: s.name.clone(),
+                cfg: s.cfg.clone(),
+                status: s.status.clone(),
+                tools: s.tools.iter().map(|t| t.name.clone()).collect(),
+                signed_in: s.signed_in,
+            })
+            .collect()
     }
 
     /// The tool specs of every connected server, in a steady order so the prompt cache holds.
@@ -672,6 +800,12 @@ impl Hub {
                 }
             }
             Err(e) => {
+                if e == NEEDS_SIGN_IN {
+                    let mut inner = self.inner.lock().unwrap();
+                    if let Some(s) = inner.servers.iter_mut().find(|s| s.tools.iter().any(|t| t.id == id)) {
+                        s.status = Status::NeedsSignIn;
+                    }
+                }
                 let first: String = e.lines().next().unwrap_or("").chars().take(100).collect();
                 ToolResult::err(e, first)
             }
@@ -892,4 +1026,9 @@ mod tests {
         let r = conn.rpc("tools/call", json!({"name": "echo", "arguments": {"message": "hello"}}), &AtomicBool::new(false), Duration::from_secs(60)).unwrap();
         assert!(render(&r).contains("hello"));
     }
+}
+
+#[cfg(test)]
+pub fn connect_for_test(name: &str, cfg: &ServerConfig) -> Result<(), String> {
+    connect(name, cfg).map(|_| ())
 }

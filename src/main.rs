@@ -30,6 +30,7 @@ mod grok;
 mod hermes;
 mod instructions;
 mod mcp;
+mod mcp_auth;
 mod mcp_client;
 mod music;
 mod node;

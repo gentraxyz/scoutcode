@@ -84,12 +84,20 @@ type Drag = {
   settling: boolean;
 };
 
-/** The order a drag would leave the chats in: the dragged one goes where its middle is, among the others' middles. */
+/** The order a drag would leave the chats in. The dragged chat passes another once its leading edge is past that
+ *  one's middle, so half a row is enough, and the first and last places are as easy to reach as any other. */
 function dragOrder(d: Drag): string[] {
-  const me = d.rows.find((r) => r.id === d.id)!;
-  const mid = me.top + me.h / 2 + d.dy;
+  const from = d.rows.findIndex((r) => r.id === d.id);
+  const me = d.rows[from];
+  const top = me.top + d.dy;
+  const bottom = top + me.h;
   const others = d.rows.filter((r) => r.id !== d.id);
-  const at = others.filter((r) => r.top + r.h / 2 < mid).length;
+  let at = 0;
+  others.forEach((r, k) => {
+    const mid = r.top + r.h / 2;
+    // Chats above it stay above until its top edge rises past their middle; ones below come above once its bottom edge passes theirs.
+    if (k < from ? mid < top : mid < bottom) at++;
+  });
   const ids = others.map((r) => r.id);
   ids.splice(at, 0, d.id);
   return ids;
@@ -111,9 +119,19 @@ function ChatList({ done }: { done: boolean }) {
   const put = (d: Drag | null) => { dragRef.current = d; setDrag(d); };
   // The order the last drop left, shown until the saved list comes back from the app.
   const [order, setOrder] = useState<string[] | null>(null);
+  // The one frame after a drop when the rows take their new places: no sliding, or they'd slide by twice the distance.
+  const [instant, setInstant] = useState(false);
   const suppressClick = useRef(false);
   const stopListening = useRef<(() => void) | null>(null);
-  useEffect(() => { setOrder(null); }, [sessions]);
+  // The dropped order is kept until the app's list agrees with it (or chats come or go), so a list sent before the
+  // app saved the new order can't flick the old one back for a moment.
+  const rowKey = rows.map((r) => r.id).join(' ');
+  useEffect(() => {
+    if (!order) return;
+    const now = rowKey ? rowKey.split(' ') : [];
+    const sameSet = now.length === order.length && order.every((id) => byId.has(id));
+    if (!sameSet || now.every((id, i) => id === order[i])) setOrder(null);
+  }, [rowKey]);
   useEffect(() => () => stopListening.current?.(), []);
 
   const shown = order && order.length === rows.length && order.every((id) => byId.has(id)) ? order : rows.map((r) => r.id);
@@ -161,7 +179,12 @@ function ChatList({ done }: { done: boolean }) {
       if (ids.every((x, i) => x === d.rows[i].id)) { put(null); return; }
       put({ ...d, settling: true });
       act('reorderChats', { ids });
-      setTimeout(() => { put(null); setOrder(ids); }, 180);
+      setTimeout(() => {
+        setInstant(true);
+        put(null);
+        setOrder(ids);
+        requestAnimationFrame(() => requestAnimationFrame(() => setInstant(false)));
+      }, 180);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -193,7 +216,7 @@ function ChatList({ done }: { done: boolean }) {
               dragging,
               style: {
                 transform: shift(id) ? `translateY(${shift(id)}px)` : undefined,
-                transition: dragging && !drag?.settling ? 'none' : SLIDE,
+                transition: instant || (dragging && !drag?.settling) ? 'none' : SLIDE,
                 zIndex: dragging ? 2 : undefined,
               },
               onPointerDown: (e) => onPointerDown(id, e),

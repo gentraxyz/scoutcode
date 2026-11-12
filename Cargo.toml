@@ -1,6 +1,6 @@
 [package]
 name = "scout-desktop"
-version = "0.1.25"
+version = "0.1.26"
 edition = "2024"
 description = "Scout: a desktop coding agent for ScoutCode (scoutcode.dev)"
 license = "MIT"
@@ -26,6 +26,8 @@ sha2 = "0.10"
 # Checks that an update was signed by ScoutCode before it's installed.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
+# Signing in to MCP servers: finding their OAuth metadata.
+url = "2"
 getrandom = "0.3"
 portable-pty = "0.9"
 # Voice input: mic capture (transcribed by Deepgram through the server).

@@ -99,6 +99,30 @@ fn tool_output(u: &Value) -> String {
     }
 }
 
+/// A todo list written through a tool call, as OpenCode's `todowrite` (and Claude Code's TodoWrite, if its adapter
+/// doesn't send a plan for it) carries it: `{"todos": [{"content", "status"}, ...]}` in its input or output. OpenCode's
+/// ACP never sends a `plan` update, so this is the only place its list shows up.
+fn todos_of(u: &Value) -> Option<Vec<Todo>> {
+    u.get("rawInput").and_then(todo_list).or_else(|| u.get("rawOutput").and_then(todo_list))
+}
+
+/// `{"todos": [...]}`, or the list itself, or either as JSON text, when every entry has a content and a status.
+pub fn todo_list(v: &Value) -> Option<Vec<Todo>> {
+    let parsed;
+    let v = match v {
+        Value::String(s) => {
+            parsed = serde_json::from_str::<Value>(s).ok()?;
+            &parsed
+        }
+        v => v,
+    };
+    let list = v.get("todos").unwrap_or(v).as_array().filter(|a| !a.is_empty())?;
+    if !list.iter().all(|t| t.get("content").is_some_and(Value::is_string) && t.get("status").is_some_and(Value::is_string)) {
+        return None;
+    }
+    Some(list.iter().map(|e| Todo { content: e["content"].as_str().unwrap_or("").to_string(), status: e["status"].as_str().unwrap_or("pending").to_string() }).collect())
+}
+
 /// What a session/update means for Scout: nothing for most, and both ends of a tool call that arrives finished.
 pub fn updates_of(u: &Value) -> Vec<Msg> {
     let text = |v: &Value| v.pointer("/content/text").and_then(Value::as_str).unwrap_or("").to_string();
@@ -110,7 +134,7 @@ pub fn updates_of(u: &Value) -> Vec<Msg> {
     match u.get("sessionUpdate").and_then(Value::as_str).unwrap_or("") {
         "agent_message_chunk" => vec![Msg::Text(text(u))],
         "agent_thought_chunk" => vec![Msg::Reasoning(text(u))],
-        "tool_call" => std::iter::once(Msg::ToolStart { id: s("toolCallId"), kind: s("kind"), title: s("title"), input: u.get("rawInput").cloned().unwrap_or(json!({})) }).chain(end(u)).collect(),
+        "tool_call" => std::iter::once(Msg::ToolStart { id: s("toolCallId"), kind: s("kind"), title: s("title"), input: u.get("rawInput").cloned().unwrap_or(json!({})) }).chain(end(u)).chain(todos_of(u).map(Msg::Todos)).collect(),
         "tool_call_update" => {
             let mut msgs = Vec::new();
             let title = s("title");
@@ -121,6 +145,9 @@ pub fn updates_of(u: &Value) -> Vec<Msg> {
             }
             if let Some(e) = end(u) {
                 msgs.push(e);
+            }
+            if let Some(t) = todos_of(u) {
+                msgs.push(Msg::Todos(t));
             }
             msgs
         }
@@ -446,6 +473,12 @@ mod tests {
         assert!(matches!(&updates_of(&refined)[..], [Msg::ToolStart { id, kind, title, input }] if id == "c1" && kind == "execute" && title == "cargo test" && input.get("command").and_then(Value::as_str) == Some("cargo test")));
         let end = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "failed", "content": [{"type": "content", "content": {"type": "text", "text": "no"}}]});
         assert!(matches!(&updates_of(&end)[..], [Msg::ToolEnd { failed: true, text, .. }] if text == "no"));
+        // OpenCode's todowrite: the list is in the call itself, as there's no plan update.
+        let todo = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "title": "todowrite", "kind": "other", "status": "completed", "rawInput": {"todos": [{"content": "a", "status": "completed", "priority": "high"}, {"content": "b", "status": "in_progress"}]}, "rawOutput": {"output": "[]"}});
+        assert!(matches!(&updates_of(&todo)[..], [Msg::ToolStart { .. }, Msg::ToolEnd { .. }, Msg::Todos(t)] if t.len() == 2 && t[1].status == "in_progress"));
+        let text_out = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "rawOutput": "[{\"content\":\"x\",\"status\":\"pending\"}]"});
+        assert!(updates_of(&text_out).iter().any(|m| matches!(m, Msg::Todos(t) if t[0].content == "x")));
+        assert!(!updates_of(&json!({"sessionUpdate": "tool_call", "toolCallId": "c", "rawInput": {"command": "ls"}})).iter().any(|m| matches!(m, Msg::Todos(_))));
     }
 
     #[test]

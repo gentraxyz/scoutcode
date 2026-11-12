@@ -4,6 +4,15 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.1.26
+Sign in to MCP servers through your browser, see how fast each reply was, and steadier chat reordering.
+
+- Remote MCP servers that need a sign-in now open your browser for it, so you don't have to find a token and paste it under Headers. Scout keeps the sign-in and renews it on its own; Settings > MCP servers has Sign in and Sign out buttons. A token under Headers still works as before.
+- Hover over a finished reply to see how fast it was written, in tokens a second, next to the copy button.
+- Dragging chats to reorder them now works for the first and last places too, and they no longer jump when you let go.
+- To-do lists from OpenCode now show in the Tasks panel above the message box, like Scout's own.
+- Models marked uncensored ask you to sign in and agree to their terms the first time you pick one.
+
 ## 0.1.25
 ScoutMote and the chatbot link go easier on scoutcode.dev, so the site stays fast for everyone.
 

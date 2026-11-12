@@ -329,6 +329,8 @@ pub struct ModelInfo {
     pub openrouter_free: bool,
     /// The Intelligence Index an admin set on the server, from 1 (light) to 3 (frontier). None: the app guesses from the name.
     pub intelligence: Option<u8>,
+    /// An admin marked it uncensored: it needs an account that agreed to the uncensored model terms (see UncensoredTerms).
+    pub uncensored: bool,
 }
 
 /// The price tier for USD per million tokens, on the server's scale: what 10k tokens in and 1k out cost. None when free or unknown.
@@ -387,6 +389,7 @@ impl ModelInfo {
             openrouter_tier: None,
             openrouter_free: false,
             intelligence: m.get("intelligence").and_then(Value::as_u64).filter(|n| (1..=3).contains(n)).map(|n| n as u8),
+            uncensored: m.get("uncensored").and_then(Value::as_bool) == Some(true),
         })
     }
 
@@ -548,6 +551,7 @@ impl ModelInfo {
             "kiloFree": self.kilo_free, "kiloTier": self.kilo_tier, "copilotId": self.copilot_id, "devinId": self.devin_id, "kiroId": self.kiro_id,
             "codexId": self.codex_id, "claudeId": self.claude_id, "grokId": self.grok_id, "hermesId": self.hermes_id, "additional": self.additional, "hosted": self.hosted, "free": self.free,
             "tier": self.tier, "openrouterTier": self.openrouter_tier, "openrouterFree": self.openrouter_free, "intelligence": self.intelligence,
+            "uncensored": self.uncensored,
         })
     }
 
@@ -596,6 +600,7 @@ impl ModelInfo {
             openrouter_tier: n("openrouterTier").map(|t| t as u8),
             openrouter_free: b("openrouterFree").unwrap_or(false),
             intelligence: n("intelligence").map(|t| t as u8),
+            uncensored: b("uncensored").unwrap_or(false),
         })
     }
 }
@@ -1373,6 +1378,10 @@ pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), Api
     if let Some(Value::Object(levels)) = body.get("intelligence") {
         set_intelligence(levels.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64().filter(|n| (1..=3).contains(n))? as u8))).collect());
     }
+    // Missing on a server from before uncensored models; none are marked then either.
+    if let Some(t) = body.get("uncensored_terms") {
+        set_uncensored_terms(t);
+    }
     // Missing on a server from before Dreaming, which leaves the saved model alone.
     if let Some(m) = body.get("dreaming_model") {
         crate::dream::set_model(m.as_str());
@@ -1387,6 +1396,47 @@ pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), Api
         *cold_starts().lock().unwrap() = a.iter().filter(|m| m.get("cold_start").and_then(Value::as_bool) == Some(true)).filter_map(|m| m.get("id").and_then(Value::as_str).map(String::from)).collect();
     }
     Ok((models, user))
+}
+
+/// What using a model marked uncensored needs, from `uncensored_terms` in /v1/models: an account (`signed_in`), and
+/// agreeing to these terms (`accepted`), which the window asks for in a popup the first time one is picked.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UncensoredTerms {
+    pub version: String,
+    pub text: Vec<String>,
+    pub signed_in: bool,
+    pub accepted: bool,
+}
+
+fn uncensored_cell() -> &'static Mutex<Option<UncensoredTerms>> {
+    static CELL: OnceLock<Mutex<Option<UncensoredTerms>>> = OnceLock::new();
+    CELL.get_or_init(Default::default)
+}
+
+fn set_uncensored_terms(v: &Value) {
+    let Some(version) = v.get("version").and_then(Value::as_str) else { return };
+    let text = v.get("text").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+    let flag = |k: &str| v.get(k).and_then(Value::as_bool) == Some(true);
+    *uncensored_cell().lock().unwrap() = Some(UncensoredTerms { version: version.to_string(), text, signed_in: flag("signed_in"), accepted: flag("accepted") });
+}
+
+/// The uncensored model terms as the server last gave them. None before the model list has loaded.
+pub fn uncensored_terms() -> Option<UncensoredTerms> {
+    uncensored_cell().lock().unwrap().clone()
+}
+
+/// The account agrees to `version` of the uncensored model terms: `POST /v1/uncensored`. The server refuses a version
+/// that isn't its current one, so nobody agrees to wording they weren't shown.
+pub fn accept_uncensored(cfg: &Config, version: &str) -> Result<(), ApiError> {
+    let req = http().post(&format!("{}/uncensored", cfg.base_url)).config().timeout_global(Some(Duration::from_secs(20))).build();
+    let res = auth(req, cfg)?.send_json(serde_json::json!({ "version": version })).map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().read_json().map_err(transport)?;
+    set_uncensored_terms(&body);
+    Ok(())
 }
 
 /// ScoutCode's models that run on its own Modal GPUs (`cold_start` in /v1/models): they can take minutes to start.

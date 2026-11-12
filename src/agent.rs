@@ -1630,10 +1630,21 @@ impl Agent {
                     }
                 }
                 CliMsg::ToolEnd { id, failed, text: out } => {
-                    let Some((tool_name, label, input, _kind)) = open.remove(&id) else { continue };
+                    let Some((mut tool_name, label, input, _kind)) = open.remove(&id) else { continue };
                     said = true;
-                    let summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
-                    h.send(Ev::ToolResult { id: id.clone(), result: ToolResult { output: out.clone(), is_error: failed, summary: Some(summary), display: None } });
+                    let mut summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
+                    let mut display = None;
+                    // Its own todo tool (OpenCode's todowrite) shows as Scout's todo list, not as a call with JSON in it.
+                    if let Some(todos) = (!failed).then(|| crate::acp::todo_list(&input)).flatten() {
+                        let done = todos.iter().filter(|t| t.status == "completed").count();
+                        summary = format!("{done}/{} done", todos.len());
+                        tool_name = "todo_write".into();
+                        if main {
+                            h.send(Ev::ToolCall { id: id.clone(), name: tool_name.clone(), label: String::new() });
+                        }
+                        display = Some(Display::Todos(todos));
+                    }
+                    h.send(Ev::ToolResult { id: id.clone(), result: ToolResult { output: out.clone(), is_error: failed, summary: Some(summary), display } });
                     let call = ToolCall { id: id.clone(), kind: "function".into(), extra_content: None, function: api::FunctionCall { name: tool_name, arguments: input.to_string() } };
                     self.push_assistant((!text.is_empty()).then(|| std::mem::take(&mut text)), Some(vec![call]));
                     self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { label } else { out }) });

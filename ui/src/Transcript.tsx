@@ -193,6 +193,11 @@ function Assistant({ item, at, editable, onRetry }: { item: Extract<Item, { kind
           ) : <div />}
           {item.text && (
             <div className="assistant-actions">
+              {item.tps != null && item.tps > 0 && (
+                <span className="assistant-tps tiny dim" title="Average speed of this reply, from its first word to its last (about 4 characters a token)">
+                  {item.tps >= 100 ? Math.round(item.tps) : item.tps.toFixed(1)} tok/s
+                </span>
+              )}
               <CopyIconButton text={item.text} size={24} />
               {editable && canRetry && (
                 <IconButton icon="refresh" tip="Retry" size={24} onClick={onRetry} />

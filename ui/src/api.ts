@@ -17,7 +17,7 @@ export type AgentStep = { tool: string; label: string; text: string; summary: st
 export type ToolResult = { isError: boolean; summary: string | null; display: Display };
 export type Item =
   | { id: number; kind: 'user'; text: string; files: string[] }
-  | { id: number; kind: 'assistant'; text: string; reasoning: string; model?: string | null; provider?: string | null }
+  | { id: number; kind: 'assistant'; text: string; reasoning: string; model?: string | null; provider?: string | null; tps?: number | null }
   | { id: number; kind: 'tool'; name: string; label: string; progress: string; result: ToolResult | null; steps?: AgentStep[] }
   | { id: number; kind: 'notice' | 'error' | 'outOfCredit'; text: string }
   | { id: number; kind: 'fallbackSetup'; text: string; key: string; provider: string };
@@ -48,7 +48,12 @@ export type Model = {
   openrouterFree: boolean;
   /** The Intelligence Index an admin set on the server (1–3); null when the app guesses it from the name. */
   intelligence: number | null;
+  /** An admin marked it uncensored: it needs an account that agreed to the uncensored model terms. */
+  uncensored: boolean;
 };
+
+/** What a model marked uncensored needs, from the server: an account, and agreeing to these terms (paragraphs, may hold links). */
+export type UncensoredTerms = { version: string; text: string[]; signedIn: boolean; accepted: boolean };
 
 export type Permission = { tool: string; label: string; preview: Display | null; prefix: string | null; reason: string | null };
 export type Question = { question: string; header: string; multiSelect: boolean; options: { label: string; description: string }[] };
@@ -97,7 +102,7 @@ export type LinkEdit = { path: string; added: number; removed: number; created: 
 export type LinkCall = { tool: string; label: string; ok: boolean; at: number; edits: LinkEdit[] };
 
 export type McpServer = {
-  name: string; summary: string; disabled: boolean; state: 'off' | 'connecting' | 'ready' | 'failed'; error: string | null; tools: string[];
+  name: string; summary: string; disabled: boolean; state: 'off' | 'connecting' | 'ready' | 'signIn' | 'signingIn' | 'failed'; error: string | null; tools: string[]; signedIn: boolean;
   form: { remote: boolean; command: string; args: string; env: string; url: string; headers: string };
 };
 export type UpdateStatus =
@@ -211,6 +216,8 @@ export type View = {
   /** The releases since the version that ran before this one, newest first. Empty unless the app was just updated. */
   whatsNew: { version: string; summary: string; changelog: string }[];
   mcp: { error: string | null; servers: McpServer[] };
+  /** Null until ScoutCode's model list has loaded. */
+  uncensored: UncensoredTerms | null;
 };
 
 export type Statics = {

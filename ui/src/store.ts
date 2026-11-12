@@ -40,6 +40,8 @@ export const ui = createStore({
   editorDirty: false,
   settings: null as SettingsTab | null,
   deleting: null as { id: string; title: string } | null,
+  /** A model marked uncensored was picked before the account could use it: the popup asks, then `pick` picks it. */
+  uncensored: null as { name: string; pick: () => void } | null,
   renaming: null as string | null,
   /** The folder picker is up, to add a project. */
   pickingFolder: false,

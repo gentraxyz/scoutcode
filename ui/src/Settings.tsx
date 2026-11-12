@@ -1212,7 +1212,9 @@ function McpStateLine(s: McpServer): string {
   switch (s.state) {
     case 'off': return 'Off';
     case 'connecting': return 'Connecting…';
-    case 'ready': return `Connected · ${s.tools.length} tool${s.tools.length === 1 ? '' : 's'}`;
+    case 'ready': return `Connected${s.signedIn ? ' · signed in' : ''} · ${s.tools.length} tool${s.tools.length === 1 ? '' : 's'}`;
+    case 'signIn': return 'Needs you to sign in';
+    case 'signingIn': return 'Waiting for you to sign in, in your browser…';
     case 'failed': return `Couldn't connect: ${s.error}`;
   }
 }
@@ -1235,6 +1237,10 @@ function Mcp() {
       {servers.map((s) => (
         <div key={s.name} className="stack">
           <SettingRow title={s.name} sub={`${s.summary}\n${McpStateLine(s)}`}>
+            {s.state === 'signIn' && <button type="button" className="button primary" onClick={() => act('mcpSignIn', { name: s.name })}>Sign in</button>}
+            {s.state === 'signingIn' && <button type="button" className="button" onClick={() => act('mcpCancelSignIn')}>Cancel sign-in</button>}
+            {s.state === 'failed' && s.form.remote && !/^authorization\s*:/im.test(s.form.headers) && <button type="button" className="button" onClick={() => act('mcpSignIn', { name: s.name })}>Sign in</button>}
+            {s.signedIn && s.state !== 'signingIn' && <button type="button" className="button ghost" onClick={() => act('mcpSignOut', { name: s.name })}>Sign out</button>}
             <button type="button" className="button" onClick={() => { setFormError(null); setForm({ ...s.form, editing: s.name, name: s.name }); }}>Edit</button>
             <button type="button" className="button ghost" onClick={() => act('mcpRemove', { name: s.name })}>Remove</button>
             <Toggle label={`Turn ${s.name} on or off`} on={!s.disabled} onChange={(on) => act('mcpSetEnabled', { name: s.name, on })} />
@@ -1259,7 +1265,7 @@ function Mcp() {
           {form.remote ? (
             <>
               {field('URL (Streamable HTTP)', 'url', 'https://example.com/mcp')}
-              {field("Headers, one per line. Signing in with OAuth isn't supported, so use a token.", 'headers', 'Authorization: Bearer <token>', 2)}
+              {field('Headers, one per line (optional). Leave out Authorization and Scout signs in through your browser if the server asks.', 'headers', 'Authorization: Bearer <token>', 2)}
             </>
           ) : (
             <>

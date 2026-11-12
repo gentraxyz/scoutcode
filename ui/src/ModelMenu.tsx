@@ -4,7 +4,7 @@ import { act, tokens, type AgentRouteStep, type AgentRouter, type Model, type Mo
 import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { chatbotConnected, ChatbotPage, CHATBOT_ONLY_PAGES, isBotPage } from './Chatbots';
 import { LocalSetup } from './Local';
-import { core, useCore, useView } from './store';
+import { core, ui, useCore, useView } from './store';
 import { Icon, IconButton, Link, Popover, Star, Switch } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
@@ -229,6 +229,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const cfg = useView('cfg');
   const starred = useView('starred');
   const current = useView('model');
+  const uncensored = useView('uncensored');
   const loading = useView('modelsLoading');
   const additionalErrors = useView('additionalErrors');
   const kiroError = useView('kiroModelsError');
@@ -438,10 +439,17 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
                   const left = menu.right + 8 + 284 <= window.innerWidth ? menu.right + 8 : menu.left - 8 - 284;
                   setHover({ m, top: Math.max(8, Math.min(row.top, window.innerHeight - 240)), left });
                 }}
-                onClick={() => { if (onPick) onPick(r.key, r.provider); else act('chooseModel', { key: r.key, provider: r.provider }); close(); }}
+                onClick={() => {
+                  const pick = () => { if (onPick) onPick(r.key, r.provider); else act('chooseModel', { key: r.key, provider: r.provider }); };
+                  // An uncensored model needs an account that agreed to its terms: the popup asks first, then picks it.
+                  if (r.provider === 'scoutcode' && m.uncensored && !(uncensored?.signedIn && uncensored.accepted)) ui.set({ uncensored: { name: r.name, pick } });
+                  else pick();
+                  close();
+                }}
               >
                 <button type="button" className={`star ${on ? 'on' : ''}`} title={on ? 'Unstar' : 'Star'} onClick={(e) => { e.stopPropagation(); act('toggleStar', { id: r.star }); }}><Star on={on} /></button>
                 <span className="grow ellipsis">{r.name}</span>
+                {r.provider === 'scoutcode' && m.uncensored && <span className="badge warn" title="Uncensored: needs an account that agreed to the uncensored model terms">18+</span>}
                 <IntelBars level={intelligence(m)} />
                 {free ? <span className="badge">Free</span> : tier ? <span className="tiny dim">{'$'.repeat(tier)}</span> : null}
                 {logo(r.provider) && <img className="logo row-logo" src={logo(r.provider)} width={13} height={13} alt="" />}

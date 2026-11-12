@@ -1,5 +1,6 @@
 //! Sign in through the browser instead of pasting an API key (OAuth with PKCE, on a loopback port).
 //! The token spends the account's desktop credit and can only use the models admins approved for the desktop app.
+//! The loopback and PKCE parts are shared with signing in to MCP servers (see mcp_auth.rs).
 
 use crate::config::Config;
 use base64::Engine;
@@ -83,30 +84,39 @@ fn page(title: &str, text: &str) -> String {
     format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
 }
 
-/// Opens the browser at the sign-in page and waits for the user to approve. `on_url` gets the address in case the browser didn't open.
-/// Returns the token and the username.
-pub fn browser_login(cfg: &Config, on_url: impl FnOnce(&str)) -> Result<(String, Option<String>), String> {
+/// A PKCE verifier and its S256 challenge.
+pub fn pkce() -> (String, String) {
     let verifier = random(32);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let state = random(16);
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let redirect = format!("http://127.0.0.1:{port}/callback");
-    let host = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
-    let site = cfg.base_url.trim_end_matches("/v1");
-    let url = format!(
-        "{site}/oauth/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&code_challenge={challenge}&code_challenge_method=S256&state={state}&device={}",
-        encode(&redirect),
-        encode(&host.chars().take(40).collect::<String>())
-    );
-    on_url(&url);
-    open_browser(&url);
+    (verifier, challenge)
+}
 
+pub fn new_state() -> String {
+    random(16)
+}
+
+/// A loopback port for the browser to come back to, and the redirect address on it. `preferred` is tried first, so a
+/// client registered for that exact address can be used again.
+pub fn loopback(preferred: Option<u16>) -> Result<(TcpListener, String), String> {
+    let listener = match preferred.and_then(|p| TcpListener::bind(("127.0.0.1", p)).ok()) {
+        Some(l) => l,
+        None => TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?,
+    };
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    Ok((listener, format!("http://127.0.0.1:{port}/callback")))
+}
+
+/// Waits up to five minutes for the browser to come back to `/callback` with a code for `state`, and tells the tab how
+/// that went. `cancelled` stops it early.
+pub fn wait_for_code(listener: &TcpListener, state: &str, cancelled: &dyn Fn() -> bool) -> Result<String, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(300);
-    let code = loop {
+    loop {
         if Instant::now() > deadline {
             return Err("Timed out waiting for the browser sign-in.".into());
+        }
+        if cancelled() {
+            return Err("Sign-in was cancelled.".into());
         }
         let (mut stream, _) = match listener.accept() {
             Ok(s) => s,
@@ -130,7 +140,7 @@ pub fn browser_login(cfg: &Config, on_url: impl FnOnce(&str)) -> Result<(String,
             let _ = stream.write_all(page("Not signed in", msg).as_bytes());
             Err(msg.to_string())
         };
-        if get("state").as_deref() != Some(state.as_str()) {
+        if get("state").as_deref() != Some(state) {
             return fail(stream, "The sign-in answer did not match this request. Try again.");
         }
         if get("error").is_some() {
@@ -138,8 +148,26 @@ pub fn browser_login(cfg: &Config, on_url: impl FnOnce(&str)) -> Result<(String,
         }
         let Some(c) = get("code") else { return fail(stream, "The browser sent no code.") };
         let _ = stream.write_all(page("Signed in", "You can close this tab and go back to Scout.").as_bytes());
-        break c;
-    };
+        return Ok(c);
+    }
+}
+
+/// Opens the browser at the sign-in page and waits for the user to approve. `on_url` gets the address in case the browser didn't open.
+/// Returns the token and the username.
+pub fn browser_login(cfg: &Config, on_url: impl FnOnce(&str)) -> Result<(String, Option<String>), String> {
+    let (verifier, challenge) = pkce();
+    let state = new_state();
+    let (listener, redirect) = loopback(None)?;
+    let host = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
+    let site = cfg.base_url.trim_end_matches("/v1");
+    let url = format!(
+        "{site}/oauth/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&code_challenge={challenge}&code_challenge_method=S256&state={state}&device={}",
+        encode(&redirect),
+        encode(&host.chars().take(40).collect::<String>())
+    );
+    on_url(&url);
+    open_browser(&url);
+    let code = wait_for_code(&listener, &state, &|| false)?;
 
     let form = format!(
         "grant_type=authorization_code&client_id={CLIENT_ID}&code={}&code_verifier={verifier}&redirect_uri={}",

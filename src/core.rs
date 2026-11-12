@@ -20,7 +20,8 @@ use tauri::{AppHandle, Emitter, Manager};
 pub enum ItemKind {
     /// What the user typed, and the files they attached.
     User { text: String, files: Vec<String> },
-    Assistant { text: String, reasoning: String, model: Option<String>, provider: Option<String> },
+    /// `tps` is how fast it was written, in tokens a second (estimated from its length), once it's finished.
+    Assistant { text: String, reasoning: String, model: Option<String>, provider: Option<String>, tps: Option<f32> },
     Tool { name: String, label: String, progress: String, result: Option<ToolResult>, steps: Vec<tools::AgentStep> },
     Notice(String),
     Error(String),
@@ -133,6 +134,8 @@ struct Chat {
     reset: bool,
     /// Index of the assistant item being streamed into.
     streaming: Option<usize>,
+    /// When the streamed item's first and latest text came, and how many characters it has had.
+    stream_timing: Option<(std::time::Instant, std::time::Instant, usize)>,
     partial: String,
     tool_index: HashMap<String, usize>,
     running: bool,
@@ -196,6 +199,7 @@ impl Chat {
             changed: BTreeSet::new(),
             reset: true,
             streaming: None,
+            stream_timing: None,
             partial: String::new(),
             tool_index: HashMap::new(),
             running: false,
@@ -553,7 +557,7 @@ fn todos_json(todos: &[Todo]) -> Value {
 fn item_json(item: &Item) -> Value {
     match &item.kind {
         ItemKind::User { text, files } => json!({ "id": item.id, "kind": "user", "text": text, "files": files }),
-        ItemKind::Assistant { text, reasoning, model, provider } => json!({ "id": item.id, "kind": "assistant", "text": text, "reasoning": reasoning, "model": model, "provider": provider }),
+        ItemKind::Assistant { text, reasoning, model, provider, tps } => json!({ "id": item.id, "kind": "assistant", "text": text, "reasoning": reasoning, "model": model, "provider": provider, "tps": tps }),
         ItemKind::Tool { name, label, progress, result, steps } => {
             let result = result.as_ref().map(|r| {
                 let display = r.display.clone().unwrap_or_else(|| {
@@ -589,7 +593,7 @@ fn model_json(m: &ModelInfo) -> Value {
         "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id, "opencodeId": m.opencode_id,
         "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "codexId": m.codex_id, "claudeId": m.claude_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
         "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier, "openrouterFree": m.openrouter_free,
-        "intelligence": m.intelligence,
+        "intelligence": m.intelligence, "uncensored": m.uncensored,
     })
 }
 
@@ -623,7 +627,7 @@ fn rebuild(s: &Session, next_id: &mut u64) -> Vec<Item> {
                 if let Some(c) = content.as_ref().filter(|c| !c.is_empty()) {
                     let m = model.clone().or_else(|| (!s.model.is_empty()).then(|| s.model.clone()));
                     let p = provider.clone().or_else(|| s.provider.clone());
-                    kinds.push(ItemKind::Assistant { text: c.clone(), reasoning: String::new(), model: m, provider: p });
+                    kinds.push(ItemKind::Assistant { text: c.clone(), reasoning: String::new(), model: m, provider: p, tps: None });
                 }
                 for c in tool_calls.iter().flatten() {
                     let args: Value = serde_json::from_str(&c.function.arguments).unwrap_or_default();
@@ -907,7 +911,7 @@ impl Core {
         match ev {
             Ev::ForChat(key, ev) => self.handle_for(key, *ev),
             Ev::RequestStart => {
-                self.chat.streaming = None;
+                self.end_stream();
                 self.chat.partial.clear();
                 self.chat.status.clear();
             }
@@ -916,18 +920,20 @@ impl Core {
                 if let ItemKind::Assistant { text, .. } = self.assistant_item() {
                     text.push_str(&t);
                 }
+                self.timed(t.chars().count());
             }
             Ev::Reasoning(t) => {
                 if let ItemKind::Assistant { reasoning, .. } = self.assistant_item() {
                     reasoning.push_str(&t);
                 }
+                self.timed(t.chars().count());
             }
             Ev::AssistantDone => {
-                self.chat.streaming = None;
+                self.end_stream();
                 self.chat.partial.clear();
             }
             Ev::ToolCall { id, name, label } => {
-                self.chat.streaming = None;
+                self.end_stream();
                 if let Some(&i) = self.chat.tool_index.get(&id) {
                     if let Some(ItemKind::Tool { name: n, label: l, .. }) = self.chat.items.get_mut(i).map(|item| &mut item.kind) {
                         *n = name;
@@ -1001,7 +1007,7 @@ impl Core {
                 self.chat.questions = Some(PendingQuestions { questions, reply });
             }
             Ev::Steered(msgs) => {
-                self.chat.streaming = None;
+                self.end_stream();
                 for (text, files) in msgs {
                     self.push(ItemKind::User { text, files });
                 }
@@ -1066,7 +1072,7 @@ impl Core {
                 self.chat.running = false;
                 self.chat.stopping = false;
                 self.chat.stopped = stopped;
-                self.chat.streaming = None;
+                self.end_stream();
                 self.chat.partial.clear();
                 self.chat.status.clear();
                 self.chat.permission = None;
@@ -1254,6 +1260,29 @@ impl Core {
         }
     }
 
+    /// Notes that `chars` more characters were just streamed into the assistant item.
+    fn timed(&mut self, chars: usize) {
+        let now = std::time::Instant::now();
+        let t = self.chat.stream_timing.get_or_insert((now, now, 0));
+        t.1 = now;
+        t.2 += chars;
+    }
+
+    /// The assistant item is finished: it gets its speed, from its first text to its last, at about four characters a
+    /// token. One that came all at once has no speed to show.
+    fn end_stream(&mut self) {
+        let (streaming, timing) = (self.chat.streaming.take(), self.chat.stream_timing.take());
+        let (Some(i), Some((first, last, chars))) = (streaming, timing) else { return };
+        let secs = last.duration_since(first).as_secs_f32();
+        if secs < 0.25 || chars < 40 {
+            return;
+        }
+        if let Some(ItemKind::Assistant { tps, .. }) = self.chat.items.get_mut(i).map(|it| &mut it.kind) {
+            *tps = Some(((chars as f32 / 4.0) / secs * 10.0).round() / 10.0);
+            self.chat.changed.insert(i);
+        }
+    }
+
     fn assistant_item(&mut self) -> &mut ItemKind {
         if self.chat.streaming.is_none() {
             self.chat.streaming = Some(self.chat.items.len());
@@ -1262,6 +1291,7 @@ impl Core {
                 reasoning: String::new(),
                 model: Some(self.current_key()),
                 provider: Some(self.chat.provider.clone()),
+                tps: None,
             });
         }
         let i = self.chat.streaming.unwrap();
@@ -2957,6 +2987,11 @@ impl Core {
         config::save_config(m);
     }
 
+    /// The settings for a request to ScoutCode's own server, whichever provider the chat uses.
+    pub fn scoutcode_cfg(&self) -> Config {
+        self.cfg.for_provider("scoutcode")
+    }
+
     /// The settings for ScoutCode's own server, for a request made outside the agent.
     pub fn scout_cfg(&self) -> Config {
         self.cfg.clone()
@@ -3506,13 +3541,16 @@ impl Core {
                     S::Off => ("off", None),
                     S::Connecting => ("connecting", None),
                     S::Ready => ("ready", None),
+                    S::NeedsSignIn => ("signIn", None),
+                    S::SigningIn => ("signingIn", None),
                     S::Failed(e) => ("failed", Some(e.clone())),
                 };
-                json!({ "name": s.name, "summary": s.cfg.summary(), "disabled": s.cfg.disabled, "state": state, "error": error, "tools": s.tools,
+                json!({ "name": s.name, "summary": s.cfg.summary(), "disabled": s.cfg.disabled, "state": state, "error": error, "tools": s.tools, "signedIn": s.signed_in,
                     "form": { "remote": !s.cfg.url.is_empty(), "command": s.cfg.command, "args": join_args(&s.cfg.args), "env": join_pairs(&s.cfg.env, "="), "url": s.cfg.url, "headers": join_pairs(&s.cfg.headers, ": ") } })
             })
             .collect();
         vec![
+            ("uncensored", json!(crate::api::uncensored_terms())),
             ("cfg", json!({
                 "loginNeeded": login_needed,
                 "team": cfg.team.as_ref().map(|t| json!({ "name": t.name, "role": t.role, "providers": t.providers.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), "acp": t.acp })),

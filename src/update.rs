@@ -35,6 +35,10 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The git commit this exe was built from, with "-dirty" when it had uncommitted changes (see build.rs).
 pub const COMMIT: &str = env!("SCOUT_COMMIT");
+/// The commit's text kept whole in the binary, where the release script looks for it. Without this, x86-64 builds can
+/// write the constant out piecemeal in instructions, and the text isn't found.
+#[used]
+static COMMIT_IN_BINARY: &str = COMMIT;
 
 #[derive(Deserialize, Clone)]
 struct Manifest {

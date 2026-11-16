@@ -37,8 +37,7 @@ computer are Rust, and the window is React in the system's WebView2.
   read too.
 - **Skills and MCP.** Install skills from a folder, a `.zip` or [skills.sh](https://skills.sh), and mention them with `@`.
   Connect MCP servers over stdio or Streamable HTTP with the usual `mcpServers` config.
-- **Attachments and voice.** Drop files or images on the window, or pick files with `@`. Dictate with the mic or
-  Ctrl+Shift+Space.
+- **Attachments.** Drop files or images on the window, or pick files with `@`.
 - **Long sessions.** Queue messages while Scout works, or steer the running turn. Automatic pruning and compaction keep
   long chats going, and several chats can run at once.
 - **Self-updating.** Signed updates download in the background and install on restart.
@@ -80,7 +79,6 @@ Scout.exe --resume <session-id>    # reopen a saved chat (ids are file names in 
 | Ctrl+N | New chat |
 | Ctrl+F | Find in the open chat |
 | Ctrl+\` | Toggle the terminal |
-| Ctrl+Shift+Space | Start or stop dictation |
 | Ctrl+S | Save in the editor |
 
 In the message box, type `/` to pick a command: `/plan <task>` (Scout writes a plan before it starts), `/compact [focus]`,
@@ -100,8 +98,7 @@ Everything stays on your computer in `~/.scoutcode` (`%USERPROFILE%\.scoutcode`)
 
 Uninstalling keeps this folder, so your chats and sign-in survive a reinstall. Delete it to remove them.
 
-What leaves your computer: messages and the files you attach go to the model provider you pick. Voice recordings go to
-ScoutCode's server, which transcribes them with Deepgram. Update checks go to scoutcode.dev.
+What leaves your computer: messages and the files you attach go to the model provider you pick. Update checks go to scoutcode.dev.
 
 ### Environment variables
 

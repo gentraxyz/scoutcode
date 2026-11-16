@@ -61,6 +61,9 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         file_read,
         file_save,
         file_mtime,
+        terminal_prewarm,
+        terminal_suggestions,
+        terminal_list,
         terminal_start,
         terminal_write,
         terminal_resize,
@@ -70,6 +73,7 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         delta_local_write,
         delta_local_delete,
         delta_cloud,
+        epsilon_cloud,
         music_list,
         music_upload,
         music_remove,
@@ -115,7 +119,6 @@ enum Action {
     SetEffort { effort: String },
     SetMode { mode: String },
     CycleMode,
-    ToggleVoice,
     BrowserLogin,
     SaveApiKey { key: String },
     SignOut,
@@ -240,7 +243,6 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::SetEffort { effort } => c.set_effort(&effort),
         Action::SetMode { mode } => c.set_mode(&mode),
         Action::CycleMode => c.cycle_mode(),
-        Action::ToggleVoice => c.toggle_voice(),
         Action::BrowserLogin => c.browser_login(),
         Action::SaveApiKey { key } => c.save_api_key(key),
         Action::SignOut => c.sign_out(),
@@ -729,6 +731,19 @@ fn delta_cloud(core: Shared<'_>, method: String, path: String, body: Option<Valu
     crate::delta::cloud(&cfg, &method, &path, body)
 }
 
+/// Epsilon through the ScoutCode site (/api/epsilon/…): the account's cloud computers, repo tasks, and the short-lived
+/// tokens the framed computer page asks for. The key stays here; the window only sees the answers.
+#[tauri::command(async)]
+fn epsilon_cloud(core: Shared<'_>, method: String, path: String, body: Option<Value>) -> Result<Value, String> {
+    let allowed = ["/api/epsilon/machines", "/api/epsilon/tasks", "/api/epsilon/token"];
+    if !allowed.iter().any(|p| path == *p || path.starts_with(&format!("{p}?"))) {
+        return Err("Not an Epsilon path".into());
+    }
+    let cfg = core.lock().unwrap().scout_cfg();
+    // Signing an agent in on the server can first download it there, and saving a computer as it stops takes a while.
+    crate::delta::site_request(&cfg, &method, &path, body, 600, "Sign in to your ScoutCode account to use Epsilon.")
+}
+
 // ---------- settings ----------
 
 #[tauri::command]
@@ -938,6 +953,21 @@ fn file_save(path: String, text: String, crlf: bool) -> Result<Option<u64>, Stri
 #[tauri::command]
 fn file_mtime(path: String) -> Option<u64> {
     dock::mtime(&path)
+}
+
+#[tauri::command]
+fn terminal_list(dir: String) -> Vec<(String, bool)> {
+    dock::list(&dir)
+}
+
+#[tauri::command]
+fn terminal_suggestions(cwd: String) -> dock::Suggestions {
+    dock::suggestions(&cwd)
+}
+
+#[tauri::command]
+fn terminal_prewarm(terminal: State<dock::Terminal>, cwd: String, rows: u16, cols: u16) {
+    terminal.prewarm(&cwd, rows, cols);
 }
 
 #[tauri::command]

@@ -18,7 +18,7 @@
         "img-src": "'self' data: https://*.ytimg.com https://*.ggpht.com https://*.sndcdn.com",
         "media-src": "'self' blob: data: music: http://music.localhost",
         "font-src": "'self' data:",
-        "frame-src": "https://w.soundcloud.com",
+        "frame-src": "https://w.soundcloud.com https://epsilon.scoutcode.dev",
         "connect-src": "ipc: http://ipc.localhost music: http://music.localhost"
       }
     }

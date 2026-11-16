@@ -18,6 +18,9 @@ const RIPPLE_MS = 2200;
 /** How far a ring has spread when it fades out, and how thick its crest is, in pixels. */
 const RIPPLE_REACH = 900;
 const RIPPLE_BAND = 26;
+/** Fast pointer movement leaves a brief wake behind the cursor. */
+const TRAIL_MS = 300;
+const TRAIL_MIN_SPEED = 0.7; // CSS pixels per millisecond
 /** Clicks on these start no ripple: they do their own thing. */
 const INTERACTIVE = 'button, a, input, textarea, select, label, [contenteditable], [role="button"], [role="menu"], .composer-column';
 
@@ -53,6 +56,7 @@ export function AsciiBackdrop() {
     let grid = new Uint8Array(0);
     let rgb = '237 237 237';
     let ripples: { x: number; y: number; start: number }[] = [];
+    let trail: { x: number; y: number; dx: number; dy: number; start: number }[] = [];
 
     const readColor = () => {
       const hex = themeColor('strong') || '#ededed';
@@ -87,6 +91,7 @@ export function AsciiBackdrop() {
         const age = (t - r.start) / RIPPLE_MS;
         return [r.x, r.y, age * RIPPLE_REACH, (1 - age) * (1 - age)];
       });
+      trail = trail.filter((p) => t - p.start < TRAIL_MS);
       for (const b of buckets) b.length = 0;
       for (let y = 0; y < rows; y++) {
         const py = y * CELL_H + CELL_H / 2;
@@ -96,6 +101,17 @@ export function AsciiBackdrop() {
           const n2 = noise(x * 0.09 - s * 0.07 + 40, y * 0.12 + s * 0.06 + 40);
           let v = n1 * 0.7 + n2 * 0.5 - 0.7;
           let rippled = false;
+          // Stretch each glow backward along the direction of travel so it reads as a wake.
+          for (const p of trail) {
+            const age = (t - p.start) / TRAIL_MS;
+            const dx = x * CELL_W + CELL_W / 2 - p.x;
+            const dy = py - p.y;
+            const along = dx * p.dx + dy * p.dy;
+            const across = dx * -p.dy + dy * p.dx;
+            if (along > -40 && along < 8 && Math.abs(across) < 13) {
+              v += (1 - age) * 0.24 * Math.exp(-((along + 14) ** 2) / 520 - (across * across) / 42);
+            }
+          }
           if (rings.length) {
             const px = x * CELL_W + CELL_W / 2;
             for (const [cx, cy, radius, strength] of rings) {
@@ -147,7 +163,30 @@ export function AsciiBackdrop() {
       ripples.push({ x: e.clientX - box.left, y: e.clientY - box.top, start: performance.now() });
       if (ripples.length > 6) ripples.shift();
     };
+    let previousMove: { x: number; y: number; time: number } | null = null;
+    const onMove = (e: PointerEvent) => {
+      if (still || e.pointerType === 'touch' || e.buttons !== 0) { previousMove = null; return; }
+      const now = performance.now();
+      const box = canvas.getBoundingClientRect();
+      const x = e.clientX - box.left, y = e.clientY - box.top;
+      if (previousMove) {
+        const dx = x - previousMove.x, dy = y - previousMove.y;
+        const distance = Math.hypot(dx, dy);
+        const elapsed = now - previousMove.time;
+        if (elapsed > 0 && distance / elapsed >= TRAIL_MIN_SPEED && distance > 1) {
+          const ux = dx / distance, uy = dy / distance;
+          // Fill the path between pointer events, so quick movement creates a continuous trail.
+          for (let d = 0; d < distance; d += 9) {
+            const fraction = d / distance;
+            trail.push({ x: previousMove.x + dx * fraction, y: previousMove.y + dy * fraction, dx: ux, dy: uy, start: now });
+          }
+        }
+      }
+      previousMove = { x, y, time: now };
+      if (trail.length > 90) trail.splice(0, trail.length - 90);
+    };
     host.addEventListener('pointerdown', onDown);
+    host.addEventListener('pointermove', onMove);
 
     // Theme changes recolor the letters on the next frame.
     const themeObserver = new MutationObserver(readColor);
@@ -156,6 +195,7 @@ export function AsciiBackdrop() {
     return () => {
       cancelAnimationFrame(raf);
       host.removeEventListener('pointerdown', onDown);
+      host.removeEventListener('pointermove', onMove);
       observer.disconnect();
       themeObserver.disconnect();
     };

@@ -3,6 +3,7 @@ use crate::config::home;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,6 +37,9 @@ pub struct Session {
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The last turn ended in an error, so the sidebar shows it red until the next turn starts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub errored: bool,
 }
 
 pub fn now_ms() -> u64 {
@@ -52,7 +56,7 @@ pub fn new_session(cwd: &str, model: &str) -> Session {
     let mut rnd = [0u8; 2];
     let _ = getrandom::fill(&mut rnd);
     let id = format!("{y:04}{mo:02}{d:02}{h:02}{mi:02}{s:02}-{:04x}", u16::from_le_bytes(rnd));
-    Session { id, cwd: cwd.to_string(), created: now_ms(), updated: now_ms(), title: String::new(), model: model.to_string(), messages: vec![], totals: Totals::default(), mode: None, provider: None }
+    Session { id, cwd: cwd.to_string(), created: now_ms(), updated: now_ms(), title: String::new(), model: model.to_string(), messages: vec![], totals: Totals::default(), mode: None, provider: None, errored: false }
 }
 
 /// UTC date and time from Unix seconds.
@@ -159,6 +163,7 @@ pub struct SessionInfo {
     pub cwd: String,
     pub title: String,
     pub updated: u64,
+    pub errored: bool,
 }
 
 #[derive(Deserialize)]
@@ -169,6 +174,8 @@ struct Head {
     title: String,
     #[serde(default)]
     updated: u64,
+    #[serde(default)]
+    errored: bool,
 }
 
 pub fn same_dir(a: &str, b: &str) -> bool {
@@ -180,9 +187,29 @@ pub fn same_dir(a: &str, b: &str) -> bool {
     n(a) == n(b)
 }
 
+/// Titles the model wrote for chats, by session id. Kept apart from the chat files so a title that arrives while the
+/// chat is still being saved can't be overwritten by that save.
+fn titles_file() -> PathBuf {
+    home().join("titles.json")
+}
+
+pub fn generated_titles() -> HashMap<String, String> {
+    std::fs::read(titles_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn save_generated_title(id: &str, title: &str) {
+    let mut all = generated_titles();
+    all.insert(id.to_string(), title.to_string());
+    let _ = std::fs::create_dir_all(home());
+    if let Ok(text) = serde_json::to_vec(&all) {
+        let _ = std::fs::write(titles_file(), text);
+    }
+}
+
 /// Every saved session in every folder, newest first.
 pub fn list_sessions() -> Vec<SessionInfo> {
     let mut out = vec![];
+    let titles = generated_titles();
     for e in std::fs::read_dir(dir()).into_iter().flatten().flatten() {
         let p = e.path();
         if p.extension().is_none_or(|x| x != "json") {
@@ -190,7 +217,8 @@ pub fn list_sessions() -> Vec<SessionInfo> {
         }
         let Ok(bytes) = std::fs::read(&p) else { continue };
         let Ok(h) = serde_json::from_slice::<Head>(&bytes) else { continue };
-        out.push(SessionInfo { id: h.id, cwd: h.cwd, title: h.title, updated: h.updated });
+        let title = titles.get(&h.id).cloned().unwrap_or(h.title);
+        out.push(SessionInfo { id: h.id, cwd: h.cwd, title, updated: h.updated, errored: h.errored });
     }
     out.sort_by(|a, b| b.updated.cmp(&a.updated));
     out
@@ -412,6 +440,7 @@ fn parse_external_file(source: &str, file: &Path) -> Option<Session> {
         totals: Totals::default(),
         mode: None,
         provider: if source == "claude" { Some("claude".into()) } else { Some("codex".into()) },
+        errored: false,
     })
 }
 

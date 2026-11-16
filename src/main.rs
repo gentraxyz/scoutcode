@@ -24,6 +24,7 @@ mod kiro;
 mod local;
 mod diff;
 mod dream;
+mod title;
 mod dock;
 mod folders;
 mod grok;
@@ -50,7 +51,6 @@ mod quota;
 mod redact;
 mod secrets;
 mod usage;
-mod voice;
 mod waker;
 #[cfg(all(windows, not(target_env = "msvc")))]
 mod webview2;

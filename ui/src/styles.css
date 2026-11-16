@@ -236,8 +236,13 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .session-row.selected .session-open { color: var(--strong); }
 .when { flex: none; color: var(--faint); }
 .session-state { flex: none; display: flex; }
-.session-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
-.session-dot.waiting { background: var(--accent); }
+/* Status marks after a chat's title: a circle with a glyph, a dotted yellow ring, or a plain blue dot. */
+.session-dot, .session-dot-slot { flex: none; width: 11px; height: 11px; border-radius: 50%; }
+.session-dot { display: inline-flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 800; line-height: 1; color: #fff; }
+.session-dot.working { box-sizing: border-box; border: 2px dotted #facc15; }
+.session-dot.asking { background: #f97316; }
+.session-dot.error { background: #ef4444; }
+.session-dot.unread { background: #3b82f6; }
 .session-row:hover .when { display: none; }
 .no-chats { padding: 4px 12px; }
 .rename { padding: 3px 8px; }
@@ -418,9 +423,6 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .round.resume:hover { background: var(--raised); }
 .round.resume svg { margin-left: 2px; }
 .stop-square { width: 10px; height: 10px; background: currentColor; border-radius: 1.5px; }
-.mic-live { position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); border: 1px solid color-mix(in srgb, var(--red) 50%, transparent); }
-.mic-ring { position: absolute; inset: 3px; border: 1.5px solid var(--red); border-radius: 50%; transition: transform 0.06s linear; }
-.mic-busy { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--surface-hi); }
 .mention-menu { position: absolute; left: 6px; bottom: calc(100% + 6px); width: min(440px, 100%); z-index: 20; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 12px; padding: 6px; }
 .mention-row { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 10px; border-radius: 7px; font-size: 13px; }
 .mention-row:hover, .mention-row.selected { background: var(--menu-hover); }
@@ -743,8 +745,28 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .dock-actions { display: flex; align-items: center; gap: 4px; min-height: 32px; padding: 2px 6px 2px 12px; flex: none; border-bottom: 1px solid var(--border); font-size: 12px; }
 .dock-scroll { flex: 1 1 0; min-height: 0; overflow: auto; padding: 4px; }
 .placeholder { padding: 20px; color: var(--dim); text-align: center; font-size: 12.5px; }
-.terminal-host { flex: 1 1 0; min-height: 0; padding: 8px 0 0 10px; }
-.terminal-exit { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; border-top: 1px solid var(--border); }
+.terminal-tab { position: relative; }
+.terminal-host { flex: 1 1 0; min-height: 0; padding: 10px 4px 4px 14px; cursor: text; }
+.terminal-host .xterm { height: 100%; }
+.terminal-host .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--faint) transparent; }
+.terminal-host .xterm-viewport::-webkit-scrollbar { width: 8px; }
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: transparent; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+.terminal-tab:hover .xterm-viewport::-webkit-scrollbar-thumb { background-color: var(--faint); }
+/* Shell name, Clear and Restart: out of the way until the pointer is over the terminal. */
+.terminal-tools { position: absolute; top: 6px; right: 10px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 2px 2px 2px 8px; border-radius: 9px; background: color-mix(in srgb, var(--sidebar) 82%, transparent); backdrop-filter: blur(6px); opacity: 0; transform: translateY(-2px); transition: opacity 140ms ease, transform 140ms ease; pointer-events: none; }
+.terminal-tab:hover .terminal-tools, .terminal-tools:focus-within { opacity: 1; transform: none; pointer-events: auto; }
+.terminal-shell { font-size: 11.5px; color: var(--dim); margin-right: 4px; }
+.terminal-exit { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5; display: flex; align-items: center; gap: 12px; padding: 6px 6px 6px 14px; font-size: 12.5px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border-hi); box-shadow: 0 8px 24px rgb(0 0 0 / 35%); white-space: nowrap; max-width: calc(100% - 28px); animation: term-pop 160ms ease-out; }
+.terminal-exit > span { overflow: hidden; text-overflow: ellipsis; }
+@keyframes term-pop { from { opacity: 0; transform: translate(-50%, 6px); } }
+/* The caret: thin, round, and gliding as you type (see attachCaret in Dock.tsx). */
+.term-caret { position: absolute; left: 0; top: 0; width: 2.5px; border-radius: 999px; background: var(--primary); pointer-events: none; z-index: 3; transition: transform 95ms cubic-bezier(.25, .9, .3, 1), opacity 120ms ease; will-change: transform; }
+.term-caret.moving { animation: none; }
+.term-caret.gone { visibility: hidden; }
+.term-caret.idle { animation: term-blink 1.1s ease-in-out infinite; }
+.term-caret.blurred { animation: none; opacity: .3 !important; }
+@keyframes term-blink { 0%, 45% { opacity: 1; } 60%, 85% { opacity: .15; } 100% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .term-caret { transition: opacity 120ms ease; } .term-caret.idle { animation: none; } }
 .change-row { display: flex; align-items: center; gap: 6px; width: 100%; height: 28px; padding: 0 8px; border-radius: 7px; font-size: 13px; color: var(--muted); }
 .change-row:hover { background: var(--hover); color: var(--strong); }
 .change-status { width: 12px; text-align: center; flex: none; }
@@ -838,7 +860,7 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .input-box > .chips > * { animation: pop-in var(--med) var(--ease-out); }
 
 /* sidebar, dock and settings */
-.session-dot.waiting { animation: link-pulse 1.6s ease-in-out infinite; }
+.session-dot.asking { animation: link-pulse 1.6s ease-in-out infinite; }
 .project-chats { animation: drop-in var(--med) var(--ease-out); }
 .window-buttons .close { transition-duration: 0.08s; }
 .toggle { transition: background-color var(--med) var(--ease); }
@@ -943,7 +965,7 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 html[data-material="glass"] .modal.folder-picker { --glass-tint: color-mix(in srgb, var(--bg) 78%, transparent); }
 html[data-material="glass"] .fp-side { background: transparent; border-right-color: rgb(255 255 255 / 8%); }
 
-/* experimental games: 2048, chess and Flappy Scout, in a card dragged over the window or in the panel's Games tab */
+/* experimental games: 2048, chess, Flappy Scout and Scout Dash, in a card dragged over the window or in the panel's Games tab */
 :root { --spring: cubic-bezier(0.34, 1.5, 0.64, 1); --slide: 0.12s; }
 .game-float { position: fixed; z-index: 30; width: 304px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 14px; box-shadow: var(--shadow-pop); transform-origin: 50% 100%; transition: transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease); animation: card-in 0.3s var(--spring); }
 .game-float.leaving { animation: card-out 0.15s var(--ease) forwards; pointer-events: none; }
@@ -998,7 +1020,7 @@ html[data-material="glass"] .fp-side { background: transparent; border-right-col
 .game-hint { text-align: center; }
 /* the game picker, and the panel's bar back to it */
 .game-page-inner { display: flex; flex-direction: column; gap: 6px; width: min(100%, 420px); }
-.game-page-inner > :is(.game-2048, .game-chess, .game-flappy) { border-radius: 14px; }
+.game-page-inner > :is(.game-2048, .game-chess, .game-flappy, .game-dash) { border-radius: 14px; }
 .game-page-bar { gap: 6px; padding: 0 4px; }
 .game-picker { display: flex; flex-direction: column; gap: 6px; padding: 12px; animation: rise-in var(--med) var(--ease-out); }
 .game-picker > .small { padding: 0 2px 2px; }
@@ -1012,6 +1034,7 @@ html[data-material="glass"] .fp-side { background: transparent; border-right-col
 .game-art.art-chess { background: #a9845e; }
 .game-art.art-chess .chess-piece { width: 34px; height: 34px; }
 .game-art.art-flappy { background: color-mix(in srgb, var(--surface-hi), #5b9cf5 12%); }
+.game-art.art-dash { background: color-mix(in srgb, var(--surface-hi), #f5a524 10%); }
 
 /* chess */
 .game-chess { display: flex; flex-direction: column; gap: 10px; padding: 12px; outline: none; border-radius: 0 0 14px 14px; }
@@ -1054,11 +1077,28 @@ html[data-material="glass"] .fp-side { background: transparent; border-right-col
 @keyframes piece-in { from { opacity: 0.4; transform: scale(0.82); } }
 
 /* flappy scout */
-.game-flappy { display: flex; flex-direction: column; gap: 10px; padding: 12px; outline: none; border-radius: 0 0 14px 14px; }
-.game-flappy:focus-visible { box-shadow: inset 0 0 0 1px var(--focus); }
+.game-flappy, .game-dash { display: flex; flex-direction: column; gap: 10px; padding: 12px; outline: none; border-radius: 0 0 14px 14px; }
+:is(.game-flappy, .game-dash):focus-visible { box-shadow: inset 0 0 0 1px var(--focus); }
 .flappy-stage { position: relative; aspect-ratio: 280 / 360; border-radius: 10px; overflow: hidden; cursor: pointer; touch-action: none; box-shadow: 0 0 0 1px var(--border); }
 .flappy-stage canvas { display: block; width: 100%; height: 100%; }
-.flappy-over { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: color-mix(in srgb, var(--sidebar) 55%, transparent); animation: fade-in 0.3s var(--ease) 0.15s backwards; pointer-events: none; }
+/* the game-over card both canvas games share */
+.arcade-over { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: color-mix(in srgb, var(--sidebar) 50%, transparent); animation: fade-in 0.25s var(--ease) 0.2s backwards; pointer-events: none; }
+.arcade-title { font-size: 26px; font-weight: 800; color: var(--accent-hi); letter-spacing: 0.01em; text-shadow: 0 2px 0 rgb(0 0 0 / 45%); animation: arcade-drop 0.45s var(--spring) 0.2s backwards; }
+.arcade-card { display: flex; align-items: center; gap: 16px; padding: 14px 18px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border-hi); box-shadow: var(--shadow-pop); animation: arcade-rise 0.45s var(--spring) 0.35s backwards; }
+.arcade-nums { display: grid; grid-template-columns: auto auto; align-items: baseline; gap: 2px 18px; }
+.arcade-nums span { font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; display: flex; align-items: center; gap: 5px; }
+.arcade-nums b { justify-self: end; font-size: 20px; font-weight: 800; color: var(--strong); font-variant-numeric: tabular-nums; }
+.arcade-new { font-style: normal; font-size: 9px; font-weight: 800; padding: 1px 4px; border-radius: 4px; background: var(--red); color: #fff; letter-spacing: 0.04em; }
+.arcade-medal { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--faint); box-shadow: inset 0 -3px 0 rgb(0 0 0 / 25%), inset 0 2px 0 rgb(255 255 255 / 35%), 0 0 0 3px rgb(0 0 0 / 18%); }
+.arcade-medal.none { background: var(--bg); box-shadow: inset 0 0 0 2px var(--border-hi); }
+.arcade-medal.bronze { background: radial-gradient(circle at 35% 30%, #f0b27a, #b8692e 70%); }
+.arcade-medal.silver { background: radial-gradient(circle at 35% 30%, #ffffff, #a8b0b8 70%); }
+.arcade-medal.gold { background: radial-gradient(circle at 35% 30%, #fff1a8, #e0a31c 70%); }
+.arcade-medal.platinum { background: radial-gradient(circle at 35% 30%, #ffffff, #9ad7e6 55%, #7fa6c9 80%); animation: arcade-shine 1.6s var(--ease) infinite; }
+@keyframes arcade-drop { from { opacity: 0; transform: translateY(-16px) scale(0.9); } }
+@keyframes arcade-rise { from { opacity: 0; transform: translateY(24px); } }
+@keyframes arcade-shine { 50% { filter: brightness(1.25); } }
+@media (prefers-reduced-motion: reduce) { .arcade-title, .arcade-card, .arcade-medal { animation: none; } }
 @keyframes card-in { from { opacity: 0; transform: scale(0.9) translateY(12px); } }
 @keyframes card-out { to { opacity: 0; transform: scale(0.94) translateY(8px); } }
 @keyframes tile-in { from { opacity: 0; transform: scale(0); } }
@@ -1220,7 +1260,7 @@ html[data-material="glass"] .find-bar { border-radius: 14px; }
 html[data-material="glass"] :is(.modal, .login-card, .game-float) { border-radius: 26px; }
 html[data-material="glass"] .modal.settings { --glass-tint: color-mix(in srgb, var(--bg) 78%, transparent); }
 /* Inside a pane, its own sections stay clear so the glass shows. */
-html[data-material="glass"] :is(.settings-nav, .dock-tabs, .dock-actions, .file-banner, .terminal-exit) { background: transparent; }
+html[data-material="glass"] :is(.settings-nav, .dock-tabs, .dock-actions, .file-banner) { background: transparent; }
 html[data-material="glass"] .settings-nav { border-right-color: rgb(255 255 255 / 8%); }
 html[data-material="glass"] .dock .cm-editor, html[data-material="glass"] .dock .cm-gutters { background-color: transparent !important; }
 html[data-material="glass"] .dock .xterm-viewport, html[data-material="glass"] .dock .xterm-screen { background-color: transparent !important; }
@@ -1247,7 +1287,7 @@ html[data-material="glass"] .picker-label.free { background: transparent; }
 html[data-material="glass"] .game-cell { background: rgb(255 255 255 / 8%); opacity: 1; }
 
 /* Controls */
-html[data-material="glass"] :is(.button:not(.primary), .new-chat, .round.attach, .mic-busy, .game-score, .provider-tile, .model-sort .chip:not(.on), .file-chip, .avatar) {
+html[data-material="glass"] :is(.button:not(.primary), .new-chat, .round.attach, .game-score, .provider-tile, .model-sort .chip:not(.on), .file-chip, .avatar) {
   background: var(--pill);
   border-color: transparent;
   box-shadow: var(--pill-edge);
@@ -1358,3 +1398,48 @@ html[data-material="glass"] ::-webkit-scrollbar-thumb { background: rgb(255 255 
 .dream-change { display: flex; flex-direction: column; gap: 1px; }
 .dream-removed { text-decoration: line-through; color: var(--dim); }
 .dream-now { gap: 8px; align-items: center; padding: 4px 0; }
+/* The terminal's suggestion: the rest of a command, dim, after the cursor (see attachSuggest in Dock.tsx). */
+.term-ghost { position: absolute; left: 0; top: 0; z-index: 2; white-space: pre; pointer-events: none; color: var(--faint); }
+
+/* ---------- Epsilon: cloud chats, "Working on", New project and the cloud computers (Cloud.tsx) ---------- */
+.cloud-badge { flex: none; display: inline-flex; align-items: center; height: 15px; padding: 0 5px; border-radius: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .02em; line-height: 1; color: var(--usage); background: color-mix(in srgb, var(--usage) 14%, transparent); border: 1px solid color-mix(in srgb, var(--usage) 40%, transparent); }
+.top-bar .cloud-badge { margin-left: 2px; }
+.working-on { display: inline-flex; align-items: center; gap: 2px; min-width: 0; margin-right: 6px; }
+.working-chip { height: 24px; padding: 0 7px; gap: 5px; max-width: 260px; color: var(--muted); }
+.working-chip .ellipsis { min-width: 0; }
+.working-menu { display: flex; flex-direction: column; }
+.working-menu .menu-label { padding: 6px 10px 3px; gap: 6px; align-items: center; }
+.working-repos { max-height: 260px; overflow-y: auto; }
+.cloud-chip { height: 26px; color: var(--usage); }
+.cloud-mark { color: var(--usage); display: inline-flex; }
+.splash-text.static { position: static; padding: 0 12px; }
+.cloud-working { gap: 8px; margin: 10px 0; }
+
+.vm-credits { padding: 8px 12px; border-top: 1px solid var(--border); }
+.vm-row { display: flex; align-items: center; gap: 8px; height: 44px; margin: 0 4px 2px; padding: 0 10px; border-radius: 8px; color: var(--muted); text-align: left; }
+.vm-row:hover { background: var(--hover); color: var(--strong); }
+.vm-row.selected { background: var(--surface-hi); color: var(--strong); }
+.vm-name { display: block; }
+.vm-error { padding: 2px 12px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vm-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.vm-dot.up { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 20%, transparent); }
+.vm-dot.busy { background: #facc15; }
+.vm-dot.bad { background: var(--red); }
+.vm-page { flex: 1 1 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.vm-page.framed { padding: 0; align-items: stretch; }
+.vm-frame { flex: 1 1 0; width: 100%; height: 100%; border: 0; background: #000; }
+.vm-card { width: min(420px, 100%); display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; color: var(--muted); }
+.vm-card p { margin: 0; }
+.vm-field { width: 100%; display: flex; flex-direction: column; gap: 4px; text-align: left; }
+
+.modal.new-project { width: min(560px, calc(100vw - 40px)); }
+.modal.new-project p { margin: 0; }
+.new-project-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0; }
+.new-project-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px; border-radius: 12px; border: 1px solid var(--border-hi); background: var(--surface); text-align: left; color: var(--muted); }
+.new-project-choice:hover { border-color: var(--accent); background: var(--surface-hi); color: var(--strong); }
+.new-project-choice b { display: inline-flex; align-items: center; gap: 6px; }
+.new-project-repos { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; padding: 4px; }
+.repo-row { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: 7px; text-align: left; color: var(--text); }
+.repo-row:hover { background: var(--menu-hover); color: var(--strong); }
+.chip.vm-asking { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.vm-bar-error { max-width: 340px; }

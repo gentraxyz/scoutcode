@@ -20,10 +20,308 @@ import { DiffBody, Icon, IconButton, Modal, Spinner } from './widgets';
 
 // ---------- terminal ----------
 
+const TERM_FONT = '"Cascadia Mono", Consolas, monospace';
+const TERM_SIZE = 13;
+const TERM_LINE = 1.25;
+
 /** xterm can't read CSS variables, so it takes the theme's colors when it opens and again when the theme changes. */
 function terminalTheme() {
   const glass = document.documentElement.dataset.material === 'glass';
-  return { background: glass ? 'rgba(0, 0, 0, 0)' : themeColor('sidebar'), foreground: themeColor('text'), cursor: themeColor('text'), selectionBackground: '#ffffff30', black: themeColor('surface'), brightBlack: themeColor('dim'), red: '#e86464', green: '#4fbf7f', yellow: '#e5c07b', blue: '#5b9cf5', magenta: '#c586c0', cyan: '#56b6c2', white: themeColor('text'), brightWhite: themeColor('strong') };
+  // xterm's own cursor stays invisible: the caret below draws it.
+  return { background: glass ? 'rgba(0, 0, 0, 0)' : themeColor('sidebar'), foreground: themeColor('text'), cursor: 'rgba(0, 0, 0, 0)', cursorAccent: 'rgba(0, 0, 0, 0)', selectionBackground: '#ffffff30', black: themeColor('surface'), brightBlack: themeColor('dim'), red: '#e86464', green: '#4fbf7f', yellow: '#e5c07b', blue: '#5b9cf5', magenta: '#c586c0', cyan: '#56b6c2', white: themeColor('text'), brightWhite: themeColor('strong') };
+}
+
+/** A guess at the panel's rows and columns before it has opened, for the shell started ahead of time. */
+function terminalGuess(width: number) {
+  return { cols: Math.max(20, Math.floor((width - 24) / (TERM_SIZE * 0.6))), rows: Math.max(4, Math.floor((window.innerHeight - 100) / Math.ceil(TERM_SIZE * TERM_LINE))) };
+}
+
+/**
+ * A thin, round caret that glides to where the shell's cursor is. Moves along a line slide; jumps to another line (or a
+ * long way) land at once, so it never flies across the screen. Solid while typing, a soft blink once idle, dim when
+ * the terminal isn't focused, gone when the program hides its cursor.
+ */
+function attachCaret(xterm: XTerm) {
+  const screen = xterm.element!.querySelector('.xterm-screen') as HTMLElement;
+  const caret = document.createElement('div');
+  caret.className = 'term-caret';
+  screen.appendChild(caret);
+  let frame = 0;
+  let row = -1;
+  let col = -1;
+  let idle = 0;
+  const place = () => {
+    frame = 0;
+    const buf = xterm.buffer.active;
+    // Not in xterm's public API; without it the caret just stays shown.
+    const hidden = (xterm as unknown as { _core?: { coreService?: { isCursorHidden?: boolean } } })._core?.coreService?.isCursorHidden;
+    const r = buf.baseY + buf.cursorY - buf.viewportY;
+    if (hidden || r < 0 || r >= xterm.rows || !screen.clientWidth) {
+      caret.classList.add('gone');
+      return;
+    }
+    caret.classList.remove('gone');
+    const cw = screen.clientWidth / xterm.cols;
+    const ch = screen.clientHeight / xterm.rows;
+    const c = Math.min(buf.cursorX, xterm.cols - 1);
+    const h = Math.round(ch * 0.78);
+    caret.style.height = `${h}px`;
+    const jump = r !== row || Math.abs(c - col) > 12;
+    if (r === row && c === col) return;
+    if (jump) caret.style.transition = 'none';
+    caret.style.transform = `translate(${c * cw - 1}px, ${r * ch + (ch - h) / 2}px)`;
+    if (jump) {
+      void caret.offsetWidth;
+      caret.style.transition = '';
+    }
+    row = r;
+    col = c;
+    // Solid while it moves; blinks once it has rested a moment.
+    caret.classList.remove('idle');
+    caret.classList.add('moving');
+    clearTimeout(idle);
+    idle = window.setTimeout(() => { caret.classList.remove('moving'); caret.classList.add('idle'); }, 550);
+  };
+  const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
+  const subs = [xterm.onCursorMove(schedule), xterm.onRender(schedule), xterm.onScroll(schedule), xterm.onResize(() => { row = -1; schedule(); })];
+  const focus = () => caret.classList.remove('blurred');
+  const blur = () => caret.classList.add('blurred');
+  xterm.textarea?.addEventListener('focus', focus);
+  xterm.textarea?.addEventListener('blur', blur);
+  if (document.activeElement !== xterm.textarea) blur();
+  schedule();
+  return () => {
+    cancelAnimationFrame(frame);
+    clearTimeout(idle);
+    subs.forEach((s) => s.dispose());
+    xterm.textarea?.removeEventListener('focus', focus);
+    xterm.textarea?.removeEventListener('blur', blur);
+    caret.remove();
+  };
+}
+
+/** Everyday commands, after the shell's history and the project's own scripts. */
+const COMMON = [
+  'git status', 'git diff', 'git add .', 'git commit -m ""', 'git push', 'git pull', 'git checkout ', 'git switch ', 'git log --oneline', 'git stash',
+  'npm install', 'npm run dev', 'npm run build', 'npm test', 'npx ', 'cd ..', 'clear', 'code .', 'python ', 'node ',
+];
+const CASELESS = navigator.userAgent.includes('Windows');
+const PATH_SEP = CASELESS ? '\\' : '/';
+/** Commands whose argument is a folder, or a file or folder: completed from disk. */
+const FOLDER_CMDS = new Set(['cd', 'sl', 'set-location', 'pushd', 'chdir']);
+const FILE_CMDS = new Set(['ls', 'dir', 'gci', 'get-childitem', 'cat', 'type', 'gc', 'get-content', 'rm', 'del', 'remove-item', 'rmdir', 'rd', 'cp', 'copy', 'mv', 'move', 'code', 'vim', 'nvim', 'nano', 'notepad', 'less', 'more', 'head', 'tail', 'start', 'explorer', 'ii', 'invoke-item', 'open', 'node', 'python', 'py']);
+/** What the user ran in the panel, newest last; kept across restarts. */
+const RAN_KEY = 'scout.terminal.ran';
+
+function loadRan(): string[] {
+  try { return JSON.parse(localStorage.getItem(RAN_KEY) ?? '[]'); } catch { return []; }
+}
+
+function saveRan(cmd: string) {
+  try {
+    const list = loadRan().filter((c) => c !== cmd);
+    list.push(cmd);
+    localStorage.setItem(RAN_KEY, JSON.stringify(list.slice(-500)));
+  } catch { /* storage off: this run's history only */ }
+}
+
+/**
+ * Suggestions as you type, fish-style: the rest of the most recent matching command, in dim text after the cursor.
+ * → or End takes all of it, Ctrl+→ the next word, Esc hides it. Tab stays the shell's own completion.
+ * The shells mark where their prompt ends (OSC 133;B, from terminal/init.*), which is how the panel knows what's been
+ * typed; without a mark there are no suggestions.
+ */
+function attachSuggest(xterm: XTerm, cwd: string) {
+  const screen = xterm.element!.querySelector('.xterm-screen') as HTMLElement;
+  const ghost = document.createElement('div');
+  ghost.className = 'term-ghost';
+  screen.appendChild(ghost);
+  let history: string[] = [];
+  let project: string[] = [];
+  let ran = loadRan();
+  invoke<{ history: string[]; project: string[] }>('terminal_suggestions', { cwd }).then((s) => { history = s.history; project = s.project; schedule(); }).catch(() => {});
+
+  let mark: ReturnType<XTerm['registerMarker']> | undefined;
+  let markX = 0;
+  const osc = xterm.parser.registerOscHandler(133, (data) => {
+    if (data.startsWith('B')) {
+      mark?.dispose();
+      mark = xterm.registerMarker(0);
+      markX = xterm.buffer.active.cursorX;
+    }
+    return true;
+  });
+  // The shell's folder, from the OSC 7 it sends with each prompt ("file:///C:/x" or "file://host/home/x").
+  let here = cwd;
+  const osc7 = xterm.parser.registerOscHandler(7, (data) => {
+    const m = data.match(/^file:\/\/[^/]*(\/.*)$/);
+    if (m) {
+      let p = m[1];
+      try { p = decodeURIComponent(p); } catch { /* sent unencoded */ }
+      here = /^\/[A-Za-z]:/.test(p) ? p.slice(1) : p;
+    }
+    return true;
+  });
+
+  // Folder listings, briefly cached; null while one is being read (a redraw follows when it arrives).
+  const listings = new Map<string, { at: number; entries: [string, boolean][] | null }>();
+  const listing = (dir: string) => {
+    const c = listings.get(dir);
+    if (c && Date.now() - c.at < 3000) return c.entries;
+    listings.set(dir, { at: Date.now(), entries: c?.entries ?? null });
+    invoke<[string, boolean][]>('terminal_list', { dir }).then((entries) => { listings.set(dir, { at: Date.now(), entries }); schedule(); }).catch(() => {});
+    return c?.entries ?? null;
+  };
+  const split = (word: string) => {
+    const i = Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\'));
+    const part = word.slice(0, i + 1);
+    const dir = !part ? here : /^([A-Za-z]:[\\/]|[\\/]|~)/.test(part) ? part : `${here.replace(/[\\/]+$/, '')}/${part}`;
+    return { dir, name: word.slice(i + 1) };
+  };
+  const same = (a: string, b: string) => (CASELESS ? a.toLowerCase() === b.toLowerCase() : a === b);
+  /** The rest of a path being typed, from what's really on disk: '' for none, null while the folder is read. */
+  const completePath = (word: string, foldersOnly: boolean): string | null => {
+    const { dir, name } = split(word);
+    if (!name || name === '.' || name === '..') return '';
+    const entries = listing(dir);
+    if (!entries) return null;
+    const n = CASELESS ? name.toLowerCase() : name;
+    for (const [e, isDir] of entries) {
+      if ((foldersOnly && !isDir) || (e.startsWith('.') && !name.startsWith('.')) || /\s/.test(e)) continue;
+      if ((CASELESS ? e.toLowerCase() : e).startsWith(n)) return e.slice(name.length) + (isDir ? PATH_SEP : '');
+    }
+    return '';
+  };
+  /** Whether a remembered command's path is there from where the shell is now: null while finding out. */
+  const pathThere = (word: string, foldersOnly: boolean): boolean | null => {
+    const w = word.replace(/[\\/]+$/, '');
+    if (!w || w === '.' || w === '..' || w === '~' || w === '-' || /^[A-Za-z]:$/.test(w)) return true;
+    const { dir, name } = split(w);
+    if (name === '..' || name === '.') return true;
+    const entries = listing(dir);
+    if (!entries) return null;
+    return entries.some(([e, isDir]) => same(e, name) && (!foldersOnly || isDir));
+  };
+  /** Folder or file commands: how their arguments are completed and checked. */
+  const pathKind = (cmd: string) => (FOLDER_CMDS.has(cmd.toLowerCase()) ? 'folder' : FILE_CMDS.has(cmd.toLowerCase()) ? 'file' : null);
+  /** A command from history only counts when its path still makes sense here. */
+  const fits = (c: string) => {
+    const words = c.trim().split(/\s+/);
+    const kind = pathKind(words[0]);
+    if (!kind || /["'`$]/.test(c)) return true;
+    const arg = words.slice(1).find((w) => !w.startsWith('-'));
+    return !arg || pathThere(arg, kind === 'folder') === true;
+  };
+
+  /** What's been typed at the prompt, split at the cursor; null when not at a prompt. */
+  const input = () => {
+    const buf = xterm.buffer.active;
+    if (buf.type !== 'normal' || !mark || mark.isDisposed || mark.line < 0) return null;
+    const cur = buf.baseY + buf.cursorY;
+    if (cur < mark.line || (cur === mark.line && buf.cursorX < markX)) return null;
+    let before = '';
+    for (let y = mark.line; y <= cur; y++) {
+      const line = buf.getLine(y);
+      if (!line || (y > mark.line && !line.isWrapped)) return null;
+      before += line.translateToString(false, y === mark.line ? markX : 0, y === cur ? buf.cursorX : undefined);
+    }
+    let after = buf.getLine(cur)?.translateToString(true, buf.cursorX) ?? '';
+    for (let y = cur + 1; buf.getLine(y)?.isWrapped; y++) after += buf.getLine(y)!.translateToString(true);
+    return { before, after: after.trimEnd() };
+  };
+
+  let rest = '';
+  let hiddenFor: string | null = null;
+  let frame = 0;
+  const find = (typed: string) => {
+    if (!typed.trim()) return '';
+    // Typing a path after cd, cat, code...: it comes from the folder, never from history.
+    if (!/["'`$]/.test(typed)) {
+      const words = typed.trimStart().split(/\s+/);
+      const kind = pathKind(words[0]);
+      if (kind && words.length >= 2) {
+        const last = words[words.length - 1];
+        return last.startsWith('-') ? '' : completePath(last, kind === 'folder') ?? '';
+      }
+    }
+    const t = CASELESS ? typed.toLowerCase() : typed;
+    const match = (c: string) => c.length > typed.length && (CASELESS ? c.toLowerCase() : c).startsWith(t) && fits(c);
+    for (const list of [ran, history]) {
+      for (let i = list.length - 1; i >= 0; i--) if (match(list[i])) return list[i].slice(typed.length);
+    }
+    for (const c of [...project, ...COMMON]) if (match(c)) return c.slice(typed.length);
+    return '';
+  };
+  const place = () => {
+    frame = 0;
+    const got = input();
+    const buf = xterm.buffer.active;
+    const r = buf.baseY + buf.cursorY - buf.viewportY;
+    rest = got && !got.after && got.before !== hiddenFor ? find(got.before) : '';
+    if (got && got.before !== hiddenFor) hiddenFor = null;
+    // Only what fits on the cursor's row.
+    rest = rest.slice(0, Math.max(0, xterm.cols - buf.cursorX - 1));
+    if (!rest || r < 0 || r >= xterm.rows || !screen.clientWidth) {
+      rest = '';
+      ghost.textContent = '';
+      return;
+    }
+    const cw = screen.clientWidth / xterm.cols;
+    const ch = screen.clientHeight / xterm.rows;
+    ghost.textContent = rest;
+    ghost.style.font = `${xterm.options.fontSize}px ${xterm.options.fontFamily}`;
+    ghost.style.lineHeight = `${ch}px`;
+    ghost.style.letterSpacing = `${cw - charWidth(ghost.style.font)}px`;
+    ghost.style.transform = `translate(${buf.cursorX * cw}px, ${r * ch}px)`;
+  };
+  const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
+  const subs = [xterm.onCursorMove(schedule), xterm.onRender(schedule), xterm.onScroll(schedule), xterm.onResize(schedule)];
+
+  /** Called first with every key: true when it was a suggestion's key and has been handled. */
+  const key = (e: KeyboardEvent) => {
+    if (e.type !== 'keydown') return false;
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+      const got = input();
+      const cmd = got ? (got.before + got.after).trim() : '';
+      if (cmd) { saveRan(cmd); ran = loadRan(); if (!ran.includes(cmd)) ran.push(cmd); }
+      return false;
+    }
+    if (!rest) return false;
+    const plain = !e.shiftKey && !e.altKey && !e.metaKey;
+    let take = '';
+    if (plain && !e.ctrlKey && (e.key === 'ArrowRight' || e.key === 'End')) take = rest;
+    else if (plain && e.ctrlKey && e.key === 'ArrowRight') take = rest.match(/^\s*\S+/)?.[0] ?? rest;
+    else if (e.key === 'Escape') { hiddenFor = input()?.before ?? null; schedule(); return true; }
+    if (!take) return false;
+    e.preventDefault();
+    invoke('terminal_write', { data: take });
+    return true;
+  };
+
+  return {
+    key,
+    dispose: () => {
+      cancelAnimationFrame(frame);
+      subs.forEach((s) => s.dispose());
+      osc.dispose();
+      osc7.dispose();
+      mark?.dispose();
+      ghost.remove();
+    },
+  };
+}
+
+const widths = new Map<string, number>();
+/** How wide one character of the terminal's font is, to space the suggestion like xterm spaces its cells. */
+function charWidth(font: string) {
+  let w = widths.get(font);
+  if (w === undefined) {
+    const ctx = document.createElement('canvas').getContext('2d')!;
+    ctx.font = font;
+    w = ctx.measureText('W').width;
+    widths.set(font, w);
+  }
+  return w;
 }
 
 /** Stays mounted while the panel is open, so the shell's screen survives switching tabs. */
@@ -32,17 +330,27 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
   const term = useRef<{ xterm: XTerm; fit: FitAddon } | null>(null);
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [shell, setShell] = useState('');
   const [run, setRun] = useState(0);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
   useEffect(() => {
-    const xterm = new XTerm({ theme: terminalTheme(), allowTransparency: true, fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize: 13, scrollback: 5000, cursorBlink: true, allowProposedApi: true });
+    const xterm = new XTerm({
+      theme: terminalTheme(), allowTransparency: true, fontFamily: TERM_FONT, fontSize: TERM_SIZE, lineHeight: TERM_LINE,
+      scrollback: 10000, cursorStyle: 'bar', cursorWidth: 1, cursorBlink: false, cursorInactiveStyle: 'none',
+      smoothScrollDuration: 0, macOptionIsMeta: true, allowProposedApi: true,
+    });
     const fit = new FitAddon();
     xterm.loadAddon(fit);
     xterm.open(host.current!);
     term.current = { xterm, fit };
     fit.fit();
+    const detachCaret = attachCaret(xterm);
+    const suggest = attachSuggest(xterm, cwd);
     // Ctrl+C copies a selection (or interrupts without one) and Ctrl+V pastes.
     xterm.attachCustomKeyEventHandler((e) => {
+      if (suggest.key(e)) return false;
       if (e.type !== 'keydown' || !e.ctrlKey || e.shiftKey || e.altKey) return true;
       if (e.key === 'c' && xterm.hasSelection()) {
         navigator.clipboard.writeText(xterm.getSelection());
@@ -63,17 +371,33 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
     output.onmessage = (bytes) => xterm.write(new Uint8Array(bytes));
     const done = new Channel<boolean>();
     let current = true;
-    done.onmessage = () => { if (current) setExited(true); };
+    const began = Date.now();
+    done.onmessage = () => {
+      if (!current) return;
+      // A shell that dies at once didn't start properly: say so, rather than starting it over and over.
+      if (Date.now() - began < 1500) {
+        setExited(true);
+        return;
+      }
+      // `exit` closes the terminal, like closing a terminal window; a fresh shell is ready for next time.
+      if (visibleRef.current) ui.set({ dockOpen: false });
+      setRun((r) => r + 1);
+    };
     setExited(false);
     setError(null);
-    invoke('terminal_start', { cwd, rows: xterm.rows, cols: xterm.cols, output, exited: done }).catch((e) => setError(String(e)));
+    invoke<string>('terminal_start', { cwd, rows: xterm.rows, cols: xterm.cols, output, exited: done })
+      .then((name) => { if (current) setShell(name); })
+      .catch((e) => { if (current) setError(`The shell didn't start: ${String(e).replace(/\s*\(os error \d+\)$/, '')}`); });
     const observer = new ResizeObserver(() => { if (host.current?.offsetWidth) fit.fit(); });
     observer.observe(host.current!);
     const unsubscribe = subscribeTheme(() => { xterm.options.theme = terminalTheme(); });
+    if (visible) xterm.focus();
     return () => {
       current = false;
       unsubscribe();
       observer.disconnect();
+      detachCaret();
+      suggest.dispose();
       data.dispose();
       size.dispose();
       invoke('terminal_stop');
@@ -88,17 +412,37 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
     }
   }, [visible]);
 
+  const restart = () => setRun(run + 1);
+  // Pointing at Restart starts the next shell, so clicking it is instant without keeping a spare running all along.
+  const warm = () => { const x = term.current?.xterm; if (x) invoke('terminal_prewarm', { cwd, rows: x.rows, cols: x.cols }); };
   return (
     <div className="terminal-tab" style={{ display: visible ? undefined : 'none' }}>
-      <div className="terminal-host" ref={host} />
+      <div className="terminal-tools">
+        {shell && <span className="terminal-shell">{shell === 'pwsh' ? 'PowerShell 7' : shell === 'powershell' ? 'PowerShell' : shell}</span>}
+        <IconButton icon="eraser" tip="Clear" size={24} onClick={() => { term.current?.xterm.clear(); term.current?.xterm.focus(); }} />
+        <span onMouseEnter={warm}><IconButton icon="refresh" tip="Restart the shell" size={24} onClick={restart} /></span>
+      </div>
+      <div className="terminal-host" ref={host} onMouseDown={() => term.current?.xterm.focus()} />
       {(exited || error) && (
         <div className="terminal-exit">
-          <span className="small muted">{error ?? 'The shell has exited.'}</span>
-          <button type="button" className="button" onClick={() => setRun(run + 1)}>Restart</button>
+          <span className={error ? 'red' : 'muted'}>{error ?? 'The shell has exited.'}</span>
+          <button type="button" className="button compact" onMouseEnter={warm} onClick={restart}>Restart</button>
         </div>
       )}
     </div>
   );
+}
+
+/** Starts the shell in the background while the panel is still closed, so the first open shows a prompt at once. */
+function usePrewarm(cwd: string, started: boolean, width: number) {
+  useEffect(() => {
+    if (started || !cwd) return;
+    const start = () => { const g = terminalGuess(width); invoke('terminal_prewarm', { cwd, ...g }); };
+    // After the window has settled: it's a process start, and the panel is rarely opened in the first second.
+    const ric = (window as unknown as { requestIdleCallback?: (f: () => void, o: { timeout: number }) => number }).requestIdleCallback;
+    const id = ric ? ric(start, { timeout: 1500 }) : window.setTimeout(start, 600);
+    return () => { if (ric) (window as unknown as { cancelIdleCallback: (n: number) => void }).cancelIdleCallback(id); else clearTimeout(id); };
+  }, [cwd, started]);
 }
 
 // ---------- changes ----------
@@ -399,6 +743,7 @@ export function Dock() {
   useEffect(() => {
     if (open && tab === 'terminal') setTermStarted(true);
   }, [open, tab]);
+  usePrewarm(cwd, termStarted, width);
   // Leave the chat at least a readable column.
   const max = Math.max(320, window.innerWidth - 380);
   return (

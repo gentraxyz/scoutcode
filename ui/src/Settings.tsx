@@ -32,7 +32,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[]
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
   { id: 'scoutmote', title: 'ScoutMote', icon: 'terminal', keywords: 'scoutmote remote control browser web phone away online computer pc' },
-  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 chess flappy bird play puzzle fun waiting music mp3 soundcloud audio song player' },
+  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 chess flappy bird scout dash runner endless lanes play puzzle fun waiting music mp3 soundcloud audio song player' },
   { id: 'privacy', title: 'Privacy', icon: 'shield', keywords: 'privacy analytics telemetry usage data tracking posthog statistics opt out' },
   { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
 ];
@@ -400,7 +400,7 @@ function Experimental() {
           )}
         </SettingRow>
       )}
-      <SettingRow title="Games" sub="Something to play while Scout works: 2048, chess against Scout, or Flappy Scout, where you flap a little bird through gaps in stacks of code. Open them with the gamepad at the top of the window and pick one. Every game keeps your progress when it closes.">
+      <SettingRow title="Games" sub="Something to play while Scout works: 2048, chess against Scout, Flappy Scout, where you flap a little bird through gaps between editor panes, or Scout Dash, an endless three-lane run. Open them with the gamepad at the top of the window and pick one. Every game keeps your progress when it closes.">
         <Toggle label="Games" on={games.on} onChange={(on) => setGames({ on })} />
       </SettingRow>
       {games.on && (

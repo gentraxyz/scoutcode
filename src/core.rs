@@ -112,13 +112,6 @@ struct Usage {
     message: Option<(bool, String)>,
 }
 
-enum Voice {
-    Idle,
-    Recording(crate::voice::Recording),
-    /// Transcribing: what it's doing.
-    Busy(&'static str),
-}
-
 /// One chat and whatever Scout is doing in it. Each runs on its own, on screen or not.
 struct Chat {
     /// What its worker's events are marked with.
@@ -262,6 +255,8 @@ pub struct Core {
     grok_models_error: Option<String>,
     /// Every saved chat, from every folder; the sidebar groups them by project.
     sessions: Vec<SessionInfo>,
+    /// Titles the model wrote, by session id (see title.rs). They win over the first line of the chat.
+    titles: HashMap<String, String>,
     projects: Vec<config::Project>,
     starred: Vec<String>,
     /// How many model lists are still being fetched.
@@ -293,7 +288,6 @@ pub struct Core {
     /// again or the next sign-in, so two computers don't keep taking it from each other.
     link_held: bool,
     usage: Usage,
-    voice: Voice,
     updater: crate::update::Updater,
     /// The releases since the version that ran here before, shown once after an update.
     whats_new: Vec<crate::update::ReleaseNote>,
@@ -738,6 +732,7 @@ impl Core {
             models: vec![],
             models_changed: true,
             sessions: session::list_sessions(),
+            titles: session::generated_titles(),
             models_loading: 0,
             login: Login::default(),
             link: None,
@@ -755,7 +750,6 @@ impl Core {
             link_permission: None,
             link_held: false,
             usage: Usage::default(),
-            voice: Voice::Idle,
             updater,
             whats_new: vec![],
             sent: HashMap::new(),
@@ -799,10 +793,6 @@ impl Core {
 
     pub fn waker(&self) -> Waker {
         self.hooks.ctx.clone()
-    }
-
-    pub fn is_recording(&self) -> bool {
-        matches!(self.voice, Voice::Recording(_))
     }
 
     fn push(&mut self, kind: ItemKind) {
@@ -910,6 +900,11 @@ impl Core {
     pub fn handle(&mut self, ev: Ev) {
         match ev {
             Ev::ForChat(key, ev) => self.handle_for(key, *ev),
+            Ev::ChatTitle { session_id, title } => {
+                session::save_generated_title(&session_id, &title);
+                self.titles.insert(session_id, title);
+                self.refresh_sessions();
+            }
             Ev::RequestStart => {
                 self.end_stream();
                 self.chat.partial.clear();
@@ -1068,6 +1063,12 @@ impl Core {
                 self.chat.queue.splice(0..0, left.into_iter().map(|s| Outgoing { text: s.text, files: s.files }));
                 self.chat.totals = agent.session.totals.clone();
                 self.chat.context = agent.context_tokens();
+                // A turn that ended in an error shows red in the sidebar until the next turn starts.
+                let errored = matches!(self.chat.items.last().map(|i| &i.kind), Some(ItemKind::Error(_)));
+                if errored != agent.session.errored {
+                    agent.session.errored = errored;
+                    crate::session::save_session(&mut agent.session);
+                }
                 self.chat.agent = Some(*agent);
                 self.chat.running = false;
                 self.chat.stopping = false;
@@ -1229,34 +1230,6 @@ impl Core {
                 self.link_status = s;
                 self.link_held = true;
             }
-            Ev::Voice(crate::voice::Update::Busy(s)) => self.voice = Voice::Busy(s),
-            Ev::Voice(crate::voice::Update::Done(r)) => {
-                self.voice = Voice::Idle;
-                match r {
-                    Ok(text) if text.is_empty() => self.chat.status = "Didn't catch anything. Try again a little closer to the mic.".into(),
-                    Ok(text) => {
-                        self.chat.status.clear();
-                        let _ = self.handle.emit("dictated", text);
-                        self.focus_epoch += 1;
-                    }
-                    Err(e) => self.chat.status = e,
-                }
-            }
-        }
-    }
-
-    /// The mic button: starts a recording, or stops it and transcribes what was said into the box.
-    pub fn toggle_voice(&mut self) {
-        match &self.voice {
-            Voice::Idle => {
-                self.chat.status.clear();
-                self.voice = Voice::Recording(crate::voice::start(self.cfg.clone(), self.hooks.clone()));
-            }
-            Voice::Recording(r) => {
-                r.stop();
-                self.voice = Voice::Busy("Transcribing…");
-            }
-            Voice::Busy(_) => {}
         }
     }
 
@@ -2253,6 +2226,17 @@ impl Core {
         let (cwd, files) = (self.chat.cwd.clone(), o.files.clone());
         let raw_text = o.text.clone();
         let text = crate::prompt::command_prompt(&o.text);
+        let first_message = !self.chat.items.iter().any(|i| matches!(i.kind, ItemKind::User { .. }));
+        if first_message && !raw_text.trim().is_empty() {
+            // A separate request: this chat's history isn't sent, and its answer isn't added to the chat.
+            let (cfg, h, id) = (self.cfg.clone(), Hooks { chat: None, ..self.hooks.clone() }, self.chat.session_id.clone());
+            let first = raw_text.clone();
+            std::thread::spawn(move || {
+                if let Some(title) = crate::title::generate(&cfg, &first) {
+                    h.send(Ev::ChatTitle { session_id: id, title });
+                }
+            });
+        }
         self.push(ItemKind::User { text: o.text, files: o.files });
         let router = (self.chat.provider == "router").then(|| self.cfg.agent_router(&self.chat.model).cloned()).flatten();
         if !self.begin_router_turn() {
@@ -2441,6 +2425,10 @@ impl Core {
         let Some(mut agent) = self.chat.agent.take() else { return };
         agent.cfg.take_keys(&self.cfg);
         agent.fail_fast = self.fails_fast();
+        if agent.session.errored {
+            agent.session.errored = false;
+            crate::session::save_session(&mut agent.session);
+        }
         agent.rate_limit_retry = self.chat.fallback.as_ref().and_then(|r| r.current_retry_rate_limit);
         self.chat.running = true;
         self.chat.stopping = false;
@@ -2541,7 +2529,8 @@ impl Core {
         self.sessions = session::list_sessions();
         for c in std::iter::once(&self.chat).chain(&self.background).filter(|c| c.running) {
             if !self.sessions.iter().any(|s| s.id == c.session_id) {
-                self.sessions.insert(0, SessionInfo { id: c.session_id.clone(), cwd: c.cwd.clone(), title: c.title(), updated: session::now_ms() });
+                let title = self.titles.get(&c.session_id).cloned().unwrap_or_else(|| c.title());
+                self.sessions.insert(0, SessionInfo { id: c.session_id.clone(), cwd: c.cwd.clone(), title, updated: session::now_ms(), errored: false });
             }
         }
     }
@@ -2700,7 +2689,7 @@ impl Core {
 
     /// The first thing asked in this chat, as its title.
     fn chat_title(&self) -> String {
-        self.chat.title()
+        self.titles.get(&self.chat.session_id).cloned().unwrap_or_else(|| self.chat.title())
     }
 
     fn any_running(&self) -> bool {
@@ -3522,12 +3511,6 @@ impl Core {
         let hub = crate::mcp_client::hub();
         let steering: Vec<String> = self.chat.shared.steer.lock().unwrap().iter().map(|s| s.text.clone()).collect();
         let login_needed = cfg.nothing_to_run_on();
-        let voice = match &self.voice {
-            Voice::Idle => json!({ "state": "idle" }),
-            // Rounded so that it only goes out when it moves.
-            Voice::Recording(r) => json!({ "state": "recording", "level": (r.level().sqrt() * 20.0).round() / 20.0 }),
-            Voice::Busy(s) => json!({ "state": "busy", "label": s }),
-        };
         let kilo_check = self.login.kilo_check.as_ref().map(|r| match r {
             Ok(m) => json!({ "ok": true, "message": m }),
             Err(m) => json!({ "ok": false, "message": m }),
@@ -3632,7 +3615,7 @@ impl Core {
                 let live = std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == s.id);
                 let (running, waiting) = (live.is_some_and(|c| c.running), live.is_some_and(Chat::waiting));
                 let done = !running && !waiting && self.cfg.done_chats.get(&s.id).is_some_and(|&t| t >= s.updated);
-                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "running": running, "waiting": waiting, "unread": live.is_some_and(|c| c.unread), "done": done })
+                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "running": running, "waiting": waiting, "unread": live.is_some_and(|c| c.unread), "errored": s.errored, "done": done })
             }).collect::<Vec<_>>())),
             ("projects", json!(self.projects)),
             ("chat", json!({ "id": self.chat.session_id, "cwd": self.chat.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch })),
@@ -3670,7 +3653,6 @@ impl Core {
             ("scoutMote", json!({ "on": self.cfg.scout_mote, "running": self.remote.is_some(), "status": self.remote_status, "online": self.remote.is_some() && self.remote_online, "name": crate::remote::computer_name() })),
             ("usage", json!({ "info": self.usage.info, "busy": self.usage.busy, "message": self.usage.message })),
             ("quotas", json!(crate::quota::all())),
-            ("voice", voice),
             ("updater", json!({ "enabled": self.updater.enabled(), "version": crate::update::VERSION, "commit": crate::update::COMMIT, "status": status_json(&self.updater.status()) })),
             ("whatsNew", json!(self.whats_new)),
             ("mcp", json!({ "error": hub.error(), "servers": mcp_views })),
@@ -3749,9 +3731,7 @@ pub fn pump(core: Arc<Mutex<Core>>, rx: Receiver<Ev>, wake: Receiver<()>) {
             core.quota_poll();
             core.dream_tick();
         }
-        // The mic's level has no event of its own.
-        let wait = if core.lock().unwrap().is_recording() { Duration::from_millis(50) } else { Duration::from_secs(1) };
-        match wake.recv_timeout(wait) {
+        match wake.recv_timeout(Duration::from_secs(1)) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }

@@ -6,6 +6,7 @@ import { FreeQuotaChip, meterText, PlanLimits, usePlanLimit, usedShare } from '.
 import { Markdown } from './Transcript';
 import { focusComposer, ui, useCore, useUi, useView } from './store';
 import { CodeBlock, Icon, IconButton, Popover, ShowDisplay, Spinner, TodoList } from './widgets';
+import { WorkingOn } from './Cloud';
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -233,7 +234,6 @@ function InputBox() {
   const coreFocus = useView('focusEpoch');
   const { running, stopping, stopped } = useView('run');
   const chat = useView('chat');
-  const voice = useView('voice');
   const box = useRef<HTMLTextAreaElement>(null);
   const historyPos = useRef<number | null>(null);
   const [mention, setMention] = useState<{ start: number; end: number; query: string } | null>(null);
@@ -373,6 +373,9 @@ function InputBox() {
   };
 
   const ready = !!input.trim() || attachments.length > 0;
+  const effort = useView('effort');
+  const efforts = useCore((s) => s.statics.efforts);
+  const totals = useView('totals').totals;
   return (
     <div className={`input-box ${running ? 'working' : ''}`}>
       {attachments.length > 0 && (
@@ -429,15 +432,23 @@ function InputBox() {
           ui.set({ attachments: [...had, ...files.filter((f) => !had.includes(f))] });
           focusComposer();
         }}><Icon name="plus" /></button>
+        <ComposerSettings />
         <span className="grow" />
-        {voice.state === 'idle' && <IconButton icon="mic" tip="Dictate (Ctrl+Shift+Space). Transcribed by Deepgram through ScoutCode" onClick={() => act('toggleVoice')} />}
-        {voice.state === 'recording' && (
-          <button type="button" className="mic-live" title="Listening. Click (or Ctrl+Shift+Space) to stop and transcribe" onClick={() => act('toggleVoice')}>
-            <span className="mic-ring" style={{ transform: `scale(${1 + voice.level * 0.6})` }} />
-            <Icon name="mic" />
-          </button>
-        )}
-        {voice.state === 'busy' && <span className="mic-busy" title={voice.label}><Spinner size={14} /></span>}
+        <ModelChip />
+        <LevelPicker
+          title="Reasoning Effort"
+          tip="Reasoning effort"
+          tone="reason"
+          less="Faster"
+          more="Smarter"
+          align="end"
+          levels={efforts.map((e) => ({ id: e, label: capital(e) }))}
+          value={effort}
+          onChange={(id) => act('setEffort', { effort: id })}
+        />
+        <FreeQuotaChip />
+        {totals.balance !== undefined && <span className="tiny dim nowrap">balance ${totals.balance.toFixed(2)}</span>}
+        <UsageRing />
         {(ready || !running) && (
           <button type="button" className={`round send ${ready ? 'ready' : ''}`} disabled={!ready} aria-label="Send" title={running ? 'Queue (Enter) · Ctrl+click or Ctrl+Enter to send it now' : undefined} onClick={(e) => send(e.ctrlKey)}><Icon name="arrowUp" /></button>
         )}
@@ -493,27 +504,14 @@ function securityLevels(modes: { id: string; label: string; about?: string }[]):
 
 function Footer() {
   const { running, status, stopped } = useView('run');
-  const mode = useView('mode');
-  const effort = useView('effort');
-  const totals = useView('totals').totals;
   const permission = useView('permission');
   const plan = useView('plan');
   const questions = useView('questions');
-  const { modes, efforts } = useCore((s) => s.statics);
   const typing = useUi((u) => !!u.input.trim() || u.attachments.length > 0);
   const waiting = permission || plan !== null || questions;
   return (
     <div className="footer">
-      <LevelPicker
-        title="Permissions"
-        tip="Permission mode (Shift+Tab)"
-        tone="free"
-        less="Safer"
-        more="Freer"
-        levels={securityLevels(modes)}
-        value={mode}
-        onChange={(id) => act('setMode', { mode: id })}
-      />
+      <WorkingOn disabled={running} />
       {running ? (
         <>
           <Spinner size={11} />
@@ -524,24 +522,23 @@ function Footer() {
       ) : stopped ? (
         <span className="tiny dim ellipsis">Stopped · press play to resume</span>
       ) : status && <span className="tiny dim ellipsis">{status}</span>}
-      <span className="grow" />
-      <ModelChip />
-      <LevelPicker
-        title="Reasoning Effort"
-        tip="Reasoning effort"
-        tone="reason"
-        less="Faster"
-        more="Smarter"
-        align="end"
-        levels={efforts.map((e) => ({ id: e, label: capital(e) }))}
-        value={effort}
-        onChange={(id) => act('setEffort', { effort: id })}
-      />
-      <FreeQuotaChip />
-      {totals.balance !== undefined && <span className="tiny dim nowrap">balance ${totals.balance.toFixed(2)}</span>}
-      <UsageRing />
     </div>
   );
+}
+
+function ComposerSettings() {
+  const mode = useView('mode');
+  const { modes } = useCore((s) => s.statics);
+  return <LevelPicker
+    title="Permissions"
+    tip="Permission mode (Shift+Tab)"
+    tone="free"
+    less="Safer"
+    more="Freer"
+    levels={securityLevels(modes)}
+    value={mode}
+    onChange={(id) => act('setMode', { mode: id })}
+  />;
 }
 
 export function Composer() {

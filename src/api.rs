@@ -1572,24 +1572,6 @@ pub fn classify_with_jev(cfg: &Config, prompt: &str) -> Option<u8> {
     }
 }
 
-/// Speech to text (Deepgram, through the server): the transcript of a WAV recording.
-pub fn transcribe(cfg: &Config, wav: &[u8]) -> Result<String, ApiError> {
-    let res = http()
-        .post(&format!("{}/audio/transcriptions", cfg.base_url))
-        .header("Authorization", &format!("Bearer {}", key(cfg)?))
-        .header("Content-Type", "audio/wav")
-        .config()
-        .timeout_global(Some(Duration::from_secs(120)))
-        .build()
-        .send(wav)
-        .map_err(transport)?;
-    if !res.status().is_success() {
-        return Err(error_from(res));
-    }
-    let body: Value = res.into_body().read_json().map_err(transport)?;
-    Ok(body.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string())
-}
-
 /// Web search (Exa, through the server): the results' titles, URLs, dates and best-matching sentences, without the
 /// pages themselves, which web_fetch reads on this computer. `body` is the request as /search takes it.
 pub fn search(cfg: &Config, body: &Value) -> Result<Value, ApiError> {

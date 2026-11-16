@@ -194,7 +194,7 @@ export type View = {
   questions: Question[] | null;
   queue: { text: string; files: number }[];
   steering: string[];
-  sessions: { id: string; cwd: string; title: string; ago: string; running: boolean; waiting: boolean; unread: boolean; done?: boolean }[];
+  sessions: { id: string; cwd: string; title: string; ago: string; running: boolean; waiting: boolean; unread: boolean; errored: boolean; done?: boolean }[];
   projects: { name: string; path: string }[];
   chat: { id: string | null; cwd: string; project: string; title: string; epoch: number };
   filesEpoch: number;
@@ -211,7 +211,6 @@ export type View = {
   scoutMote: { on: boolean; running: boolean; status: string; online: boolean; name: string };
   usage: { info: UsageInfo | null; busy: boolean; message: [boolean, string] | null };
   quotas: QuotaSnapshot[];
-  voice: { state: 'idle' } | { state: 'recording'; level: number } | { state: 'busy'; label: string };
   updater: { enabled: boolean; version: string; commit: string; status: UpdateStatus };
   /** The releases since the version that ran before this one, newest first. Empty unless the app was just updated. */
   whatsNew: { version: string; summary: string; changelog: string }[];

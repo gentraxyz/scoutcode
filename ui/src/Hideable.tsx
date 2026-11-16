@@ -14,6 +14,7 @@ export const HIDEABLE = [
   ['top.project', 'Project folder', 'Top bar'],
   ['rail.inbox', 'Inbox', 'Side rail'],
   ['rail.issues', 'Issues', 'Side rail'],
+  ['rail.epsilon', 'Epsilon', 'Side rail'],
   ['side.search', 'Search chats', 'Sidebar'],
   ['side.newChat', 'New chat button', 'Sidebar'],
 ] as const;

@@ -26,7 +26,7 @@ static AGENT: crate::node::Agent = crate::node::Agent {
 };
 
 /// Its settings, in a folder that's Scout's alone: no update checks, and no history of its own, since the chat is Scout's.
-const SETTINGS: &str = "check_for_update_on_startup = false\n\n[history]\npersistence = \"none\"\n";
+const SETTINGS: &str = "check_for_update_on_startup = false\n\n[features]\nguardian_approval = false\n\n[history]\npersistence = \"none\"\n";
 
 /// Its sign-in, settings and sessions: Scout's alone.
 fn own_home() -> PathBuf {

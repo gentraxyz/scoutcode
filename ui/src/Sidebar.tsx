@@ -3,13 +3,15 @@ import { act, invoke, usd, type View } from './api';
 import { ui, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
 import { Hideable, useHidden } from './Hideable';
+import { CloudSessionRow, useCloudRows } from './Cloud';
+import { newCloudChat } from './epsilon';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const sameDir = (a: string, b: string) => norm(a) === norm(b);
 
-/** Opens Scout's folder picker; choosing a folder there adds it (see FolderPicker). */
+/** "New project": asks whether it's a folder on this PC (Scout's folder picker) or a repository in the cloud. */
 export function addProject() {
-  ui.set({ pickingFolder: true });
+  ui.set({ newProject: 'ask' });
 }
 
 type SessionInfo = View['sessions'][number];
@@ -20,12 +22,13 @@ export function useProjectName() {
   return (cwd: string) => projects.find((p) => sameDir(p.path, cwd))?.name ?? (cwd.replaceAll('\\', '/').replace(/\/+$/, '').split('/').pop() || cwd);
 }
 
-/** How a chat is doing, for one that isn't on screen as well as the one that is. */
-function SessionState({ s }: { s: SessionInfo }) {
-  if (s.waiting) return <span className="session-status waiting" title="Scout needs your answer"><span className="session-dot waiting" />Needs input</span>;
-  if (s.running) return <span className="session-status working" title="Scout is working"><Spinner size={11} />Working</span>;
-  if (s.unread) return <span className="session-status finished" title="Finished"><span className="session-dot" />New</span>;
-  return null;
+/** How a chat is doing, as a small mark after its title. Nothing done yet shows no mark; the first that applies wins. */
+function SessionDot({ s }: { s: SessionInfo }) {
+  const state = s.waiting ? 'asking' : s.running ? 'working' : s.errored ? 'error' : s.unread ? 'unread' : 'idle';
+  if (state === 'idle') return null;
+  const label = { asking: 'Scout needs your answer', working: 'Scout is working', error: 'The last turn ended in an error', unread: 'Finished, not opened yet' }[state];
+  const mark = { asking: '?', error: '!', working: '', unread: '' }[state];
+  return <span className={`session-dot ${state}`} title={label} aria-label={label}>{mark}</span>;
 }
 
 /** A row in a list that can be reordered by dragging: how it looks now, and where a press on it starts a drag. */
@@ -45,10 +48,10 @@ export function SessionRow({ s, current, project, dnd }: { s: SessionInfo; curre
       style={dnd?.style}
       onPointerDown={dnd?.onPointerDown}
     >
-      <button type="button" className="session-open" onClick={() => { ui.set({ page: 'chat' }); act('openChat', { id: s.id }); }}>
+      <button type="button" className="session-open" onClick={() => { ui.set({ page: 'chat', cloud: null }); act('openChat', { id: s.id }); }}>
         <span className="session-line">
           <span className="session-title ellipsis grow">{s.title}</span>
-          <SessionState s={s} />
+          <SessionDot s={s} />
         </span>
         <span className="session-line sub">
           <span className="ellipsis grow">{project}</span>
@@ -111,6 +114,10 @@ function ChatList({ done }: { done: boolean }) {
   const chat = useView('chat');
   const projectName = useProjectName();
   const rows = sessions.filter((s) => !!s.done === done);
+  // Cloud chats sit above this PC's, newest first; only this PC's can be dragged into an order.
+  const cloudRows = useCloudRows(done);
+  const openCloud = useUi((u) => (u.page === 'chat' ? u.cloud?.taskId ?? null : null));
+  const inCloud = useUi((u) => !!u.cloud);
   const byId = new Map(rows.map((r) => [r.id, r]));
   const listRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -202,6 +209,7 @@ function ChatList({ done }: { done: boolean }) {
       className={`side-scroll ${drag && !drag.settling ? 'reordering' : ''}`}
       onClickCapture={(e) => { if (suppressClick.current) { e.preventDefault(); e.stopPropagation(); } }}
     >
+      {cloudRows.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />)}
       {ids.map((id) => {
         const s = byId.get(id);
         if (!s) return null;
@@ -210,7 +218,7 @@ function ChatList({ done }: { done: boolean }) {
           <SessionRow
             key={id}
             s={s}
-            current={id === chat.id}
+            current={!inCloud && id === chat.id}
             project={projectName(s.cwd)}
             dnd={{
               dragging,
@@ -224,7 +232,7 @@ function ChatList({ done }: { done: boolean }) {
           />
         );
       })}
-      {rows.length === 0 && <div className="small dim no-chats">{done ? 'Nothing marked done yet.' : 'No chats yet. Start one above.'}</div>}
+      {rows.length === 0 && cloudRows.length === 0 && <div className="small dim no-chats">{done ? 'Nothing marked done yet.' : 'No chats yet. Start one above.'}</div>}
     </div>
   );
 }
@@ -256,7 +264,7 @@ function ProjectsMenu() {
               }} />
             ) : (
               <div key={p.path} className={`project-row ${sameDir(p.path, chat.cwd) ? 'here' : ''}`} title={p.path}>
-                <button type="button" className="project-open" onClick={() => { close(); ui.set({ page: 'chat' }); act('changeProject', { dir: p.path }); }}>
+                <button type="button" className="project-open" onClick={() => { close(); ui.set({ page: 'chat', cloud: null }); act('changeProject', { dir: p.path }); }}>
                   <Icon name="folder" size={15} />
                   <span className="ellipsis">{p.name}</span>
                 </button>
@@ -267,7 +275,7 @@ function ProjectsMenu() {
             ))}
           </div>
           <hr />
-          <MenuItem icon="folderPlus" onClick={() => { close(); addProject(); }}>Add a project folder…</MenuItem>
+          <MenuItem icon="folderPlus" onClick={() => { close(); addProject(); }}>New project…</MenuItem>
         </>
       )}
     </Popover>
@@ -346,7 +354,8 @@ export function Sidebar() {
   const searching = !!search.trim() && !useHidden().includes('side.search');
   const [showDone, setShowDoneState] = useState(lastShowDone);
   const setShowDone = (v: boolean) => { lastShowDone = v; setShowDoneState(v); };
-  const doneCount = useView('sessions').filter((s) => s.done).length;
+  const doneCount = useView('sessions').filter((s) => s.done).length + useCloudRows(true).length;
+  const inCloud = useUi((u) => !!u.cloud);
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="side-head" data-tauri-drag-region>
@@ -354,8 +363,8 @@ export function Sidebar() {
         <span className="grow" data-tauri-drag-region />
         <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />
       </div>
-      <Hideable id="side.newChat"><button type="button" className="new-chat" onClick={() => { ui.set({ page: 'chat' }); act('newChat'); }}>
-        <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
+      <Hideable id="side.newChat"><button type="button" className="new-chat" title={inCloud ? 'A new cloud chat, in the same repository' : undefined} onClick={() => { if (inCloud) return newCloudChat(); ui.set({ page: 'chat' }); act('newChat'); }}>
+        <Icon name={inCloud ? 'cloud' : 'plus'} /><span className="grow">{inCloud ? 'New cloud chat' : 'New chat'}</span><span className="tiny dim">Ctrl+N</span>
       </button></Hideable>
       <Hideable id="side.search">
       <div className="side-search">
@@ -372,7 +381,7 @@ export function Sidebar() {
               : <SectionLabel>Recent</SectionLabel>}
             <span className="grow" />
             <ProjectsMenu />
-            <IconButton icon="folderPlus" tip="Add a project folder" size={26} onClick={addProject} />
+            <IconButton icon="folderPlus" tip="New project: a folder on this PC or a repository in the cloud" size={26} onClick={addProject} />
           </div>
           <ChatList done={showDone} />
           {!showDone && (

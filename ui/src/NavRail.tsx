@@ -75,6 +75,9 @@ export function NavRail() {
       <Hideable id="rail.issues">
         <RailButton on={page === 'delta'} tip="Issues: projects, cycles and docs" onClick={() => ui.set({ page: 'delta' })}><DeltaMark size={17} /></RailButton>
       </Hideable>
+      <Hideable id="rail.epsilon">
+        <RailButton on={page === 'epsilon'} tip="Epsilon: your cloud computers" onClick={() => ui.set({ page: 'epsilon' })}><Icon name="cloud" size={19} /></RailButton>
+      </Hideable>
       <span className="grow" data-tauri-drag-region />
       <Account />
     </nav>

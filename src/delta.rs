@@ -66,8 +66,14 @@ pub fn cloud(cfg: &Config, method: &str, path: &str, body: Option<Value>) -> Res
     if !path.starts_with("/api/account/delta") || path.contains("..") {
         return Err("Not a Delta path".into());
     }
+    site_request(cfg, method, path, body, 30, "Sign in to your ScoutCode account to use cloud workspaces.")
+}
+
+/// A JSON request to the ScoutCode site as the signed-in account (its key as a bearer token), for the window's cloud
+/// features. `signed_out` is the error when there's no account key.
+pub fn site_request(cfg: &Config, method: &str, path: &str, body: Option<Value>, secs: u64, signed_out: &str) -> Result<Value, String> {
     let Some(key) = cfg.api_key.as_deref().filter(|k| !k.is_empty()) else {
-        return Err("Sign in to your ScoutCode account to use cloud workspaces.".into());
+        return Err(signed_out.into());
     };
     let site = cfg.base_url.trim_end_matches('/').trim_end_matches("/v1");
     let url = format!("{site}{path}");
@@ -76,7 +82,7 @@ pub fn cloud(cfg: &Config, method: &str, path: &str, body: Option<Value>) -> Res
         "GET" => agent
             .get(&url)
             .config()
-            .timeout_global(Some(Duration::from_secs(30)))
+            .timeout_global(Some(Duration::from_secs(secs)))
             .http_status_as_error(false)
             .build()
             .header("Authorization", &format!("Bearer {key}"))
@@ -84,7 +90,7 @@ pub fn cloud(cfg: &Config, method: &str, path: &str, body: Option<Value>) -> Res
         "POST" => agent
             .post(&url)
             .config()
-            .timeout_global(Some(Duration::from_secs(30)))
+            .timeout_global(Some(Duration::from_secs(secs)))
             .http_status_as_error(false)
             .build()
             .header("Authorization", &format!("Bearer {key}"))

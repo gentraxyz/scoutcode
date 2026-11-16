@@ -22,6 +22,8 @@ import { FolderPicker } from './FolderPicker';
 import { UsageAlert } from './UsageAlert';
 import { Icon, IconButton, Modal } from './widgets';
 import { useActivityPing } from './Dreams';
+import { CloudChat, CloudTitle, EpsilonSidebar, NewProjectDialog, VmBar, VmPage } from './Cloud';
+import { newCloudChat, useEpsilonSync } from './epsilon';
 
 const appWindow = getCurrentWindow();
 
@@ -127,6 +129,28 @@ function TopBar() {
   const dockTab = useUi((u) => u.dockTab);
   const chat = useView('chat');
   const page = useUi((u) => u.page);
+  const inCloud = useUi((u) => !!u.cloud);
+  if (page === 'epsilon') {
+    return (
+      <header className="top-bar" data-tauri-drag-region>
+        {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
+        <VmBar />
+        <UpdatePill />
+        <WindowButtons />
+      </header>
+    );
+  }
+  if (page === 'chat' && inCloud) {
+    return (
+      <header className="top-bar" data-tauri-drag-region>
+        {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
+        <CloudTitle />
+        <span className="grow" data-tauri-drag-region />
+        <UpdatePill />
+        <WindowButtons />
+      </header>
+    );
+  }
   // Issues and Inbox have no chats sidebar (the rail gets you back), so no button to show it either.
   if (page === 'inbox') {
     return (
@@ -356,12 +380,11 @@ function useShortcuts() {
         e.preventDefault();
         return ui.set({ findOpen: true, findEpoch: ui.get().findEpoch + 1 });
       }
-      if (e.ctrlKey && e.shiftKey && e.code === 'Space') {
-        e.preventDefault();
-        return act('toggleVoice');
-      }
       if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
+        // In a cloud chat, a new one goes to the same repository.
+        if (ui.get().cloud && ui.get().page === 'chat') return newCloudChat();
+        ui.set({ page: 'chat', cloud: null });
         return act('newChat');
       }
       // Only from the chat box: everywhere else Shift+Tab moves focus back, as usual.
@@ -370,7 +393,7 @@ function useShortcuts() {
         return act('cycleMode');
       }
       // Esc closes whatever is open on top before it stops Scout.
-      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder) act('stop');
+      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().newProject && !ui.get().cloud) act('stop');
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
@@ -384,7 +407,12 @@ export function App() {
   const dropping = useUi((u) => u.dropping);
   // With no chat open yet, the box sits in the middle under the greeting; it moves down once there's a transcript.
   const fresh = useCore((s) => s.items.length === 0);
+  const inCloud = useUi((u) => !!u.cloud);
   useShortcuts();
+  useEpsilonSync();
+  // Opening or starting a chat on this PC (from anywhere: the Inbox, a notification) puts it back on screen.
+  const chatEpoch = useView('chat').epoch;
+  useEffect(() => { ui.set({ cloud: null }); }, [chatEpoch]);
   useGameAutomation();
   useActivityPing();
   useEffect(() => {
@@ -399,10 +427,6 @@ export function App() {
       }),
       listen('drop-hover', () => ui.set({ dropping: true })),
       listen('drop-leave', () => ui.set({ dropping: false })),
-      listen<string>('dictated', (e) => {
-        const input = ui.get().input;
-        ui.set({ input: input && !/\s$/.test(input) ? `${input} ${e.payload}` : input + e.payload });
-      }),
     ];
     // Links never navigate the window; anything that gets past their own handlers stops here.
     const click = (e: MouseEvent) => {
@@ -430,9 +454,12 @@ export function App() {
     <div className="app">
       <NavRail />
       {sidebar && page === 'chat' && <Sidebar />}
+      {sidebar && page === 'epsilon' && <EpsilonSidebar />}
       <div className="main">
         <TopBar />
-        {page === 'delta' ? <DeltaPage /> : page === 'inbox' ? <Inbox /> : (
+        {page === 'delta' ? <DeltaPage /> : page === 'inbox' ? <Inbox /> : page === 'epsilon' ? <VmPage /> : inCloud ? (
+          <div className="main-body"><CloudChat /></div>
+        ) : (
           <div className="main-body">
             <div className={`chat ${fresh ? 'fresh' : ''}`}>
               {fresh && <AsciiBackdrop />}
@@ -450,6 +477,7 @@ export function App() {
       <UncensoredDialog />
       <HideMenu />
       <FolderPicker />
+      <NewProjectDialog />
       <LinkPermission />
       <WhatsNew />
       <UsageAlert />

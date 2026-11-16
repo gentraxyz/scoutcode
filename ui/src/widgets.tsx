@@ -7,6 +7,7 @@ import { openExternal, type DiffLines, type Display, type Todo } from './api';
 const PATHS: Record<string, string> = {
   plus: 'M8 3v10M3 8h10',
   close: 'M4 4l8 8M12 4l-8 8',
+  eraser: 'M7 13.5h6.5M2.900 9.700l5.700-5.700a1.400 1.400 0 0 1 2 0l2.400 2.400a1.400 1.400 0 0 1 0 2L8 13.500H5.700L2.900 10.700a.700.700 0 0 1 0-1zM5.800 6.800l4.400 4.400',
   check: 'M3.5 8.5l3 3 6-7',
   inbox: 'M2 9h3.5l1 2h3l1-2H14M3.5 3h9L14 9v4H2V9z',
   search: 'M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM11 11l3 3',
@@ -39,7 +40,6 @@ const PATHS: Record<string, string> = {
   chat: 'M2.500 3.500h11v7.500H7l-3 2.500V11H2.500z',
   pencil: 'M3 13l.700-2.800 7-7 2.100 2.100-7 7zM9.700 4.200l2.100 2.100',
   paperclip: 'M12.500 7.500l-4.800 4.800a2.800 2.800 0 0 1-4-4l5.200-5.200a1.900 1.900 0 0 1 2.700 2.700l-5 5a.9.9 0 0 1-1.300-1.300l4.500-4.500',
-  mic: 'M8 10a2 2 0 0 0 2-2V4a2 2 0 1 0-4 0v4a2 2 0 0 0 2 2zM3.800 7.500a4.200 4.200 0 0 0 8.400 0M8 11.700V14',
   copy: 'M6.5 5.5h5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1zM3.5 10.5v-6a1 1 0 0 1 1-1h6',
   arrowUp: 'M8 13V3.500M3.800 7.500L8 3.300l4.200 4.200',
   refresh: 'M13 8a5 5 0 1 1-1.500-3.500M13 2.500v3h-3',
@@ -72,6 +72,8 @@ const PATHS: Record<string, string> = {
   credit: 'M2 4h12v8H2zM2 6.800h12M4.500 9.600h3',
   gift: 'M2.500 6.500h11v2h-11zM3.500 8.500h9v5h-9zM8 6.500v7M8 6.500H5.800a1.500 1.500 0 1 1 1.400-2L8 6.500zM8 6.500h2.200a1.500 1.500 0 1 0-1.400-2L8 6.500z',
   lock: 'M4 7.500h8v6H4zM5.500 7.500V5.300a2.500 2.500 0 0 1 5 0v2.200M8 10v1.500',
+  cloud: 'M4.600 12.500h6.700a2.800 2.800 0 0 0 .300-5.600 3.900 3.900 0 0 0-7.500.700 2.500 2.500 0 0 0 .500 4.900z',
+  stop: 'M4.500 4.500h7v7h-7z',
 };
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {

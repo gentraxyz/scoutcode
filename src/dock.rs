@@ -4,16 +4,25 @@ use crate::diff::{self, DiffLine};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use std::io::{Read, Write};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 // ---------- terminal ----------
+
+/// Where a shell's output goes: kept while it's a spare nobody sees yet, then streamed to the panel.
+enum Sink {
+    Held { bytes: Vec<u8>, exited: bool },
+    Live { output: Channel<InvokeResponseBody>, exited: Channel<bool> },
+}
 
 struct Session {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
+    sink: Arc<Mutex<Sink>>,
+    cwd: String,
+    name: String,
 }
 
 impl Drop for Session {
@@ -22,70 +31,298 @@ impl Drop for Session {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct Terminal(Arc<Mutex<Option<Session>>>);
+impl Session {
+    fn exited(&self) -> bool {
+        matches!(&*self.sink.lock().unwrap(), Sink::Held { exited: true, .. })
+    }
+}
 
-/// PowerShell 7 when it's installed, else Windows PowerShell; $SHELL elsewhere. SCOUT_TERMINAL overrides both.
+#[derive(Default)]
+struct Shells {
+    live: Option<Session>,
+    /// Started ahead of time, so opening the panel (or Restart) shows a prompt at once instead of waiting most of a
+    /// second for PowerShell to load.
+    spare: Option<Session>,
+}
+
+#[derive(Clone, Default)]
+pub struct Terminal(Arc<Mutex<Shells>>);
+
+const INIT_PS1: &str = include_str!("terminal/init.ps1");
+const INIT_SH: &str = include_str!("terminal/init.sh");
+
+/// The panel's startup scripts (terminal/), written once per run to a folder of their own. None when that can't be
+/// done: the shell then starts plain.
+fn init_dir() -> Option<&'static PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("scout-terminal-{}", env!("CARGO_PKG_VERSION")));
+        std::fs::create_dir_all(&dir).ok()?;
+        let sh = dir.join("init.sh").to_string_lossy().replace('\'', r"'\''");
+        let files = [
+            ("init.ps1", INIT_PS1.to_string()),
+            ("init.sh", INIT_SH.to_string()),
+            // bash reads --rcfile instead of ~/.bashrc, so this sources that first.
+            ("bashrc", format!("[ -f ~/.bashrc ] && . ~/.bashrc\n. '{sh}'\n")),
+            // zsh reads its startup files from $ZDOTDIR: these load the user's own (from their ZDOTDIR), then Scout's.
+            (".zshenv", "__scout_zd=\"$ZDOTDIR\"; ZDOTDIR=\"${SCOUT_USER_ZDOTDIR:-$HOME}\"; [ -f \"$ZDOTDIR/.zshenv\" ] && . \"$ZDOTDIR/.zshenv\"; __scout_user_zd=\"$ZDOTDIR\"; ZDOTDIR=\"$__scout_zd\"\n".to_string()),
+            (".zshrc", format!("ZDOTDIR=\"$__scout_user_zd\"; [ -f \"$ZDOTDIR/.zshrc\" ] && . \"$ZDOTDIR/.zshrc\"; . '{sh}'\n")),
+        ];
+        for (name, text) in files {
+            let path = dir.join(name);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                std::fs::write(&path, text).ok()?;
+            }
+        }
+        Some(dir)
+    })
+    .as_ref()
+}
+
+/// PowerShell 7 when it's installed, else Windows PowerShell; $SHELL elsewhere. SCOUT_TERMINAL overrides both, and
+/// starts without Scout's additions.
 fn shell() -> CommandBuilder {
     if let Ok(s) = std::env::var("SCOUT_TERMINAL") {
         return CommandBuilder::new(s);
     }
+    let init = init_dir();
     if cfg!(windows) {
         let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
         let pwsh = Path::new(&pf).join(r"PowerShell\7\pwsh.exe");
         let mut c = CommandBuilder::new(if pwsh.exists() { pwsh.to_string_lossy().to_string() } else { "powershell.exe".into() });
         c.arg("-NoLogo");
+        // Startup work nobody sees in a panel.
+        c.env("POWERSHELL_UPDATECHECK", "Off");
+        c.env("POWERSHELL_TELEMETRY_OPTOUT", "1");
+        if let Some(dir) = init {
+            let script = dir.join("init.ps1").to_string_lossy().replace('\'', "''");
+            c.args(["-NoExit", "-Command", &format!(". '{script}'")]);
+        }
         c
     } else {
-        CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()))
+        let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+        let kind = Path::new(&sh).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let mut c = CommandBuilder::new(&sh);
+        if let Some(dir) = init {
+            if kind == "bash" {
+                c.args(["--rcfile".to_string(), dir.join("bashrc").to_string_lossy().to_string(), "-i".to_string()]);
+            } else if kind == "zsh" {
+                if let Ok(z) = std::env::var("ZDOTDIR") {
+                    c.env("SCOUT_USER_ZDOTDIR", z);
+                }
+                c.env("ZDOTDIR", dir);
+            }
+        }
+        c
     }
 }
 
-impl Terminal {
-    /// Starts a shell, replacing any before it. Output arrives as raw bytes on `output`; `exited` fires when it ends.
-    pub fn start(&self, cwd: &str, rows: u16, cols: u16, output: Channel<InvokeResponseBody>, exited: Channel<bool>) -> Result<String, String> {
-        let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
-        let mut cmd = shell();
-        let name = Path::new(cmd.get_argv()[0].to_str().unwrap_or("shell")).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        cmd.cwd(cwd);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-        drop(pair.slave);
-        let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-        *self.0.lock().unwrap() = Some(Session { writer, master: pair.master, child });
-        std::thread::Builder::new()
-            .name("scout-terminal".into())
-            .spawn(move || {
-                let mut buf = [0u8; 16 * 1024];
-                while let Ok(n) = reader.read(&mut buf) {
-                    if n == 0 || output.send(InvokeResponseBody::Raw(buf[..n].to_vec())).is_err() {
-                        break;
+fn spawn(cwd: &str, rows: u16, cols: u16) -> Result<Session, String> {
+    let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
+    let mut cmd = shell();
+    let name = Path::new(cmd.get_argv()[0].to_str().unwrap_or("shell")).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    cmd.cwd(cwd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let sink = Arc::new(Mutex::new(Sink::Held { bytes: Vec::new(), exited: false }));
+    let to = sink.clone();
+    std::thread::Builder::new()
+        .name("scout-terminal".into())
+        .spawn(move || {
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = reader.read(&mut buf).unwrap_or(0);
+                match &mut *to.lock().unwrap() {
+                    Sink::Held { bytes, exited } => {
+                        if n == 0 {
+                            *exited = true;
+                            return;
+                        }
+                        // A spare that's never shown shouldn't grow without end.
+                        if bytes.len() < 4 << 20 {
+                            bytes.extend_from_slice(&buf[..n]);
+                        }
+                    }
+                    Sink::Live { output, exited } => {
+                        if n == 0 || output.send(InvokeResponseBody::Raw(buf[..n].to_vec())).is_err() {
+                            let _ = exited.send(true);
+                            return;
+                        }
                     }
                 }
-                let _ = exited.send(true);
-            })
-            .map_err(|e| e.to_string())?;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(Session { writer, master: pair.master, child, sink, cwd: cwd.to_string(), name })
+}
+
+impl Terminal {
+    /// Starts a spare shell in `cwd` for the panel to take later, unless one is already waiting there.
+    pub fn prewarm(&self, cwd: &str, rows: u16, cols: u16) {
+        let ready = |s: &Option<Session>| s.as_ref().is_some_and(|s| s.cwd == cwd && !s.exited());
+        if cwd.is_empty() || ready(&self.0.lock().unwrap().spare) {
+            return;
+        }
+        let me = self.clone();
+        let cwd = cwd.to_string();
+        // Off the IPC thread: starting a process is the slow part.
+        std::thread::spawn(move || {
+            if let Ok(s) = spawn(&cwd, rows.max(2), cols.max(20)) {
+                let mut shells = me.0.lock().unwrap();
+                if !shells.spare.as_ref().is_some_and(|old| old.cwd == cwd && !old.exited()) {
+                    shells.spare = Some(s);
+                }
+            }
+        });
+    }
+
+    /// Shows a shell, replacing any before it: the spare when it's for this folder, else a new one. Output arrives as
+    /// raw bytes on `output`; `exited` fires when it ends.
+    pub fn start(&self, cwd: &str, rows: u16, cols: u16, output: Channel<InvokeResponseBody>, exited: Channel<bool>) -> Result<String, String> {
+        let spare = {
+            let mut shells = self.0.lock().unwrap();
+            shells.live = None;
+            shells.spare.take().filter(|s| s.cwd == cwd && !s.exited())
+        };
+        let session = match spare {
+            Some(s) => {
+                let _ = s.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                s
+            }
+            None => spawn(cwd, rows, cols)?,
+        };
+        {
+            // Under the lock, so nothing the shell prints falls between what was held and what streams.
+            let mut sink = session.sink.lock().unwrap();
+            if let Sink::Held { bytes, exited: done } = &mut *sink {
+                if !bytes.is_empty() {
+                    let _ = output.send(InvokeResponseBody::Raw(std::mem::take(bytes)));
+                }
+                if *done {
+                    let _ = exited.send(true);
+                }
+            }
+            *sink = Sink::Live { output, exited };
+        }
+        let name = session.name.clone();
+        self.0.lock().unwrap().live = Some(session);
         Ok(name)
     }
 
     pub fn write(&self, data: &str) {
-        if let Some(s) = &mut *self.0.lock().unwrap() {
+        if let Some(s) = &mut self.0.lock().unwrap().live {
             let _ = s.writer.write_all(data.as_bytes());
             let _ = s.writer.flush();
         }
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
-        if let Some(s) = &*self.0.lock().unwrap() {
+        if let Some(s) = &self.0.lock().unwrap().live {
             let _ = s.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         }
     }
 
     pub fn stop(&self) {
-        *self.0.lock().unwrap() = None;
+        self.0.lock().unwrap().live = None;
     }
+}
+
+/// What the terminal's suggestions start from: the shell's own history (newest last) and the project's scripts.
+#[derive(Serialize)]
+pub struct Suggestions {
+    history: Vec<String>,
+    project: Vec<String>,
+}
+
+/// The shell's history file, as the panel's shell would write it.
+fn history_file() -> Option<PathBuf> {
+    if cfg!(windows) {
+        // PSReadLine's, shared by Windows PowerShell and PowerShell 7.
+        return Some(PathBuf::from(std::env::var("APPDATA").ok()?).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"));
+    }
+    if let Ok(f) = std::env::var("HISTFILE") {
+        return Some(PathBuf::from(f));
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let zsh = std::env::var("SHELL").unwrap_or_default().ends_with("zsh");
+    Some(home.join(if zsh { ".zsh_history" } else { ".bash_history" }))
+}
+
+pub fn suggestions(cwd: &str) -> Suggestions {
+    const KEEP: usize = 2000;
+    let mut history = Vec::new();
+    if let Some(text) = history_file().and_then(|f| std::fs::read(f).ok()) {
+        let text = String::from_utf8_lossy(&text);
+        let mut seen = std::collections::HashSet::new();
+        // Newest first while de-duplicating, then flipped back.
+        for line in text.lines().rev() {
+            // zsh's extended format: ": 1700000000:0;command".
+            let line = match line.strip_prefix(": ").and_then(|l| l.split_once(';')) {
+                Some((_, cmd)) => cmd,
+                None => line,
+            };
+            let line = line.trim();
+            // PowerShell continues multi-line commands with a trailing backtick; those aren't one-liners.
+            if line.is_empty() || line.len() > 300 || line.ends_with('`') || line.ends_with('\\') {
+                continue;
+            }
+            if seen.insert(line.to_string()) {
+                history.push(line.to_string());
+                if history.len() >= KEEP {
+                    break;
+                }
+            }
+        }
+        history.reverse();
+    }
+
+    let mut project = Vec::new();
+    let dir = Path::new(cwd);
+    if let Some(pkg) = std::fs::read_to_string(dir.join("package.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        let runner = if dir.join("pnpm-lock.yaml").exists() {
+            "pnpm"
+        } else if dir.join("yarn.lock").exists() {
+            "yarn"
+        } else if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
+            "bun"
+        } else {
+            "npm"
+        };
+        if let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object()) {
+            for name in scripts.keys() {
+                project.push(format!("{runner} run {name}"));
+            }
+        }
+        project.push(format!("{runner} install"));
+    }
+    if dir.join("Cargo.toml").exists() {
+        project.extend(["cargo build", "cargo run", "cargo test", "cargo check", "cargo clippy"].map(String::from));
+    }
+    if dir.join(".git").exists() {
+        project.extend(["git status", "git diff", "git log --oneline", "git pull", "git push", "git add -A", "git commit -m \"\""].map(String::from));
+    }
+    Suggestions { history, project }
+}
+
+/// A folder's entries for path suggestions, as (name, is a folder). `~` at the start is the home folder.
+pub fn list(dir: &str) -> Vec<(String, bool)> {
+    let path = match dir.strip_prefix('~') {
+        Some(rest) => PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).unwrap_or_default()).join(rest.trim_start_matches(['/', '\\'])),
+        None => PathBuf::from(dir),
+    };
+    let Ok(entries) = std::fs::read_dir(path) else { return Vec::new() };
+    let mut out: Vec<(String, bool)> = entries
+        .flatten()
+        .take(5000)
+        .map(|e| (e.file_name().to_string_lossy().to_string(), e.file_type().map(|t| t.is_dir() || (t.is_symlink() && e.path().is_dir())).unwrap_or(false)))
+        .collect();
+    // Folders first, then by name: the first match is what's suggested.
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    out
 }
 
 // ---------- changes ----------

@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, type Item, type Model, type Snapshot, type Statics, type View } from './api';
 
-function createStore<T>(initial: T) {
+export function createStore<T>(initial: T) {
   let state = initial;
   const subs = new Set<() => void>();
   return {
@@ -28,7 +28,13 @@ export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'dreaming' 
 export const ui = createStore({
   sidebar: true,
   /** The chat, or ScoutCode Delta (the issue tracker) in its place. */
-  page: 'chat' as 'chat' | 'delta' | 'inbox',
+  page: 'chat' as 'chat' | 'delta' | 'inbox' | 'epsilon',
+  /** The Epsilon computer open on the 'epsilon' page. */
+  vm: 'persistent' as 'persistent' | 'temporary',
+  /** A cloud (Epsilon) chat is on screen instead of the local one: a new one in a repository, or a task. */
+  cloud: null as { repoId: number | null; taskId: string | null } | null,
+  /** "New project" is asking whether it goes on this PC or in the cloud. */
+  newProject: false as false | 'ask' | 'cloud',
   /** The first-run setup is showing: on first run, or reopened from Settings or the account menu. */
   onboarding: false,
   dockOpen: false,

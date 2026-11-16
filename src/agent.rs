@@ -61,6 +61,8 @@ pub enum QuestionAnswer {
 /// Everything the worker thread tells the window. Each send wakes the UI.
 pub enum Ev {
     RequestStart,
+    /// The model's title for a chat, from its own one-shot request (see title.rs).
+    ChatTitle { session_id: String, title: String },
     Text(String),
     Reasoning(String),
     AssistantDone,
@@ -128,7 +130,6 @@ pub enum Ev {
     LoginUrl(String),
     /// The token and, when the server sent it, the username.
     Login(Result<(String, Option<String>), String>),
-    Voice(crate::voice::Update),
     /// From the link that lets web chatbots use Scout.
     Link(crate::mcp::LinkEvent),
     /// From ScoutMote, which lets the website drive this Scout.

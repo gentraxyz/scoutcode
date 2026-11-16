@@ -1,9 +1,10 @@
-// Experimental: games to play while Scout works (2048, chess and Flappy Scout), in a card the user drags anywhere or a tab in
+// Experimental: games to play while Scout works (2048, chess, Flappy Scout and Scout Dash), in a card the user drags anywhere or a tab in
 // the panel. Opening the games asks which one to play; every game keeps its own progress.
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { act, type Games } from './api';
 import { Chess, ChessPiece } from './Chess';
 import { FlappyIcon, FlappyScout } from './FlappyScout';
+import { DashIcon, ScoutDash } from './ScoutDash';
 import { core, focusComposer, ui, useUi, useView } from './store';
 import { IconButton } from './widgets';
 
@@ -211,11 +212,12 @@ function Game2048({ onEscape, autoFocus }: { onEscape: () => void; autoFocus: bo
 
 // ---------- picking a game ----------
 
-type GameId = '2048' | 'chess' | 'flappy';
+type GameId = '2048' | 'chess' | 'flappy' | 'dash';
 const GAMES: { id: GameId; name: string; sub: string; art: ReactNode }[] = [
   { id: '2048', name: '2048', sub: 'Slide and join tiles to reach 2048.', art: '2048' },
   { id: 'chess', name: 'Chess', sub: 'You play white against Scout.', art: <ChessPiece piece="wn" /> },
   { id: 'flappy', name: 'Flappy Scout', sub: 'Flap through the gaps in the code.', art: <FlappyIcon /> },
+  { id: 'dash', name: 'Scout Dash', sub: 'Run the data highway. Dodge, jump, slide.', art: <DashIcon /> },
 ];
 
 function GamePicker({ onPick, onEscape, autoFocus }: { onPick: (id: GameId) => void; onEscape: () => void; autoFocus: boolean }) {
@@ -263,6 +265,7 @@ function usePick() {
 function Play({ id, onEscape, autoFocus }: { id: GameId; onEscape: () => void; autoFocus: boolean }) {
   if (id === 'chess') return <Chess onEscape={onEscape} autoFocus={autoFocus} />;
   if (id === 'flappy') return <FlappyScout onEscape={onEscape} autoFocus={autoFocus} />;
+  if (id === 'dash') return <ScoutDash onEscape={onEscape} autoFocus={autoFocus} />;
   return <Game2048 onEscape={onEscape} autoFocus={autoFocus} />;
 }
 

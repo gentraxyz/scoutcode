@@ -19,14 +19,9 @@ permissions:
   contents: read
 
 jobs:
+  # Both Macs build on one runner, one after the other: Apple's tools cross-compile either way, and GitHub's macOS
+  # runners can queue for a long time, so asking for one is quicker than asking for two.
   build:
-    strategy:
-      matrix:
-        include:
-          - platform: macos-aarch64
-            target: aarch64-apple-darwin
-          - platform: macos-x86_64
-            target: x86_64-apple-darwin
     runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
@@ -43,7 +38,7 @@ jobs:
 
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
           rustup default stable
 
       # The UI is built into the binary, so it has to exist before cargo builds anything.
@@ -56,15 +51,26 @@ jobs:
         env:
           SCOUT_COMMIT: ${{ inputs.commit }}
         run: |
-          cargo build --release --target ${{ matrix.target }}
-          mkdir out
-          cp target/${{ matrix.target }}/release/scout-desktop out/scout
-          codesign --force --sign - out/scout
-          file out/scout
+          for pair in macos-aarch64:aarch64-apple-darwin macos-x86_64:x86_64-apple-darwin; do
+            platform=${pair%%:*}
+            target=${pair#*:}
+            cargo build --release --target "$target"
+            mkdir -p "out/$platform"
+            cp "target/$target/release/scout-desktop" "out/$platform/scout"
+            codesign --force --sign - "out/$platform/scout"
+            file "out/$platform/scout"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.platform }}
-          path: out/scout
+          name: macos-aarch64
+          path: out/macos-aarch64/scout
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: out/macos-x86_64/scout
           if-no-files-found: error
           retention-days: 7

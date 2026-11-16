@@ -1,14 +1,15 @@
 //! Keeps the installed app current. A worker thread reads the release manifest at startup and every few hours, and
 //! downloads anything newer next to the exe. The new build takes over when the user clicks "Restart to update", or when
-//! the window closes. Windows and Linux both let a running exe be renamed, so it's moved aside and the new one put in its
-//! place.
+//! the window closes. Windows, Linux and macOS all let a running exe be renamed, so it's moved aside and the new one put
+//! in its place.
 //!
 //! Builds are signed with a key kept off the servers (see scripts/release-desktop.ts), so whoever controls the site or
 //! the bucket still can't push code to installed copies. The signature covers the version too, which stops an old
 //! build being passed off as a new one.
 //!
 //! On Windows the same exe doubles as the installer: downloaded as ScoutSetup.exe, it installs itself and starts the real
-//! copy. On Linux the site's install.sh puts it at ~/.local/share/scout/scout, where it updates itself the same way.
+//! copy. On Linux the site's install.sh puts it at ~/.local/share/scout/scout, and on macOS
+//! at ~/Applications/Scout.app/Contents/MacOS/scout, where it updates itself the same way.
 
 use crate::api::http;
 use base64::Engine;
@@ -130,7 +131,7 @@ fn exe_stem() -> String {
 
 /// Only an installed release build updates itself, never `cargo run` or a copy under target/.
 pub fn self_updating() -> bool {
-    (cfg!(windows) || cfg!(target_os = "linux")) && !cfg!(debug_assertions) && exe_stem() == "scout" && std::env::var_os("SCOUT_NO_UPDATE").is_none()
+    (cfg!(windows) || cfg!(target_os = "linux") || cfg!(target_os = "macos")) && !cfg!(debug_assertions) && exe_stem() == "scout" && std::env::var_os("SCOUT_NO_UPDATE").is_none()
 }
 
 fn pending_path(exe: &Path, version: &str) -> PathBuf {

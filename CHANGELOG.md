@@ -4,6 +4,17 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.2.0
+Scout 0.2: Scout on Mac, Epsilon cloud computers and cloud chats, a smarter terminal, and Scout Dash.
+
+- Scout for Mac, on Apple silicon and Intel with macOS 11 or newer: install it with `curl -fsSL https://scoutcode.dev/install.sh | sh` in Terminal. It goes in your Applications folder and keeps itself up to date, as on Windows and Linux.
+- Epsilon, ScoutCode's cloud computers, is in the rail below Issues. Your account has a persistent computer and a temporary one: start either from Scout and use it right in the window.
+- Cloud chats: point a chat at a GitHub repository and an agent works on it on your temporary cloud computer, ending in a pull request. Cloud chats sit with your other chats, marked "Cloud".
+- "Working on …" under the message box switches between this computer's project folders and your cloud repositories, and New project asks whether it's Local or Cloud.
+- The terminal panel opens to a prompt right away, suggests commands from your history and the project's scripts, and completes paths as you type. PowerShell errors print as one short line, and a Linux command typed in PowerShell (or a Windows one in bash or zsh) runs as its equivalent when Scout is sure of it.
+- Scout Dash in Games: an endless three-lane run down a data highway. Dodge server racks, jump bug barriers, slide under firewalls and grab tokens. Flappy Scout is redrawn too, and every game keeps your best score.
+- Chat titles are written by a separate quick request, so naming a chat never adds anything to it.
+
 ## 0.1.26
 Sign in to MCP servers through your browser, see how fast each reply was, and steadier chat reordering.
 

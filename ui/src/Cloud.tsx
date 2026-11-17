@@ -5,8 +5,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { act, openExternal } from './api';
 import {
   cloud, createTask, ep, KIND_NAME, leaveCloud, LIVE, loadMachines, loadModels, loadRepos, newCloudChat, openCloudTask, repoShort,
-  replyTask, setCloudDone, setModel, STATUS, stopTask, useCloud, useSite, vmStateText, type CloudModel, type Machine, type Task, type TaskEvent, type VmKind,
+  replyTask, setCloudDone, setMachine, setModel, STATUS, stopMachine, stopTask, useCloud, useSite, vmStateText, type CloudModel, type Machine, type Task, type TaskEvent, type VmKind,
 } from './epsilon';
+import { EpsilonScreen, type ScreenHost } from './epsilon/EpsilonScreen';
 import { focusComposer, ui, useUi, useView } from './store';
 import { Markdown, toolTitle } from './Transcript';
 import { Icon, IconButton, MenuItem, Modal, Popover, SectionLabel, Spinner } from './widgets';
@@ -534,7 +535,7 @@ export function VmPage() {
   if (!info) {
     return <div className="vm-page"><div className="vm-card">{error ? <><b className="strong">Couldn’t reach Epsilon</b><p className="small dim">{error}</p><button type="button" className="button" onClick={() => loadMachines()}>Try again</button></> : <Spinner size={18} />}</div></div>;
   }
-  return showing && info.embed ? <VmFrame kind={kind} embed={info.embed} /> : <VmStart kind={kind} info={info} />;
+  return showing && info.server ? <VmScreen kind={kind} info={info} server={info.server} /> : <VmStart kind={kind} info={info} />;
 }
 
 function VmStart({ kind, info }: { kind: VmKind; info: NonNullable<ReturnType<typeof cloud.get>['machines']> }) {
@@ -558,16 +559,31 @@ function VmStart({ kind, info }: { kind: VmKind; info: NonNullable<ReturnType<ty
     }
   };
   const saved = kind === 'persistent' && m && m.state === 'stopped';
+  const kept = kind === 'temporary' && m?.state === 'stopped' && !!m.keptUntil;
+  const wipe = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await ep('POST', '/api/epsilon/machines', { kind, action: 'delete' });
+      await loadMachines();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div className="vm-page">
       <div className="vm-card">
         <Icon name="desktop" size={30} />
         <b className="strong big">{KIND_NAME[kind]}</b>
         <p className="small dim">
-          {kind === 'persistent' ? 'Yours to keep. Stopping it saves your files and open apps, so it picks up where you left off.' : 'A fresh machine for one session. Everything on it is wiped when it stops.'}
+          {kept
+            ? `Kept from a cloud chat until ${new Date(m!.keptUntil!).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}, with its files as the chat left them. Start it to look around; it’s wiped after that.`
+            : kind === 'persistent' ? 'Yours to keep. Stopping it saves your files and open apps, so it picks up where you left off.' : 'A fresh machine for one session. Everything on it is wiped when it stops.'}
         </p>
         {m?.state === 'error' && m.error && <div className="small red">{m.error}</div>}
-        {!saved && info.types.length > 0 && (
+        {!saved && !kept && info.types.length > 0 && (
           <label className="vm-field"><span className="small dim">Setup</span>
             <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
               {info.types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -586,35 +602,29 @@ function VmStart({ kind, info }: { kind: VmKind; info: NonNullable<ReturnType<ty
         </div>
         {error && <div className="small red">{error}</div>}
         <button type="button" className="button primary" disabled={busy} onClick={start}>{busy ? <Spinner size={12} /> : saved ? 'Resume it' : 'Start it'}</button>
+        {kept && <button type="button" className="button ghost" disabled={busy} onClick={wipe}>Wipe it now</button>}
       </div>
     </div>
   );
 }
 
-/** The Epsilon server's page for one computer. It asks this window for short-lived tokens, and says when it stops. */
-function VmFrame({ kind, embed }: { kind: VmKind; embed: string }) {
-  const frame = useRef<HTMLIFrameElement>(null);
-  const origin = useMemo(() => { try { return new URL(embed).origin; } catch { return ''; } }, [embed]);
-  useEffect(() => {
-    if (!origin) return;
-    const onMessage = async (ev: MessageEvent) => {
-      if (ev.origin !== origin || ev.source !== frame.current?.contentWindow) return;
-      const m = ev.data;
-      if (m?.type === 'epsilon:state') { loadMachines(); return; }
-      if (m?.type !== 'epsilon:token-request') return;
-      try {
-        const r = await ep<{ token: string }>('POST', '/api/epsilon/token', {});
-        frame.current?.contentWindow?.postMessage({ type: 'epsilon:token', token: r.token }, origin);
-      } catch {
-        frame.current?.contentWindow?.postMessage({ type: 'epsilon:token-error' }, origin);
-      }
-    };
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, [origin]);
+/** One computer, drawn here (screen and terminal) and connected straight to the Epsilon server. */
+function VmScreen({ kind, info, server }: { kind: VmKind; info: NonNullable<ReturnType<typeof cloud.get>['machines']>; server: string }) {
+  const m = info.machines[kind];
+  const type = info.types.find((t) => t.id === m.type);
+  const host = useMemo<ScreenHost>(() => ({
+    server,
+    token: () => ep<{ token: string }>('POST', '/api/epsilon/token', {}).then((r) => r.token, () => null),
+    // The terminal socket says when it stops on its own (idle, time limit, out of credits): show it at once.
+    onStatus: (next) => {
+      const cur = cloud.get().machines?.machines[kind];
+      if (cur && cur.state !== next.state && !(cur.state !== 'running' && next.state === 'running')) setMachine(kind, next as Partial<Machine>);
+      if (next.state !== 'running') loadMachines();
+    },
+  }), [server, kind]);
   return (
     <div className="vm-page framed">
-      <iframe ref={frame} className="vm-frame" src={`${embed}?kind=${kind}`} title={KIND_NAME[kind]} allow="clipboard-read; clipboard-write; fullscreen" allowFullScreen />
+      <EpsilonScreen kind={kind} machine={m} host={host} typeName={type?.name} fast={!!m.memoryMB && !!type?.fastStart?.includes(m.memoryMB)} />
     </div>
   );
 }
@@ -643,15 +653,11 @@ export function VmBar() {
     setAsking(false);
     setBusy(true);
     setError(null);
-    // The server answers once it has saved or wiped it, which can take a minute; show "Saving…" meanwhile.
-    const peek = setTimeout(() => loadMachines(), 1500);
     try {
-      await ep('POST', '/api/epsilon/machines', { kind, action: 'stop' });
+      await stopMachine(kind);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-    clearTimeout(peek);
-    await loadMachines();
     setBusy(false);
   };
   return (

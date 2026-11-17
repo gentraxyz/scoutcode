@@ -13,14 +13,18 @@ export type Machine = {
   kind: VmKind;
   state: 'none' | 'stopped' | 'starting' | 'running' | 'saving' | 'stopping' | 'error';
   type?: string; memoryMB?: number | null; rate?: number | null; savedAt?: string | null; expiresAt?: string | null; error?: string | null;
+  desktop?: boolean; mode?: 'resumed' | 'fresh' | 'booted' | null; hasSavedState?: boolean; lowCredits?: boolean;
+  /** A temporary computer kept (stopped, files only) after a cloud chat: until when, and for which task. */
+  keptUntil?: string | null; tag?: string | null;
 };
 export type Machines = {
   machines: Record<VmKind, Machine>;
-  types: { id: string; name: string; desktop: boolean }[];
+  types: { id: string; name: string; desktop: boolean; fastStart?: number[] }[];
   memory?: { memoryMB: number; rate: number }[];
   defaultType?: string; defaultMemoryMB?: number;
   credits: { unlimited: boolean; left: number; weekResetsAt: string };
-  embed?: string;
+  /** The Epsilon server: the computer's screen and terminal connect there. */
+  server?: string;
 };
 
 export type TaskStatus = 'starting' | 'cloning' | 'working' | 'done' | 'failed' | 'stopped';
@@ -67,8 +71,47 @@ export function useCloud<T>(pick: (s: ReturnType<typeof cloud.get>) => T): T {
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** Computers being stopped from here: until the stop request answers, a poll that still says "running" is older news. */
+const stopping = new Map<VmKind, Machine['state']>();
 export const loadMachines = () =>
-  ep<Machines>('GET', '/api/epsilon/machines').then((machines) => cloud.set({ machines, machinesError: null }), (e) => cloud.set({ machinesError: message(e) }));
+  ep<Machines>('GET', '/api/epsilon/machines').then(
+    (machines) => {
+      for (const [kind, state] of stopping) {
+        const m = machines.machines[kind];
+        if (m?.state === 'running') machines.machines[kind] = { ...m, state };
+      }
+      cloud.set({ machines, machinesError: null });
+    },
+    (e) => cloud.set({ machinesError: message(e) }),
+  );
+
+/** Changes what's known of one computer here (from the terminal socket's news, or before the server answers). */
+export function setMachine(kind: VmKind, m: Partial<Machine>) {
+  const info = cloud.get().machines;
+  if (!info) return;
+  cloud.set({ machines: { ...info, machines: { ...info.machines, [kind]: { ...info.machines[kind], ...m, kind } } } });
+}
+
+/**
+ * Saves (persistent) or wipes (temporary) a computer. It shows as saving or wiping at once, so its screen lets go
+ * straight away, and polling carries on from there. Saving can outlast the request (a proxy may give up on it first):
+ * that's only an error if the computer is still running afterwards.
+ */
+export async function stopMachine(kind: VmKind): Promise<void> {
+  const state = kind === 'temporary' ? 'stopping' : 'saving';
+  stopping.set(kind, state);
+  setMachine(kind, { state });
+  try {
+    await ep('POST', '/api/epsilon/machines', { kind, action: 'stop' });
+  } catch (e) {
+    stopping.delete(kind);
+    await loadMachines();
+    if (cloud.get().machines?.machines[kind]?.state === 'running') throw e;
+    return;
+  }
+  stopping.delete(kind);
+  await loadMachines();
+}
 export const loadTasks = () => ep<{ tasks: Task[] }>('GET', '/api/epsilon/tasks').then((r) => cloud.set({ tasks: r.tasks }), () => cloud.set({ tasks: cloud.get().tasks ?? [] }));
 export const loadRepos = (fresh = false) =>
   ep<Repos>('GET', `/api/epsilon/tasks?repos=1${fresh ? '&fresh=1' : ''}`).then(
@@ -175,7 +218,7 @@ export function vmStateText(m: Machine | null | undefined): string {
     case 'saving': return 'Saving…';
     case 'stopping': return 'Stopping…';
     case 'error': return 'Couldn’t start';
-    case 'stopped': return 'Stopped';
+    case 'stopped': return m.keptUntil ? 'Kept from a cloud chat' : 'Stopped';
     default: return 'Not set up';
   }
 }

@@ -8,7 +8,6 @@ export const HIDEABLE = [
   ['top.review', 'Code Review button', 'Top bar'],
   ['top.changes', 'Changes button', 'Top bar'],
   ['top.terminal', 'Terminal button', 'Top bar'],
-  ['top.panel', 'Panel button', 'Top bar'],
   ['top.game', 'Game button', 'Top bar'],
   ['top.music', 'Music button', 'Top bar'],
   ['top.project', 'Project folder', 'Top bar'],

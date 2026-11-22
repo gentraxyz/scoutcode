@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use github_copilot_sdk::tool::ToolHandler;
-use github_copilot_sdk::types::{Attachment, MessageOptions, SessionConfig, SystemMessageConfig};
+use github_copilot_sdk::types::{Attachment, DeliveryMode, MessageOptions, SessionConfig, SystemMessageConfig};
 use github_copilot_sdk::{CliProgram, Client, ClientOptions, Error, Tool, ToolInvocation, ToolResult};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha512};
@@ -254,6 +254,7 @@ pub enum Msg {
 
 enum Cmd {
     Send(String),
+    Steer(String),
     Abort,
 }
 
@@ -340,6 +341,11 @@ impl Run {
         let _ = self.cmd.send(Cmd::Send(text));
     }
 
+    /// Sends a message into the work under way, to be read at its next step.
+    pub fn steer(&self, text: String) {
+        let _ = self.cmd.send(Cmd::Steer(text));
+    }
+
     pub fn abort(&self) {
         let _ = self.cmd.send(Cmd::Abort);
     }
@@ -382,6 +388,9 @@ async fn drive(options: ClientOptions, config: SessionConfig, prompt: String, im
         match c {
             Cmd::Send(text) => {
                 session.send(text.as_str()).await?;
+            }
+            Cmd::Steer(text) => {
+                session.send(MessageOptions::new(text).with_mode(DeliveryMode::Immediate)).await?;
             }
             Cmd::Abort => {
                 let _ = session.abort().await;

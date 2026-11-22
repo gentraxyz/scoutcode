@@ -11,7 +11,7 @@ import { deltaTabs } from './delta/tabs';
 import { listWorkspaces, message, Session, type WorkspaceInfo } from './delta/sync';
 import { isDone, issueKey, SCOUT, type Issue, type State } from './delta/model';
 import { PriorityIcon, StateIcon } from './delta/ui';
-import { DreamEntry, DreamingNow, useUnseenDreams } from './Dreams';
+import { DreamEntry, DreamingNow, useInboxDreams } from './Dreams';
 
 type SessionInfo = View['sessions'][number];
 
@@ -134,7 +134,7 @@ export function Inbox() {
   const agents = found?.filter((f) => !f.mine) ?? [];
   const showWs = new Set(found?.map((f) => f.wsKey)).size > 1;
   const row = (s: SessionInfo) => <SessionRow key={s.id} s={s} current={s.id === chat.id} project={projectName(s.cwd)} />;
-  const dreams = useUnseenDreams();
+  const { dreams, dismiss, dismissAll } = useInboxDreams();
   const nothing = !waiting.length && !working.length && !unread.length && !rest.length && !dreams.length && found !== null && !found.length;
 
   return (
@@ -148,9 +148,9 @@ export function Inbox() {
           <Section
             title="While you were away"
             count={dreams.length}
-            action={<button type="button" className="button compact" onClick={() => act('dreamSeen', { id: 'all' })}>Dismiss all</button>}
+            action={<button type="button" className="button compact" onClick={dismissAll}>Dismiss all</button>}
           >
-            <div className="stack">{dreams.map((d) => <DreamEntry key={d.id} d={d} inbox />)}</div>
+            <div className="stack">{dreams.map((d) => <DreamEntry key={d.id} d={d} onDismiss={() => dismiss(d.id)} />)}</div>
           </Section>
         )}
 

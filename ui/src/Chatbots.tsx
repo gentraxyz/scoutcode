@@ -40,38 +40,34 @@ function openSettings() {
 const AUTO: Record<string, 'claude' | 'gemini'> = { 'claude-web': 'claude', gemini: 'gemini' };
 
 /**
- * The model menu's chatbot pages, by rail tab: each one's WEB_BOTS id. Codex and Claude Code are the models of ChatGPT
- * and Claude, so their pages hold those too.
+ * The model menu's chatbot pages, by rail tab: each one's WEB_BOTS id. Claude Code and Grok Build are the models of
+ * Claude and Grok, so their pages hold those too.
  */
 type Page = { bot: string; connector: string; provider?: 'codex' | 'claude' | 'grok'; name?: string; site?: string; app?: string };
 /**
- * Each page has the chatbot's connector, and for ChatGPT, Claude and Grok also its app's models (Codex, Claude Code,
- * Grok Build). When only one of the two is set up, the page asks about the other.
+ * Each page has the chatbot's connector, and for Claude and Grok also its app's models (Claude Code, Grok Build). When only one of the two is set up, the page asks about the other.
  */
 const PAGES: Record<string, Page> = {
-  codex: { bot: 'chatgpt', provider: 'codex', name: 'ChatGPT', site: 'chatgpt.com', app: 'Codex', connector: 'Use ChatGPT on chatgpt.com' },
   claude: { bot: 'claude-web', provider: 'claude', name: 'Claude', site: 'claude.ai', app: 'Claude Code', connector: 'Use Claude on claude.ai' },
-  gemini: { bot: 'gemini', connector: 'Use Gemini on gemini.google.com' },
   grok: { bot: 'grok-web', provider: 'grok', name: 'Grok', site: 'grok.com', app: 'Grok Build', connector: 'Use Grok on grok.com' },
   chatbots: { bot: 'any', connector: 'Connect another chatbot' },
 };
 /** The pages that are only a chatbot: they list no models of their own. */
-export const CHATBOT_ONLY_PAGES = ['gemini', 'chatbots'];
+export const CHATBOT_ONLY_PAGES = ['chatbots'];
 export const isBotPage = (tab: string): boolean => tab in PAGES;
 
 type Linked = { name: string; seen: number | null };
 
-/** The linked chatbots on a page: the ones named after its chatbot, or for Other, any that has a page of its own elsewhere. */
+/** The linked chatbots on a page: the ones named after its chatbot, or for Other, any without a page of its own. */
 export function linkedTo(botId: string, bots: Linked[]): Linked[] {
   const named = (name: string, bot: WebBot) => bot.aliases.some((a) => name.toLowerCase().includes(a));
-  if (botId === 'any') return bots.filter((b) => !WEB_BOTS.some((w) => w.id !== 'any' && named(b.name, w)));
+  if (botId === 'any') {
+    const paged = Object.values(PAGES).map((p) => p.bot).filter((id) => id !== 'any');
+    return bots.filter((b) => !WEB_BOTS.some((w) => paged.includes(w.id) && named(b.name, w)));
+  }
   const bot = WEB_BOTS.find((w) => w.id === botId)!;
   return bots.filter((b) => named(b.name, bot));
 }
-
-/** Whether a page's chatbot has reached ScoutCode, for the rail's dimming. */
-export const chatbotConnected = (tab: string, bots: Linked[]): boolean =>
-  linkedTo(PAGES[tab].bot, bots).some((b) => b.seen !== null);
 
 /** How to add Scout to a chatbot yourself: its steps, the address to paste, and a way to open it. */
 function Steps({ bot, address }: { bot: WebBot; address: string }) {
@@ -204,7 +200,7 @@ export function ChatbotsPanel({ close, botId, hideSetup = false }: { close: () =
 }
 
 /**
- * A chatbot's page in the model menu. For ChatGPT and Claude it also holds the Codex or Claude Code sign-in and models,
+ * A chatbot's page in the model menu. For Claude and Grok it also holds the Claude Code or Grok Build sign-in and models,
  * so the chatbot and its models are one place.
  */
 export function ChatbotPage({ tab, close }: { tab: string; close: () => void }) {

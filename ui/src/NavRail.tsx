@@ -51,7 +51,6 @@ function Account() {
           <MenuItem icon="chart" onClick={() => { close(); ui.set({ settings: 'usage' }); }}>Usage</MenuItem>
           <hr />
           <MenuItem icon="download" onClick={() => { close(); ui.set({ settings: 'updates' }); act('checkUpdates'); }}>Check for updates</MenuItem>
-          <MenuItem icon="sparkle" onClick={() => { close(); ui.set({ settings: null, onboarding: true }); }}>Run setup again</MenuItem>
           <MenuItem icon="user" onClick={() => { close(); openExternal(`${cfg.baseUrl.replace(/\/v1$/, '')}/account`); }}>Account page</MenuItem>
         </>
       )}

@@ -4,6 +4,19 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.2.1
+Steer Codex, Claude Code and the other agents mid-task, a message rail in place of the scrollbar, terminal tabs, and a model menu you arrange yourself.
+
+- Steering works with every agent: a message sent with Steer while Codex, Claude Code, Copilot, Devin, Kiro, OpenCode or Grok is working is read after the step it's on, instead of waiting for the whole turn to end.
+- A message rail replaces the chat's scrollbar: a tick for each message down the right edge, with the one you're reading lit. Point at a tick to see how its message starts, and click to go to it.
+- The terminal has tabs: open several shells side by side with the plus button. `exit` closes its tab.
+- Arrange the model menu yourself: hold a provider's icon to drag it into place, add one with the plus button, and right-click to remove it.
+- Setup's providers step shows your model menu as you build it: add providers from the list and set each one up right in the preview.
+- Cloud chats sit among your other chats by when they were last active, show up in search, and have the same Done button and More menu, with the pull request and Stop. Esc stops Epsilon, and messages have copy buttons.
+- Epsilon computers are drawn by Scout itself, with a new boot screen while one starts, saves or is wiped. A repository task keeps its computer's files for an hour after it ends, so a reply picks up where it left off.
+- Pages, panels and menus fade between each other instead of snapping, and chats slide into place when the list changes.
+- Dreams stay listed in the Inbox until you leave it.
+
 ## 0.2.0
 Scout 0.2: Scout on Mac, Epsilon cloud computers and cloud chats, a smarter terminal, and Scout Dash.
 

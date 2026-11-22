@@ -1,33 +1,26 @@
 // Multi-step onboarding flow:
 // 0. Welcome: Scout logo, "Welcome to Scout", and "The gateway to free AI models"
 // 1. Language: Apple-style searchable list for the interface language (English full, the rest partial), plus AI reply language
-// 2. What Makes Scout Different (memory that stays updated, pooled free models, all plans, customization, project manager, remote)
+// 2. What Makes Scout Different (free usage, providers + ScoutCode Cloud, Epsilon, memory, Dreaming, games and music)
 // 3. ScoutCode: sign in (with Scout logo), or continue without an account
-// 4. Link Providers (free and paid providers) and Use via another chatbot (with step-by-step image guide & clear account requirement)
+// 4. Providers: a list to add or remove from, beside a live copy of the model menu showing what they'll get
 // 5. Project Setup (defaults to ~/Scout; preloads detected chats on mount and groups them by project, defaulting to Skip)
 // 6. Appearance (theme, accent, window material, logo — with Classic logo fixed)
 // 7. General Options (sectioned cards with icons: personal instructions, ScoutMote, Discord RPC, Games, Notifications & updates)
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { act, invoke, openExternal, setExplore, type Games, type Music, type View } from './api';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { act, invoke, setExplore, type Games, type Music, type View } from './api';
 import { closeGame } from './Games';
 import { closeMusic } from './Music';
-import {
-  AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GrokEntry, HERMES_NOTE, HermesEntry, KeyField,
-  KIRO_NOTE, logo, NvidiaEntry, OPENCODE_NOTE, ScoutKeyEntry, SignInEntry,
-} from './Accounts';
+import { BrowserEntry, logo, providerStatus, ScoutKeyEntry } from './Accounts';
 import { isFull, replyLanguageFor, setUiLanguage, useTranslation, SUPPORTED_LANGUAGES, type TranslationKey } from './i18n';
 import { ScoutLogo, LOGOS, logoSvg } from './logo';
-import { WEB_BOTS, type WebBot } from './webbots';
-import { core, ui, useCore, useView } from './store';
+import { isProviderTab, ModelMenuPreview, RailIcon, useTabAccess } from './ModelMenu';
+import { DEFAULT_RAIL, hasSavedRail, seedRail, setRail, TABS, tabName, useRail, type Tab } from './rail';
+import { ui, useCore, useView } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
-import { ClaudeSetup } from './ClaudeSetup';
-import { LocalSetup } from './Local';
 import { WelcomeIntro } from './WelcomeIntro';
-import { CopyButton, Icon, Link, SectionLabel, Spinner, Toggle } from './widgets';
-import mcpGuidePlaceholder from '../../assets/mcp-guide-placeholder.png';
+import { Icon, Link, SectionLabel, Spinner, Toggle } from './widgets';
 
-type Group = 'open' | 'login' | 'setup';
-type Tag = 'free' | 'paid';
 type Cfg = View['cfg'];
 type StepId = 'language' | 'special' | 'scout' | 'providers' | 'project' | 'appearance' | 'options';
 
@@ -96,55 +89,6 @@ async function savePrefs(cwd: string, patch: Partial<Prefs>) {
 
 // ---------- Providers ----------
 
-interface Provider {
-  id: string;
-  name: string;
-  group: Group;
-  tag: Tag;
-  linked: (c: Cfg) => boolean;
-  /** For the ones that need no login: links it as soon as it's picked. */
-  link?: () => void;
-  unlink?: () => void;
-}
-
-const additional = (id: string) => (c: Cfg) => c.additional.some((a) => a.id === id);
-
-const PROVIDERS: Provider[] = [
-  { id: 'ovh', name: 'OVH Cloud', group: 'open', tag: 'free', linked: additional('ovh'), link: () => act('linkAdditional', { id: 'ovh', key: null }), unlink: () => act('unlinkAdditional', { id: 'ovh' }) },
-  { id: 'kilo', name: 'Kilo Code', group: 'open', tag: 'free', linked: (c) => c.kilo, link: () => act('saveKilo', { enabled: true, key: null }), unlink: () => act('saveKilo', { enabled: false, key: null }) },
-  { id: 'opencode', name: 'OpenCode', group: 'open', tag: 'free', linked: (c) => c.opencode, link: () => act('setOpencode', { on: true, uninstall: false }), unlink: () => act('setOpencode', { on: false, uninstall: false }) },
-  { id: 'openrouter', name: 'OpenRouter', group: 'login', tag: 'free', linked: (c) => c.openrouterKeys.length > 0 },
-  { id: 'nvidia', name: 'NVIDIA NIM', group: 'login', tag: 'free', linked: (c) => !!c.nvidiaKey },
-  { id: 'google', name: 'Google AI Studio', group: 'login', tag: 'free', linked: additional('google') },
-  { id: 'cohere', name: 'Cohere', group: 'login', tag: 'free', linked: additional('cohere') },
-  { id: 'hermes', name: 'Hermes', group: 'login', tag: 'free', linked: (c) => c.hermesSignedIn || !!c.hermesKey },
-  { id: 'claude', name: 'Claude Code', group: 'setup', tag: 'paid', linked: (c) => c.claude },
-  { id: 'codex', name: 'Codex', group: 'setup', tag: 'paid', linked: (c) => c.codex },
-  { id: 'copilot', name: 'GitHub Copilot', group: 'setup', tag: 'free', linked: (c) => c.copilot },
-  { id: 'grok', name: 'Grok Build', group: 'setup', tag: 'paid', linked: (c) => c.grokSignedIn || !!c.grokKey },
-  { id: 'kiro', name: 'Kiro', group: 'setup', tag: 'free', linked: (c) => c.kiro },
-  { id: 'devin', name: 'Devin', group: 'setup', tag: 'paid', linked: (c) => c.devin },
-  { id: 'local', name: 'Local models', group: 'setup', tag: 'free', linked: (c) => c.local.models.length > 0 },
-];
-
-const GROUPS: [Group, string][] = [['open', 'No sign-in'], ['login', 'Sign in'], ['setup', 'Sign in with setup']];
-
-
-function TagPill({ tag }: { tag: Tag }) {
-  return <span className={`ob-tag ${tag}`}>{tag === 'free' ? 'Free' : 'Paid'}</span>;
-}
-
-function Tile({ name, img, tag, linked, focused, onSelect }: { name: string; img: string; tag: Tag; linked: boolean; focused: boolean; onSelect: () => void }) {
-  return (
-    <button type="button" className={`provider-tile${focused ? ' focused' : ''}${linked ? ' linked' : ''}`} aria-pressed={focused} title={name} onClick={onSelect}>
-      <img src={img} width={28} height={28} alt="" />
-      <span className="ellipsis">{name}</span>
-      <TagPill tag={tag} />
-      {linked && <span className="tile-check"><Icon name="check" size={12} /></span>}
-    </button>
-  );
-}
-
 function Linked({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="linked-line">
@@ -175,178 +119,44 @@ function CloudTerms() {
   );
 }
 
-function HigherLimits({ children }: { children: ReactNode }) {
-  return (
-    <div className="stack">
-      <div className="setup-label">Want higher limits?</div>
-      {children}
-    </div>
-  );
-}
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
-/** What the picked provider needs, or what it's linked with. */
-function Setup({ p, linked }: { p: Provider; linked: boolean }) {
-  const cfg = useView('cfg');
-  const { kiloWarning, additionalProviders } = useCore((s) => s.statics);
-  const note = (id: string) => additionalProviders.find((a) => a.id === id)?.note;
-  const done = (what: string) => <Linked title={`Linked to ${p.name}`}>{what}</Linked>;
-  switch (p.id) {
-    case 'ovh':
-      return (
-        <>
-          <Linked title="Linked to OVH Cloud">{note('ovh')}</Linked>
-          {!cfg.additional.find((a) => a.id === 'ovh')?.masked && <HigherLimits><AdditionalKey id="ovh" /></HigherLimits>}
-        </>
+/** Flies a copy of a provider's logo from its row into its new spot on the preview's rail, then pops the icon there. */
+function flyToRail(from: HTMLElement, tab: Tab) {
+  if (reducedMotion()) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const item = document.querySelector<HTMLElement>(`.ob-preview .rail-item[data-id="${tab}"]`);
+    const icon = item?.querySelector<HTMLElement>('.rail-tab > *');
+    if (!item || !icon) return;
+    item.scrollIntoView({ block: 'nearest' });
+    const s = from.getBoundingClientRect();
+    const r = item.getBoundingClientRect();
+    // The item is still growing in: the middle of its full size is where its icon ends up.
+    const dx = r.left + r.width / 2 - (s.left + s.width / 2);
+    const dy = r.top + 16 - (s.top + s.height / 2);
+    const scale = 16 / Math.max(1, s.width);
+    const ghost = from.cloneNode(true) as HTMLElement;
+    ghost.classList.add('ob-fly');
+    Object.assign(ghost.style, { left: `${s.left}px`, top: `${s.top}px`, width: `${s.width}px`, height: `${s.height}px` });
+    document.body.append(ghost);
+    icon.style.opacity = '0';
+    const lift = Math.min(70, Math.abs(dx) * 0.18 + 24);
+    const flight = ghost.animate([
+      { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+      { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - lift}px) scale(${(1 + scale) * 0.62})`, opacity: 1, offset: 0.5 },
+      { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, opacity: 0.85 },
+    ], { duration: 620, easing: 'cubic-bezier(.45, 0, .25, 1)' });
+    const land = () => {
+      ghost.remove();
+      icon.style.opacity = '';
+      item.querySelector('.rail-tab')?.animate(
+        [{ transform: 'scale(1.35)' }, { transform: 'scale(0.94)', offset: 0.6 }, { transform: 'scale(1)' }],
+        { duration: 380, easing: 'cubic-bezier(.34, 1.56, .64, 1)' },
       );
-    case 'kilo':
-      return (
-        <>
-          <Linked title="Linked to Kilo Code">Free models with no account or key. {kiloWarning}</Linked>
-          {cfg.kiloKey ? <div className="small dim">Using your Kilo key {cfg.kiloKey} for its paid models.</div> : (
-            <HigherLimits>
-              <div className="small dim">A key from your Kilo account adds its paid models.</div>
-              <KeyField hint="Kilo API key" button="Save Kilo key" onSave={(key) => act('saveKilo', { enabled: true, key })} />
-            </HigherLimits>
-          )}
-        </>
-      );
-    case 'opencode':
-      return (
-        <>
-          <Linked title="Linked to OpenCode">{OPENCODE_NOTE}</Linked>
-          {cfg.opencodeSignedIn ? <div className="small dim">Signed in to your OpenCode account for its paid models.</div> : <HigherLimits><SignInEntry which="opencode" compact /></HigherLimits>}
-        </>
-      );
-    case 'openrouter':
-      if (linked) return done('Using your OpenRouter key.');
-      return (
-        <>
-          <div className="small dim">Uses your own OpenRouter key, saved on this PC.</div>
-          <KeyField hint="sk-or-…" button="Save OpenRouter key" onSave={(key) => act('addOpenrouterKey', { name: 'OpenRouter', key })} />
-        </>
-      );
-    case 'nvidia':
-      if (linked) return done('Using your NVIDIA NIM key.');
-      return <><div className="small dim">Uses your own NVIDIA NIM key, saved on this PC.</div><NvidiaEntry /></>;
-    case 'google':
-      if (linked) return done('Using your Google AI Studio key.');
-      return <><div className="small dim">{note('google')}</div><AdditionalKey id="google" /></>;
-    case 'cohere':
-      if (linked) return done('Using your Cohere key.');
-      return <><div className="small dim">{note('cohere')}</div><AdditionalKey id="cohere" /></>;
-    case 'hermes':
-      if (linked) return done(cfg.hermesSignedIn ? 'Signed in to Nous Portal.' : 'Using your Nous Portal key.');
-      return <><div className="small dim">{HERMES_NOTE}</div><HermesEntry /></>;
-    case 'copilot':
-      if (linked) return done(cfg.copilotUser ? `Signed in to GitHub as ${cfg.copilotUser}.` : 'Signed in to GitHub.');
-      return <><div className="small dim">{COPILOT_NOTE}</div><SignInEntry which="copilot" /></>;
-    case 'grok':
-      if (linked) return done(cfg.grokSignedIn ? 'Signed in to Grok.' : 'Using your xAI key.');
-      return <><div className="small dim">{GROK_NOTE}</div><GrokEntry /></>;
-    case 'claude':
-      if (linked) return done('Signed in to Claude Code.');
-      return <><div className="small dim">{CLAUDE_NOTE}</div><SignInEntry which="claude" /></>;
-    case 'codex':
-      if (linked) return done('Signed in to Codex.');
-      return <><div className="small dim">{CODEX_NOTE}</div><SignInEntry which="codex" /></>;
-    case 'kiro':
-      if (linked) return done('Signed in to Kiro.');
-      return <><div className="small dim">{KIRO_NOTE}</div><SignInEntry which="kiro" /></>;
-    case 'devin':
-      if (linked) return done('Signed in to Devin.');
-      return <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>;
-    case 'local':
-      return <LocalSetup mode="onboarding" />;
-    default:
-      return null;
-  }
-}
-
-/** Whether an external chatbot has reached Scout through the MCP link. */
-function botLinked(b: WebBot, link: View['link']) {
-  if (!link.on) return false;
-  if (b.id === 'any') return link.chatbots.length > 0;
-  return link.chatbots.some((c) => b.aliases.some((a) => c.name.toLowerCase().includes(a)));
-}
-
-/** Step-by-step setup guide for connecting another chatbot over MCP, with a clear account gate when signed out. */
-function BrowserSetup({ b }: { b: WebBot }) {
-  const cfg = useView('cfg');
-  const link = useView('link');
-  const address = `${cfg.baseUrl}/mcp`;
-  const targetName = b.id === 'any' ? 'another chatbot' : b.name;
-  const tone = link.online ? 'on' : link.on ? 'wait' : 'off';
-  const status = link.online ? 'Connected' : link.on ? 'Connecting…' : 'Off';
-
-  return (
-    <div className="stack">
-      {!cfg.hasKey && (
-        <div className="ob-account-gate stack">
-          <div className="row">
-            <span className="ob-gate-icon"><Icon name="lock" size={15} /></span>
-            <div className="stack tight grow min0">
-              <b className="strong">ScoutCode account required</b>
-              <span className="tiny dim">Free · Nothing is spent on ScoutCode</span>
-            </div>
-          </div>
-          <div className="small muted">
-            Connecting {targetName} to your local project routes MCP tool calls through your ScoutCode account. Sign in first to turn on the bridge.
-          </div>
-          <BrowserEntry />
-          <details className="ob-key">
-            <summary className="tiny dim"><Icon name="key" size={12} />Or paste a ScoutCode API key</summary>
-            <ScoutKeyEntry />
-          </details>
-        </div>
-      )}
-
-      <div className={`ob-link-bar row${!cfg.hasKey ? ' disabled' : ''}`}>
-        <span className={`link-dot ${tone}`} aria-hidden />
-        <div className="stack tight grow min0">
-          <b className="strong small">MCP chatbot bridge ({status})</b>
-          <span className="tiny dim ellipsis" title={link.cwd}>Folder: {link.cwd || 'your project folder'}</span>
-        </div>
-        <button
-          type="button"
-          className={`button compact${link.on ? '' : ' primary'}`}
-          disabled={!cfg.hasKey || (!link.on && !link.cwd)}
-          onClick={() => act('toggleLink', { mode: 'default' })}
-        >
-          {link.on ? 'Turn off' : 'Turn on'}
-        </button>
-      </div>
-
-      <div className="ob-guide-head row">
-        <span className="section-label grow">Step-by-step setup guide</span>
-        {b.url && (
-          <button type="button" className="button compact" onClick={() => openExternal(b.url!)}>
-            <Icon name="browser" size={13} />Open {b.name}
-          </button>
-        )}
-      </div>
-
-      {(b.id === 'claude-web' || b.id === 'gemini') && <ClaudeSetup address={address} disabled={!cfg.hasKey} bot={b.id === 'gemini' ? 'gemini' : 'claude'} />}
-
-      <ol className="ob-steps-list">
-        {b.steps.map((step, i) => (
-          <li key={step.title}>
-            <b className="strong">{step.title}</b>
-            <div className="small dim">{step.detail}</div>
-            {i === 1 && (
-              <div className="row address">
-                <span className="mono small ellipsis grow" title={address}>{address}</span>
-                <CopyButton text={address} />
-              </div>
-            )}
-            <figure className="ob-guide-shot">
-              <img src={mcpGuidePlaceholder} alt={step.imageCaption} />
-              <figcaption className="tiny dim">{step.imageCaption}</figcaption>
-            </figure>
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
+    };
+    flight.onfinish = land;
+    flight.oncancel = land;
+  }));
 }
 
 // ---------- Step 1: Language (Apple-style searchable tall list) ----------
@@ -467,12 +277,12 @@ function LanguageStep({ onNext }: { onNext: () => void }) {
 // ---------- Step 2: What Makes Scout Different ----------
 
 const SPECIAL_FEATURE_KEYS: { icon: string; titleKey: TranslationKey; descKey: TranslationKey }[] = [
+  { icon: 'gift', titleKey: 'special_free_title', descKey: 'special_free_desc' },
+  { icon: 'layers', titleKey: 'special_providers_title', descKey: 'special_providers_desc' },
+  { icon: 'cloud', titleKey: 'special_epsilon_title', descKey: 'special_epsilon_desc' },
   { icon: 'memory', titleKey: 'special_memory_title', descKey: 'special_memory_desc' },
-  { icon: 'bolt', titleKey: 'special_models_title', descKey: 'special_models_desc' },
-  { icon: 'layers', titleKey: 'special_allai_title', descKey: 'special_allai_desc' },
-  { icon: 'sliders', titleKey: 'special_custom_title', descKey: 'special_custom_desc' },
-  { icon: 'board', titleKey: 'special_pm_title', descKey: 'special_pm_desc' },
-  { icon: 'phone', titleKey: 'special_remote_title', descKey: 'special_remote_desc' },
+  { icon: 'sparkle', titleKey: 'special_dream_title', descKey: 'special_dream_desc' },
+  { icon: 'game', titleKey: 'special_play_title', descKey: 'special_play_desc' },
 ];
 
 function SpecialStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
@@ -585,96 +395,104 @@ function ScoutLoginStep({ onBack, onNext }: { onBack: () => void; onNext: () => 
 
 // ---------- Step 4: Providers to Link ----------
 
+/**
+ * Left: every provider, with + to put it on the model menu's rail (or a trash can to take it off). Right: the model menu
+ * itself, live, so what's picked is what they get and any sign-in happens right there.
+ */
 function ProvidersStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
   const cfg = useView('cfg');
-  const link = useView('link');
   const { t } = useTranslation();
-  const [focused, setFocused] = useState<string | null>(null);
-  const known = (p: Provider) => !['ovh', 'google'].includes(p.id) || core.get().statics.additionalProviders.some((a) => a.id === p.id);
-  const shown = PROVIDERS.filter(known);
-  const count = shown.filter((p) => p.linked(cfg)).length;
-  const p = shown.find((x) => x.id === focused);
-  const bot = WEB_BOTS.find((b) => b.id === focused);
-  const pick = (x: Provider) => {
-    setFocused(x.id);
-    if (x.link && !x.linked(cfg)) x.link();
+  const rail = useRail();
+  const { shownTab, signedIn } = useTabAccess();
+  const options = TABS.map(([id]) => id).filter(shownTab);
+  const [tab, setTab] = useState<Tab>(() => (rail.includes('scoutcode') ? 'scoutcode' : rail.find(shownTab) ?? 'scoutcode'));
+  const logos = useRef(new Map<Tab, HTMLElement>());
+  const count = rail.filter((x) => shownTab(x) && isProviderTab(x) && signedIn(x)).length;
+
+  const add = (x: Tab) => {
+    setRail([...rail, x]);
+    // Kilo Code needs no sign-in: putting it on the menu turns it on.
+    if (x === 'kilo' && !cfg.kilo) act('saveKilo', { enabled: true, key: null });
+    // One that needs a sign-in opens in the preview, unless they're still finishing another one there.
+    if (!signedIn(x) && (signedIn(tab) || !rail.includes(tab))) setTab(x);
+    const from = logos.current.get(x);
+    if (from) flyToRail(from, x);
+  };
+  const remove = (x: Tab) => {
+    const shown = rail.filter(shownTab);
+    setRail(rail.filter((y) => y !== x));
+    if (tab === x) {
+      const i = shown.indexOf(x);
+      const next = shown[i + 1] ?? shown[i - 1];
+      if (next) setTab(next);
+    }
   };
   const handleNext = () => {
+    if (rail.includes('kilo') && !cfg.kilo) act('saveKilo', { enabled: true, key: null });
     if (count === 0 && !cfg.hasKey && !cfg.guest) act('setGuest', { on: true });
     onNext();
-  };
-  const groupLabel = (g: Group) => {
-    if (g === 'open') return t('prov_group_open');
-    if (g === 'login') return t('prov_group_login');
-    return t('prov_group_setup');
   };
   const nextLabel = count === 0
     ? (cfg.hasKey ? t('btn_continue') : t('prov_continue_free'))
     : t('prov_continue_count', { count, s: count === 1 ? '' : 's' });
 
   return (
-    <StepFrame
-      title={t('prov_title')}
-      sub={t('prov_sub')}
-      wide
-      back={onBack}
-      next={{ label: nextLabel, onClick: handleNext }}
-    >
+    <StepFrame title={t('prov_title')} sub={t('prov_sub')} wide back={onBack} next={{ label: nextLabel, onClick: handleNext }}>
       <div className="ob-providers">
-        <div className="ob-provider-groups">
-          {GROUPS.map(([group]) => (
-            <div key={group} className="picker-group">
-              <div className="picker-label">{groupLabel(group)}</div>
-              <div className="picker-tiles">
-                {shown.filter((x) => x.group === group).map((x) => (
-                  <Tile key={x.id} name={x.name} img={logo(x.id)} tag={x.tag} linked={x.linked(cfg)} focused={focused === x.id} onSelect={() => pick(x)} />
-                ))}
-              </div>
-            </div>
-          ))}
-          <div className="picker-group browser">
-            <div className="picker-label row"><Icon name="chat" size={12} />{t('prov_chatbot_group')}</div>
-            <div className="picker-tiles">
-              {WEB_BOTS.map((b) => (
-                <Tile key={b.id} name={b.name} img={logo(b.logo)} tag="free" linked={botLinked(b, link)} focused={focused === b.id} onSelect={() => setFocused(b.id)} />
-              ))}
-            </div>
+        <section className="ob-prov-list-card">
+          <div className="ob-pane-head">
+            <b className="strong">{t('prov_list_title')}</b>
+            <span className="tiny dim">{t('prov_list_hint')}</span>
           </div>
-        </div>
+          <div className="ob-prov-list" role="list">
+            {options.map((x, i) => {
+              const on = rail.includes(x);
+              const name = tabName(x);
+              const paid = providerStatus(x) === 'Paid';
+              const ready = signedIn(x);
+              const state = !isProviderTab(x) ? null : ready ? (x === 'kilo' ? t('prov_ready') : t('prov_linked')) : t('prov_needs_setup');
+              return (
+                <div
+                  key={x}
+                  role="listitem"
+                  className={`ob-prov-row${on ? ' on' : ''}${on && tab === x ? ' current' : ''}`}
+                  style={{ '--i': i } as CSSProperties}
+                  onClick={() => { if (on) setTab(x); }}
+                >
+                  <span className="ob-prov-logo" ref={(el) => { if (el) logos.current.set(x, el); else logos.current.delete(x); }}>
+                    <RailIcon tab={x} size={22} />
+                  </span>
+                  <div className="stack tight grow min0">
+                    <b className="strong small ellipsis">{name}</b>
+                    {state && <span className={`tiny ${ready ? 'green' : 'dim'} ob-prov-state`}>{ready && <Icon name="check" size={11} />}{state}</span>}
+                  </div>
+                  <span className={`ob-tag ${paid ? 'paid' : 'free'}`}>{paid ? t('prov_paid') : t('prov_free')}</span>
+                  <button
+                    type="button"
+                    className={`ob-prov-toggle${on ? ' on' : ''}`}
+                    title={on ? t('prov_remove', { name }) : t('prov_add', { name })}
+                    aria-label={on ? t('prov_remove', { name }) : t('prov_add', { name })}
+                    aria-pressed={on}
+                    onClick={(e) => { e.stopPropagation(); if (on) remove(x); else add(x); }}
+                  >
+                    <span className="ico add"><Icon name="plus" size={14} /></span>
+                    <span className="ico del"><Icon name="trash" size={14} /></span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
 
-        <div className="login-card stack setup-card">
-          {p ? (
-            <>
-              <div className="row">
-                <img src={logo(p.id)} width={22} height={22} alt="" />
-                <b className="strong big grow ellipsis">{p.name}</b>
-                <TagPill tag={p.tag} />
-                {p.unlink && p.linked(cfg) && (
-                  <button type="button" className="button compact" onClick={() => { p.unlink!(); setFocused(null); }}>{t('prov_btn_remove')}</button>
-                )}
-              </div>
-              <Setup p={p} linked={p.linked(cfg)} />
-            </>
-          ) : bot ? (
-            <>
-              <div className="row">
-                <img src={logo(bot.logo)} width={22} height={22} alt="" />
-                <b className="strong big grow ellipsis">{bot.id === 'any' ? t('prov_via_any') : t('prov_via_chatbot', { name: bot.name })}</b>
-                <TagPill tag="free" />
-              </div>
-              <div className="small dim">
-                {t('prov_chatbot_desc', { name: bot.id === 'any' ? 'another chatbot' : bot.name })}
-              </div>
-              <BrowserSetup b={bot} />
-            </>
-          ) : (
-            <div className="ob-empty">
-              <Icon name="plus" size={20} />
-              <span className="small dim">{t('prov_empty_title')}</span>
-              <span className="tiny dim">{t('prov_empty_sub')}</span>
-            </div>
-          )}
-        </div>
+        <section className="ob-preview">
+          <div className="ob-pane-head">
+            <b className="strong">{t('prov_preview_title')}</b>
+            <span className="tiny dim">{t('prov_preview_hint')}</span>
+          </div>
+          <div className="ob-preview-menu">
+            <ModelMenuPreview tab={tab} onTab={setTab} />
+          </div>
+        </section>
       </div>
     </StepFrame>
   );
@@ -1267,6 +1085,7 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
 export function Onboarding({ onDone }: { onDone: () => void }) {
   // 0 is the welcome; 1..STEPS.length are the steps.
   const [step, setStep] = useState<number>(0);
+  useState(() => { if (!hasSavedRail()) seedRail(DEFAULT_RAIL); return true; });
   const { t } = useTranslation();
   const cfg = useView('cfg');
   const dreaming = useView('dreaming').on;

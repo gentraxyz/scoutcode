@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { act, openExternal, type AgentStep, type Item, type ModelRef } from './api';
@@ -549,6 +549,80 @@ function ExploreSaved() {
   );
 }
 
+type Mark = { at: number; id: number; user: boolean; text: string };
+
+/** Stands in for the scrollbar: a tick for each message down the right edge, the one being read lit. Pointing at a tick
+ *  shows the start of its message, and clicking goes to it. */
+const MessageRail = memo(function MessageRail({ items, scroller }: { items: Item[]; scroller: RefObject<HTMLDivElement | null> }) {
+  const marks = useMemo(() => {
+    const out: Mark[] = [];
+    items.forEach((it, at) => {
+      if (it.kind === 'user') out.push({ at, id: it.id, user: true, text: it.text || it.files.map((f) => f.split(/[\\/]/).pop()).join(', ') });
+      else if (it.kind === 'assistant' && it.text.trim()) out.push({ at, id: it.id, user: false, text: it.text });
+    });
+    return out;
+  }, [items]);
+  const [current, setCurrent] = useState(-1);
+  const [peek, setPeek] = useState<{ mark: Mark; top: number } | null>(null);
+  const rail = useRef<HTMLDivElement>(null);
+
+  // The message being read: the last one that starts above the middle of what's showing, or the last of all at the bottom.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    let frame = 0;
+    const find = () => {
+      frame = 0;
+      let now = marks.length - 1;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 4) {
+        const middle = el.getBoundingClientRect().top + el.clientHeight / 2;
+        now = -1;
+        for (const [n, m] of marks.entries()) {
+          const row = el.querySelector(`[data-at="${m.at}"]`);
+          if (!row || row.getBoundingClientRect().top > middle) break;
+          now = n;
+        }
+        now = Math.max(now, 0);
+      }
+      setCurrent(now);
+    };
+    const queue = () => { frame ||= requestAnimationFrame(find); };
+    find();
+    el.addEventListener('scroll', queue, { passive: true });
+    const observer = new ResizeObserver(queue);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener('scroll', queue);
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [marks, scroller]);
+
+  if (marks.length < 2) return null;
+  return (
+    <div className="msg-rail" ref={rail} onMouseLeave={() => setPeek(null)}>
+      {marks.map((m, n) => (
+        <button
+          key={m.id}
+          type="button"
+          className={`msg-tick ${m.user ? 'user' : ''} ${n === current ? 'on' : ''}`}
+          aria-label={`Go to ${m.user ? 'your message' : "Scout's reply"}: ${m.text.slice(0, 80)}`}
+          onMouseEnter={(e) => setPeek({ mark: m, top: e.currentTarget.offsetTop + e.currentTarget.offsetHeight / 2 })}
+          onFocus={(e) => setPeek({ mark: m, top: e.currentTarget.offsetTop + e.currentTarget.offsetHeight / 2 })}
+          onBlur={() => setPeek(null)}
+          onClick={() => scroller.current?.querySelector(`[data-at="${m.at}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' })}
+        ><i /></button>
+      ))}
+      {peek && (
+        <div className="msg-peek" style={{ top: Math.max(0, Math.min(peek.top, (rail.current?.clientHeight ?? 0))) }}>
+          <div className="msg-peek-who small"><b className="strong">{peek.mark.user ? 'You' : 'Scout'}</b></div>
+          <div className="msg-peek-text">{peek.mark.text.trim().slice(0, 400)}</div>
+        </div>
+      )}
+    </div>
+  );
+});
+
 export function Transcript() {
   const items = useCore((s) => s.items);
   const { running } = useView('run');
@@ -628,6 +702,7 @@ export function Transcript() {
       }}>
         <div className="column">{rows}</div>
       </div>
+      <MessageRail items={items} scroller={scroller} />
       {retryTarget && (
         <Modal onClose={() => setRetryTarget(null)}>
           <b className="strong big">Retry from this message?</b>

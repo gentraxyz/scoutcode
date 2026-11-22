@@ -39,7 +39,8 @@ impl Session {
 
 #[derive(Default)]
 struct Shells {
-    live: Option<Session>,
+    /// One per terminal tab, by the tab's id.
+    live: std::collections::HashMap<u32, Session>,
     /// Started ahead of time, so opening the panel (or Restart) shows a prompt at once instead of waiting most of a
     /// second for PowerShell to load.
     spare: Option<Session>,
@@ -182,12 +183,12 @@ impl Terminal {
 
     /// Shows a shell, replacing any before it: the spare when it's for this folder, else a new one. Output arrives as
     /// raw bytes on `output`; `exited` fires when it ends.
-    pub fn start(&self, cwd: &str, rows: u16, cols: u16, output: Channel<InvokeResponseBody>, exited: Channel<bool>) -> Result<String, String> {
-        let spare = {
+    pub fn start(&self, id: u32, cwd: &str, rows: u16, cols: u16, output: Channel<InvokeResponseBody>, exited: Channel<bool>) -> Result<String, String> {
+        let (old, spare) = {
             let mut shells = self.0.lock().unwrap();
-            shells.live = None;
-            shells.spare.take().filter(|s| s.cwd == cwd && !s.exited())
+            (shells.live.remove(&id), shells.spare.take().filter(|s| s.cwd == cwd && !s.exited()))
         };
+        drop(old);
         let session = match spare {
             Some(s) => {
                 let _ = s.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
@@ -209,25 +210,27 @@ impl Terminal {
             *sink = Sink::Live { output, exited };
         }
         let name = session.name.clone();
-        self.0.lock().unwrap().live = Some(session);
+        self.0.lock().unwrap().live.insert(id, session);
         Ok(name)
     }
 
-    pub fn write(&self, data: &str) {
-        if let Some(s) = &mut self.0.lock().unwrap().live {
+    pub fn write(&self, id: u32, data: &str) {
+        if let Some(s) = self.0.lock().unwrap().live.get_mut(&id) {
             let _ = s.writer.write_all(data.as_bytes());
             let _ = s.writer.flush();
         }
     }
 
-    pub fn resize(&self, rows: u16, cols: u16) {
-        if let Some(s) = &self.0.lock().unwrap().live {
+    pub fn resize(&self, id: u32, rows: u16, cols: u16) {
+        if let Some(s) = self.0.lock().unwrap().live.get(&id) {
             let _ = s.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         }
     }
 
-    pub fn stop(&self) {
-        self.0.lock().unwrap().live = None;
+    pub fn stop(&self, id: u32) {
+        // Dropped outside the lock: killing a shell can take a moment.
+        let gone = self.0.lock().unwrap().live.remove(&id);
+        drop(gone);
     }
 }
 

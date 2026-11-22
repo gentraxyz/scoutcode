@@ -3615,7 +3615,7 @@ impl Core {
                 let live = std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == s.id);
                 let (running, waiting) = (live.is_some_and(|c| c.running), live.is_some_and(Chat::waiting));
                 let done = !running && !waiting && self.cfg.done_chats.get(&s.id).is_some_and(|&t| t >= s.updated);
-                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "running": running, "waiting": waiting, "unread": live.is_some_and(|c| c.unread), "errored": s.errored, "done": done })
+                json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "updated": s.updated, "running": running, "waiting": waiting, "unread": live.is_some_and(|c| c.unread), "errored": s.errored, "done": done })
             }).collect::<Vec<_>>())),
             ("projects", json!(self.projects)),
             ("chat", json!({ "id": self.chat.session_id, "cwd": self.chat.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch })),

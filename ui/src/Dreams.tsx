@@ -1,6 +1,6 @@
 // Dreaming: once Scout has sat untouched for 20 minutes, and at most once a day, a free model reads the last two days of
 // chats and tidies user and project memory (see dream.rs). This is the Dream Log, in Settings and in the Inbox.
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { act } from './api';
 import { useView } from './store';
 import { Icon, Spinner } from './widgets';
@@ -34,6 +34,26 @@ export function useUnseenDreams(): Dream[] {
   return (d?.log ?? []).filter((x) => !x.seen && !x.undone && x.status === 'done' && x.changes.length > 0);
 }
 
+/** The Inbox's dreams: opening the page marks them seen, but they stay listed until you leave it or dismiss them. */
+export function useInboxDreams() {
+  const d = useView('dreaming');
+  const unseen = useUnseenDreams();
+  const [shown, setShown] = useState<string[]>([]);
+  const fresh = unseen.map((x) => x.id).join();
+  useEffect(() => {
+    if (!unseen.length) return;
+    setShown((prev) => [...unseen.map((x) => x.id).filter((id) => !prev.includes(id)), ...prev]);
+    unseen.forEach((x) => act('dreamSeen', { id: x.id }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fresh]);
+  const dreams = (d?.log ?? []).filter((x) => shown.includes(x.id));
+  return {
+    dreams,
+    dismiss: (id: string) => setShown((prev) => prev.filter((x) => x !== id)),
+    dismissAll: () => setShown([]),
+  };
+}
+
 function when(ms: number) {
   return new Date(ms).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 }
@@ -51,7 +71,7 @@ function ChangeLine({ c }: { c: DreamChange }) {
 }
 
 /** One dream: when, what it read, what it changed, with Undo, and Dismiss when it's in the Inbox. */
-export function DreamEntry({ d, inbox }: { d: Dream; inbox?: boolean }) {
+export function DreamEntry({ d, onDismiss }: { d: Dream; onDismiss?: () => void }) {
   return (
     <div className={`dream-entry${d.undone ? ' undone' : ''}`}>
       <div className="row dream-head">
@@ -62,7 +82,7 @@ export function DreamEntry({ d, inbox }: { d: Dream; inbox?: boolean }) {
         </span>
         {d.undone && <span className="tiny dim">Undone</span>}
         {!d.undone && d.changes.length > 0 && <button type="button" className="button compact" onClick={() => act('dreamUndo', { id: d.id })}>Undo</button>}
-        {inbox && <button type="button" className="button compact" onClick={() => act('dreamSeen', { id: d.id })}>Dismiss</button>}
+        {onDismiss && <button type="button" className="button compact" onClick={onDismiss}>Dismiss</button>}
       </div>
       {d.error && <div className="small red">{d.error}</div>}
       {d.changes.length > 0 && <ul className="dream-changes">{d.changes.map((c, i) => <ChangeLine key={i} c={c} />)}</ul>}

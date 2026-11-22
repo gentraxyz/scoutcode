@@ -1262,6 +1262,10 @@ impl Agent {
                             let out = cap_output(res.output);
                             self.session.messages.push(Message::Tool { tool_call_id: call.id.clone(), content: out.clone() });
                             save_session(&mut self.session);
+                            // A message sent while it worked goes in now, to be read with this result.
+                            if let Some(prompt) = self.take_steer_prompt(h) {
+                                run.steer(prompt);
+                            }
                             out
                         }
                         CopilotRole::Sub(d) => {
@@ -1282,11 +1286,8 @@ impl Agent {
                     }
                     save_session(&mut self.session);
                     // A message sent while it worked gets its answer now, in this turn.
-                    let before = self.session.messages.len();
-                    if self.take_steer(h) {
-                        let new: Vec<String> = self.session.messages[before..].iter().filter_map(|m| if let Message::User { content } = m { Some(content.text()) } else { None }).collect();
-                        save_session(&mut self.session);
-                        run.send(new.join("\n\n"));
+                    if let Some(prompt) = self.take_steer_prompt(h) {
+                        run.send(prompt);
                         continue;
                     }
                     if !said {
@@ -1346,15 +1347,23 @@ impl Agent {
         // Commands that came back before Devin announced their call.
         let mut ran: Vec<String> = vec![];
         let mut next_id = 0;
+        // A message sent while it works stops its prompt after the step it's on, and is its next prompt: `stepped` is a
+        // step just ended, `interrupted` the stop asked for.
+        let (mut stepped, mut interrupted) = (false, false);
         let result = loop {
             if self.cancelled() {
                 run.abort();
                 break Err(ApiError::aborted());
             }
+            if main && stepped && !interrupted && open.is_empty() && self.steer_waiting() {
+                run.abort();
+                interrupted = true;
+            }
             let Some(msg) = run.next(Duration::from_millis(100)) else { continue };
             match msg {
                 DevinMsg::Text(t) => {
                     said = true;
+                    stepped = false;
                     text.push_str(&t);
                     if main {
                         h.send(Ev::Text(t));
@@ -1374,6 +1383,7 @@ impl Agent {
                     }
                 }
                 DevinMsg::ToolStart { id, kind, title, input } => {
+                    stepped = false;
                     let command = input.get("command").and_then(Value::as_str);
                     if let Some(i) = command.filter(|_| kind == "execute").and_then(|c| ran.iter().position(|r| r == c)) {
                         ran.remove(i);
@@ -1392,6 +1402,7 @@ impl Agent {
                     open.insert(id, (kind, title, input));
                 }
                 DevinMsg::ToolEnd { id, failed, text: out } => {
+                    stepped = true;
                     if handled.remove(&id) {
                         continue;
                     }
@@ -1497,7 +1508,7 @@ impl Agent {
                     run.reply_permission(&id, allow, &options);
                 }
                 DevinMsg::Idle(stop) => {
-                    if stop == "cancelled" {
+                    if stop == "cancelled" && !interrupted {
                         break Err(ApiError::aborted());
                     }
                     if !main {
@@ -1509,11 +1520,9 @@ impl Agent {
                     }
                     save_session(&mut self.session);
                     // A message sent while it worked gets its answer now, in this turn.
-                    let before = self.session.messages.len();
-                    if self.take_steer(h) {
-                        let new: Vec<String> = self.session.messages[before..].iter().filter_map(|m| if let Message::User { content } = m { Some(content.text()) } else { None }).collect();
-                        save_session(&mut self.session);
-                        run.send(new.join("\n\n"));
+                    if let Some(prompt) = self.take_steer_prompt(h) {
+                        (stepped, interrupted) = (false, false);
+                        run.send(prompt);
                         continue;
                     }
                     match stop.as_str() {
@@ -1574,15 +1583,23 @@ impl Agent {
         let (mut text, mut said, mut refused) = (String::new(), false, false);
         // Its calls not finished yet: id → name, label, input, kind.
         let mut open: HashMap<String, (String, String, Value, String)> = HashMap::new();
+        // A message sent while it works stops its prompt after the step it's on, and is its next prompt: `stepped` is a
+        // step just ended, `interrupted` the stop asked for.
+        let (mut stepped, mut interrupted) = (false, false);
         let result = loop {
             if self.cancelled() {
                 run.abort();
                 break Err(ApiError::aborted());
             }
+            if main && stepped && !interrupted && open.is_empty() && self.steer_waiting() {
+                run.abort();
+                interrupted = true;
+            }
             let Some(msg) = run.next(Duration::from_millis(100)) else { continue };
             match msg {
                 CliMsg::Text(t) => {
                     said = true;
+                    stepped = false;
                     text.push_str(&t);
                     if main {
                         h.send(Ev::Text(t));
@@ -1597,6 +1614,7 @@ impl Agent {
                 CliMsg::Todos(_) => {}
                 // A call can be announced again as it fills in.
                 CliMsg::ToolStart { id, kind, title, input } => {
+                    stepped = false;
                     if main {
                         if let Some((prev_name, prev_label, prev_input, prev_kind)) = open.get_mut(&id) {
                             let effective_kind = if !kind.is_empty() { &kind } else { prev_kind.as_str() };
@@ -1631,6 +1649,7 @@ impl Agent {
                     }
                 }
                 CliMsg::ToolEnd { id, failed, text: out } => {
+                    stepped = true;
                     let Some((mut tool_name, label, input, _kind)) = open.remove(&id) else { continue };
                     said = true;
                     let mut summary = out.lines().next().unwrap_or(if failed { "failed" } else { "done" }).chars().take(100).collect::<String>();
@@ -1669,7 +1688,7 @@ impl Agent {
                 }
                 CliMsg::Idle(stop) => {
                     // Grok ends its turn as cancelled when a tool is refused, which isn't the user stopping it.
-                    if stop == "cancelled" && !refused {
+                    if stop == "cancelled" && !refused && !interrupted {
                         break Err(ApiError::aborted());
                     }
                     if !main {
@@ -1681,11 +1700,9 @@ impl Agent {
                     }
                     save_session(&mut self.session);
                     // A message sent while it worked gets its answer now, in this turn.
-                    let before = self.session.messages.len();
-                    if self.take_steer(h) {
-                        let new: Vec<String> = self.session.messages[before..].iter().filter_map(|m| if let Message::User { content } = m { Some(content.text()) } else { None }).collect();
-                        save_session(&mut self.session);
-                        run.send(new.join("\n\n"));
+                    if let Some(prompt) = self.take_steer_prompt(h) {
+                        (stepped, interrupted) = (false, false);
+                        run.send(prompt);
                         continue;
                     }
                     match stop.as_str() {
@@ -2023,6 +2040,21 @@ impl Agent {
         }
         h.send(Ev::Steered(shown));
         true
+    }
+
+    /// The same for a CLI that keeps its own conversation: the messages as one prompt for it, if there were any.
+    fn take_steer_prompt(&mut self, h: &Hooks) -> Option<String> {
+        let before = self.session.messages.len();
+        if !self.take_steer(h) {
+            return None;
+        }
+        let new: Vec<String> = self.session.messages[before..].iter().filter_map(|m| if let Message::User { content } = m { Some(content.text()) } else { None }).collect();
+        save_session(&mut self.session);
+        Some(new.join("\n\n"))
+    }
+
+    fn steer_waiting(&self) -> bool {
+        !self.shared.steer.lock().unwrap().is_empty()
     }
 
     /// Runs the agent loop for one user message until the model stops calling tools.

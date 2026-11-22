@@ -22,8 +22,8 @@ import { FolderPicker } from './FolderPicker';
 import { UsageAlert } from './UsageAlert';
 import { Icon, IconButton, Modal } from './widgets';
 import { useActivityPing } from './Dreams';
-import { CloudChat, CloudTitle, EpsilonSidebar, NewProjectDialog, VmBar, VmPage } from './Cloud';
-import { newCloudChat, useEpsilonSync } from './epsilon';
+import { CloudChat, CloudDoneButton, CloudTitle, EpsilonSidebar, NewProjectDialog, VmBar, VmPage } from './Cloud';
+import { cloud, LIVE, newCloudChat, stopTask, useEpsilonSync } from './epsilon';
 
 const appWindow = getCurrentWindow();
 
@@ -146,6 +146,7 @@ function TopBar() {
         {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
         <CloudTitle />
         <span className="grow" data-tauri-drag-region />
+        <CloudDoneButton />
         <UpdatePill />
         <WindowButtons />
       </header>
@@ -185,7 +186,6 @@ function TopBar() {
       <UpdatePill />
       <Hideable id="top.music"><MusicButton /></Hideable>
       <Hideable id="top.game"><GameButton /></Hideable>
-      <Hideable id="top.panel"><IconButton icon="panel" tip={dockOpen ? 'Hide panel' : 'Show panel'} active={dockOpen} onClick={() => ui.set({ dockOpen: !dockOpen })} /></Hideable>
       <Hideable id="top.terminal"><IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} /></Hideable>
       <Hideable id="top.changes"><IconButton icon="changes" tip="Changes" active={dockOpen && dockTab === 'changes'} onClick={() => toggleDock('changes')} /></Hideable>
       <Hideable id="top.files"><IconButton icon="files" tip="Files" active={dockOpen && dockTab === 'files'} onClick={() => toggleDock('files')} /></Hideable>
@@ -393,7 +393,13 @@ function useShortcuts() {
         return act('cycleMode');
       }
       // Esc closes whatever is open on top before it stops Scout.
-      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().newProject && !ui.get().cloud) act('stop');
+      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().newProject) {
+        const at = ui.get().cloud;
+        if (!at) return act('stop');
+        // In a cloud chat, Esc stops Epsilon, as it stops Scout in a local one.
+        const t = cloud.get().task;
+        if (at.taskId && t?.id === at.taskId && LIVE.has(t.status)) void stopTask(t.id);
+      }
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);

@@ -14,7 +14,7 @@ import { invoke, type DiffLines } from './api';
 import { GamesTab } from './Games';
 import { ReviewTab } from './ReviewTab';
 import { Resizer } from './Sidebar';
-import { ui, useUi, useView, type DockTab } from './store';
+import { ui, useUi, useView } from './store';
 import { subscribeTheme, themeColor } from './theme';
 import { DiffBody, Icon, IconButton, Modal, Spinner } from './widgets';
 
@@ -131,7 +131,7 @@ function saveRan(cmd: string) {
  * The shells mark where their prompt ends (OSC 133;B, from terminal/init.*), which is how the panel knows what's been
  * typed; without a mark there are no suggestions.
  */
-function attachSuggest(xterm: XTerm, cwd: string) {
+function attachSuggest(xterm: XTerm, id: number, cwd: string, onFolder: (dir: string) => void) {
   const screen = xterm.element!.querySelector('.xterm-screen') as HTMLElement;
   const ghost = document.createElement('div');
   ghost.className = 'term-ghost';
@@ -159,6 +159,7 @@ function attachSuggest(xterm: XTerm, cwd: string) {
       let p = m[1];
       try { p = decodeURIComponent(p); } catch { /* sent unencoded */ }
       here = /^\/[A-Za-z]:/.test(p) ? p.slice(1) : p;
+      onFolder(here);
     }
     return true;
   });
@@ -294,7 +295,7 @@ function attachSuggest(xterm: XTerm, cwd: string) {
     else if (e.key === 'Escape') { hiddenFor = input()?.before ?? null; schedule(); return true; }
     if (!take) return false;
     e.preventDefault();
-    invoke('terminal_write', { data: take });
+    invoke('terminal_write', { id, data: take });
     return true;
   };
 
@@ -324,16 +325,17 @@ function charWidth(font: string) {
   return w;
 }
 
-/** Stays mounted while the panel is open, so the shell's screen survives switching tabs. */
-function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
+/** One shell, in one of the terminal's tabs. Stays mounted while hidden, so its screen survives switching tabs. */
+function TerminalSession({ id, cwd, visible, onExit, onFolder }: { id: number; cwd: string; visible: boolean; onExit: () => void; onFolder: (dir: string) => void }) {
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<{ xterm: XTerm; fit: FitAddon } | null>(null);
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [shell, setShell] = useState('');
   const [run, setRun] = useState(0);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const calls = useRef({ onExit, onFolder });
+  calls.current = { onExit, onFolder };
 
   useEffect(() => {
     const xterm = new XTerm({
@@ -347,7 +349,7 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
     term.current = { xterm, fit };
     fit.fit();
     const detachCaret = attachCaret(xterm);
-    const suggest = attachSuggest(xterm, cwd);
+    const suggest = attachSuggest(xterm, id, cwd, (dir) => calls.current.onFolder(dir));
     // Ctrl+C copies a selection (or interrupts without one) and Ctrl+V pastes.
     xterm.attachCustomKeyEventHandler((e) => {
       if (suggest.key(e)) return false;
@@ -365,8 +367,8 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
       // Ctrl+` belongs to the window.
       return e.key !== '`';
     });
-    const data = xterm.onData((d) => invoke('terminal_write', { data: d }));
-    const size = xterm.onResize(({ rows, cols }) => invoke('terminal_resize', { rows, cols }));
+    const data = xterm.onData((d) => invoke('terminal_write', { id, data: d }));
+    const size = xterm.onResize(({ rows, cols }) => invoke('terminal_resize', { id, rows, cols }));
     const output = new Channel<ArrayBuffer>();
     output.onmessage = (bytes) => xterm.write(new Uint8Array(bytes));
     const done = new Channel<boolean>();
@@ -379,14 +381,14 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
         setExited(true);
         return;
       }
-      // `exit` closes the terminal, like closing a terminal window; a fresh shell is ready for next time.
-      if (visibleRef.current) ui.set({ dockOpen: false });
-      setRun((r) => r + 1);
+      // `exit` closes its tab, like closing a terminal window.
+      calls.current.onExit();
     };
     setExited(false);
     setError(null);
-    invoke<string>('terminal_start', { cwd, rows: xterm.rows, cols: xterm.cols, output, exited: done })
-      .then((name) => { if (current) setShell(name); })
+    invoke<string>('terminal_start', { id, cwd, rows: xterm.rows, cols: xterm.cols, output, exited: done })
+      // The spare was just taken: start the next one, so a new tab opens at once too.
+      .then(() => { if (current) invoke('terminal_prewarm', { cwd, rows: xterm.rows, cols: xterm.cols }); })
       .catch((e) => { if (current) setError(`The shell didn't start: ${String(e).replace(/\s*\(os error \d+\)$/, '')}`); });
     const observer = new ResizeObserver(() => { if (host.current?.offsetWidth) fit.fit(); });
     observer.observe(host.current!);
@@ -400,7 +402,7 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
       suggest.dispose();
       data.dispose();
       size.dispose();
-      invoke('terminal_stop');
+      invoke('terminal_stop', { id });
       xterm.dispose();
     };
   }, [cwd, run]);
@@ -413,22 +415,68 @@ function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
   }, [visible]);
 
   const restart = () => setRun(run + 1);
-  // Pointing at Restart starts the next shell, so clicking it is instant without keeping a spare running all along.
-  const warm = () => { const x = term.current?.xterm; if (x) invoke('terminal_prewarm', { cwd, rows: x.rows, cols: x.cols }); };
   return (
-    <div className="terminal-tab" style={{ display: visible ? undefined : 'none' }}>
-      <div className="terminal-tools">
-        {shell && <span className="terminal-shell">{shell === 'pwsh' ? 'PowerShell 7' : shell === 'powershell' ? 'PowerShell' : shell}</span>}
-        <IconButton icon="eraser" tip="Clear" size={24} onClick={() => { term.current?.xterm.clear(); term.current?.xterm.focus(); }} />
-        <span onMouseEnter={warm}><IconButton icon="refresh" tip="Restart the shell" size={24} onClick={restart} /></span>
-      </div>
+    <div className="terminal-session" style={{ display: visible ? undefined : 'none' }}>
       <div className="terminal-host" ref={host} onMouseDown={() => term.current?.xterm.focus()} />
       {(exited || error) && (
         <div className="terminal-exit">
           <span className={error ? 'red' : 'muted'}>{error ?? 'The shell has exited.'}</span>
-          <button type="button" className="button compact" onMouseEnter={warm} onClick={restart}>Restart</button>
+          <button type="button" className="button compact" onClick={restart}>Restart</button>
         </div>
       )}
+    </div>
+  );
+}
+
+let nextTermId = 1;
+type TermTab = { id: number; folder: string };
+const newTermTab = (): TermTab => ({ id: nextTermId++, folder: '' });
+const folderName = (dir: string) => dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || dir || 'Terminal';
+
+/** The terminal: a row of small round tabs, one shell each. Stays mounted while the panel is open. */
+function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
+  const [tabs, setTabs] = useState<TermTab[]>(() => [newTermTab()]);
+  const [active, setActive] = useState(tabs[0].id);
+  const add = () => {
+    const t = newTermTab();
+    setTabs((ts) => [...ts, t]);
+    setActive(t.id);
+  };
+  const close = (id: number) => {
+    const i = tabs.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    const rest = tabs.filter((t) => t.id !== id);
+    // The last one closing closes the panel; a fresh shell is ready for next time.
+    if (!rest.length) {
+      if (visible) ui.set({ dockOpen: false });
+      rest.push(newTermTab());
+    }
+    setTabs(rest);
+    if (active === id || !rest.some((t) => t.id === active)) setActive(rest[Math.min(i, rest.length - 1)].id);
+  };
+  const setFolder = (id: number, dir: string) => setTabs((ts) => (ts.some((t) => t.id === id && t.folder !== dir) ? ts.map((t) => (t.id === id ? { ...t, folder: dir } : t)) : ts));
+  return (
+    <div className="terminal-tab" style={{ display: visible ? undefined : 'none' }}>
+      <div className="term-tabs" role="tablist">
+        {tabs.map((t) => (
+          <div
+            key={t.id}
+            role="tab"
+            aria-selected={t.id === active}
+            className={`term-tab${t.id === active ? ' on' : ''}`}
+            title={t.folder || cwd}
+            onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); close(t.id); } }}
+            onClick={() => setActive(t.id)}
+          >
+            <span className="term-tab-name">{folderName(t.folder || cwd)}</span>
+            <button type="button" className="term-tab-x" aria-label="Close" onClick={(e) => { e.stopPropagation(); close(t.id); }}><Icon name="close" size={10} /></button>
+          </div>
+        ))}
+        <button type="button" className="term-tab-add" aria-label="New terminal" title="New terminal" onClick={add}><Icon name="plus" size={12} /></button>
+      </div>
+      {tabs.map((t) => (
+        <TerminalSession key={t.id} id={t.id} cwd={cwd} visible={visible && t.id === active} onExit={() => close(t.id)} onFolder={(d) => setFolder(t.id, d)} />
+      ))}
     </div>
   );
 }
@@ -727,10 +775,8 @@ function FilesTab({ cwd }: { cwd: string }) {
 
 // ---------- the panel ----------
 
-const TABS: [DockTab, string, string][] = [['terminal', 'Terminal', 'terminal'], ['changes', 'Changes', 'changes'], ['files', 'Files', 'files'], ['review', 'Review', 'shield']];
-/** Only while the experimental games are on and set to show in the panel. */
-const GAMES_TAB: [DockTab, string, string] = ['games', 'Games', 'game'];
-
+// The panel has no tab strip of its own: the top bar's buttons pick what it shows. Games only shows while the
+// experimental games are on and set to show in the panel.
 export function Dock() {
   const open = useUi((u) => u.dockOpen);
   const { games } = useView('cfg');
@@ -749,11 +795,6 @@ export function Dock() {
   return (
     <aside className="dock" style={{ width: Math.min(width, max), display: open ? undefined : 'none' }}>
       <Resizer side="left" width={Math.min(width, max)} min={320} max={max} onChange={setWidth} />
-      <div className="dock-tabs">
-        {[...TABS, ...(gamesTab ? [GAMES_TAB] : [])].map(([id, title, icon]) => (
-          <button key={id} type="button" className={`dock-tab ${tab === id ? 'on' : ''}`} onClick={() => ui.set({ dockTab: id })}><Icon name={icon} size={14} />{title}</button>
-        ))}
-      </div>
       {termStarted && <TerminalTab cwd={cwd} visible={open && tab === 'terminal'} />}
       {open && tab === 'changes' && <ChangesTab cwd={cwd} />}
       {open && tab === 'games' && <GamesTab />}

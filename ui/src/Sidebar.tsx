@@ -3,7 +3,8 @@ import { act, invoke, usd, type View } from './api';
 import { ui, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
 import { Hideable, useHidden } from './Hideable';
-import { CloudSessionRow, useCloudRows } from './Cloud';
+import { CloudSessionRow, useCloudRows, useCloudSearch } from './Cloud';
+import { useListMotion } from './listMotion';
 import { newCloudChat } from './epsilon';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
@@ -114,7 +115,7 @@ function ChatList({ done }: { done: boolean }) {
   const chat = useView('chat');
   const projectName = useProjectName();
   const rows = sessions.filter((s) => !!s.done === done);
-  // Cloud chats sit above this PC's, newest first; only this PC's can be dragged into an order.
+  // Cloud chats sit among this PC's by when they were last active; only this PC's can be dragged into an order.
   const cloudRows = useCloudRows(done);
   const openCloud = useUi((u) => (u.page === 'chat' ? u.cloud?.taskId ?? null : null));
   const inCloud = useUi((u) => !!u.cloud);
@@ -141,8 +142,24 @@ function ChatList({ done }: { done: boolean }) {
   }, [rowKey]);
   useEffect(() => () => stopListening.current?.(), []);
 
+  const motion = useListMotion(listRef, !!drag || instant);
+
   const shown = order && order.length === rows.length && order.every((id) => byId.has(id)) ? order : rows.map((r) => r.id);
   const ids = drag ? drag.rows.map((r) => r.id) : shown;
+  // Where each cloud chat goes: above the first chat on this PC (in the order shown) that was last active before it.
+  // Placed from the order before any drag, so cloud chats stay put while one is dragged.
+  const cloudBefore = new Map<string, typeof cloudRows>();
+  let cloudAfter = cloudRows;
+  {
+    let i = 0;
+    for (const id of shown) {
+      const at = byId.get(id)?.updated ?? 0;
+      const start = i;
+      while (i < cloudRows.length && cloudRows[i].updatedAt >= at) i++;
+      if (i > start) cloudBefore.set(id, cloudRows.slice(start, i));
+    }
+    cloudAfter = cloudRows.slice(i);
+  }
   const next = drag ? dragOrder(drag) : null;
   // How far a chat has to move to reach its slot in the new order (the dragged one follows the pointer until the drop).
   const shift = (id: string): number => {
@@ -206,15 +223,19 @@ function ChatList({ done }: { done: boolean }) {
   return (
     <div
       ref={listRef}
-      className={`side-scroll ${drag && !drag.settling ? 'reordering' : ''}`}
+      className={`side-scroll chat-list ${done ? 'list-done' : 'list-recent'} ${drag ? 'moving' : ''} ${drag && !drag.settling ? 'reordering' : ''}`}
       onClickCapture={(e) => { if (suppressClick.current) { e.preventDefault(); e.stopPropagation(); } }}
     >
-      {cloudRows.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />)}
+      {/* First, so the rows paint over it. */}
+      <div ref={motion.highlight} className="side-highlight" aria-hidden />
       {ids.map((id) => {
         const s = byId.get(id);
         if (!s) return null;
         const dragging = drag?.id === id;
-        return (
+        // Cloud chats newer than this one go just above it, so both kinds sit together by when they were last active.
+        const before = cloudBefore.get(id) ?? [];
+        return [
+          ...before.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />),
           <SessionRow
             key={id}
             s={s}
@@ -229,10 +250,13 @@ function ChatList({ done }: { done: boolean }) {
               },
               onPointerDown: (e) => onPointerDown(id, e),
             }}
-          />
-        );
+          />,
+        ];
       })}
+      {cloudAfter.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />)}
       {rows.length === 0 && cloudRows.length === 0 && <div className="small dim no-chats">{done ? 'Nothing marked done yet.' : 'No chats yet. Start one above.'}</div>}
+      {/* Rows that just left, fading out where they were. React never renders anything in here. */}
+      <div ref={motion.ghosts} className="side-ghosts" aria-hidden />
     </div>
   );
 }
@@ -296,12 +320,16 @@ function SearchResults({ query }: { query: string }) {
   }, [q]);
   const found = hits?.q === q ? hits.ids : null;
   const rows = sessions.filter((s) => (found ? found.has(s.id) : s.title.toLowerCase().includes(q.toLowerCase())));
+  const cloudRows = useCloudSearch(q);
+  const openCloud = useUi((u) => (u.page === 'chat' ? u.cloud?.taskId ?? null : null));
+  const inCloud = useUi((u) => !!u.cloud);
   return (
     <>
       <div className="row side-label"><SectionLabel>Results</SectionLabel>{!found && <Spinner size={11} />}</div>
       <div className="side-scroll">
-        {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} project={projectName(s.cwd)} />)}
-        {rows.length === 0 && found && <div className="small dim no-chats">No chats match.</div>}
+        {cloudRows.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />)}
+        {rows.map((s) => <SessionRow key={s.id} s={s} current={!inCloud && s.id === chat.id} project={projectName(s.cwd)} />)}
+        {rows.length === 0 && cloudRows.length === 0 && found && <div className="small dim no-chats">No chats match.</div>}
       </div>
     </>
   );
@@ -364,7 +392,7 @@ export function Sidebar() {
         <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />
       </div>
       <Hideable id="side.newChat"><button type="button" className="new-chat" title={inCloud ? 'A new cloud chat, in the same repository' : undefined} onClick={() => { if (inCloud) return newCloudChat(); ui.set({ page: 'chat' }); act('newChat'); }}>
-        <Icon name={inCloud ? 'cloud' : 'plus'} /><span className="grow">{inCloud ? 'New cloud chat' : 'New chat'}</span><span className="tiny dim">Ctrl+N</span>
+        <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
       </button></Hideable>
       <Hideable id="side.search">
       <div className="side-search">
@@ -383,7 +411,7 @@ export function Sidebar() {
             <ProjectsMenu />
             <IconButton icon="folderPlus" tip="New project: a folder on this PC or a repository in the cloud" size={26} onClick={addProject} />
           </div>
-          <ChatList done={showDone} />
+          <ChatList key={showDone ? 'done' : 'recent'} done={showDone} />
           {!showDone && (
             <button type="button" className="done-footer" onClick={() => setShowDone(true)} title="Chats you marked as done">
               <span className="grow">Done</span>

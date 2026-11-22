@@ -194,7 +194,7 @@ export type View = {
   questions: Question[] | null;
   queue: { text: string; files: number }[];
   steering: string[];
-  sessions: { id: string; cwd: string; title: string; ago: string; running: boolean; waiting: boolean; unread: boolean; errored: boolean; done?: boolean }[];
+  sessions: { id: string; cwd: string; title: string; ago: string; updated?: number; running: boolean; waiting: boolean; unread: boolean; errored: boolean; done?: boolean }[];
   projects: { name: string; path: string }[];
   chat: { id: string | null; cwd: string; project: string; title: string; epoch: number };
   filesEpoch: number;

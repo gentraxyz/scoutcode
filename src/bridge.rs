@@ -971,23 +971,23 @@ fn terminal_prewarm(terminal: State<dock::Terminal>, cwd: String, rows: u16, col
 }
 
 #[tauri::command]
-fn terminal_start(terminal: State<dock::Terminal>, cwd: String, rows: u16, cols: u16, output: Channel<InvokeResponseBody>, exited: Channel<bool>) -> Result<String, String> {
-    terminal.start(&cwd, rows, cols, output, exited)
+fn terminal_start(terminal: State<dock::Terminal>, id: u32, cwd: String, rows: u16, cols: u16, output: Channel<InvokeResponseBody>, exited: Channel<bool>) -> Result<String, String> {
+    terminal.start(id, &cwd, rows, cols, output, exited)
 }
 
 #[tauri::command]
-fn terminal_write(terminal: State<dock::Terminal>, data: String) {
-    terminal.write(&data);
+fn terminal_write(terminal: State<dock::Terminal>, id: u32, data: String) {
+    terminal.write(id, &data);
 }
 
 #[tauri::command]
-fn terminal_resize(terminal: State<dock::Terminal>, rows: u16, cols: u16) {
-    terminal.resize(rows, cols);
+fn terminal_resize(terminal: State<dock::Terminal>, id: u32, rows: u16, cols: u16) {
+    terminal.resize(id, rows, cols);
 }
 
 #[tauri::command]
-fn terminal_stop(terminal: State<dock::Terminal>) {
-    terminal.stop();
+fn terminal_stop(terminal: State<dock::Terminal>, id: u32) {
+    terminal.stop(id);
 }
 
 // ---------- music ----------

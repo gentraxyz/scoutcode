@@ -74,6 +74,7 @@ const PATHS: Record<string, string> = {
   lock: 'M4 7.500h8v6H4zM5.500 7.500V5.300a2.500 2.500 0 0 1 5 0v2.200M8 10v1.500',
   cloud: 'M4.600 12.500h6.700a2.800 2.800 0 0 0 .300-5.600 3.900 3.900 0 0 0-7.500.700 2.500 2.500 0 0 0 .500 4.900z',
   stop: 'M4.500 4.500h7v7h-7z',
+  trash: 'M2.800 4.300h10.400M6.300 4.300V2.800h3.400v1.500M4.200 4.300l.6 8.900h6.400l.6-8.900M6.700 6.800v4M9.300 6.800v4',
 };
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
@@ -138,19 +139,32 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
   width?: number | 'anchor';
 }) {
   const [open, setOpen] = useState(false);
+  // Closing plays a short exit before the panel goes; reopening in the meantime takes it back.
+  const [closing, setClosing] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
   const [above, setAbove] = useState(false);
   const anchor = useRef<HTMLSpanElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const close = () => {
-    setOpen(false);
-    setStyle({ visibility: 'hidden' });
+    if (closeTimer.current) return;
+    setClosing(true);
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = undefined;
+      setClosing(false);
+      setOpen(false);
+      setStyle({ visibility: 'hidden' });
+    }, 110);
   };
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
   const toggle = () => {
-    if (open) {
+    if (open && !closing) {
       close();
     } else {
-      onOpen?.();
+      clearTimeout(closeTimer.current);
+      closeTimer.current = undefined;
+      setClosing(false);
+      if (!open) onOpen?.();
       setOpen(true);
     }
   };
@@ -208,7 +222,7 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
     <>
       <span ref={anchor} className="popover-anchor">{trigger(open, toggle)}</span>
       {open && createPortal(
-        <div ref={panel} className={`popover ${above ? 'above' : ''} ${className}`} style={{ width: width === 'anchor' ? anchor.current?.offsetWidth : width, ...style }}>{children(close)}</div>,
+        <div ref={panel} className={`popover ${above ? 'above' : ''} ${closing ? 'closing' : ''} ${className}`} style={{ width: width === 'anchor' ? anchor.current?.offsetWidth : width, ...style }}>{children(close)}</div>,
         document.body,
       )}
     </>

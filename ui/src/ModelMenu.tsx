@@ -1,16 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { act, tokens, type AgentRouteStep, type AgentRouter, type Model, type ModelRef } from './api';
-import { AdditionalOptions, BrowserEntry, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
-import { chatbotConnected, ChatbotPage, CHATBOT_ONLY_PAGES, isBotPage } from './Chatbots';
+import { AdditionalOptions, BrowserEntry, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { ChatbotPage, CHATBOT_ONLY_PAGES, isBotPage } from './Chatbots';
 import { LocalSetup } from './Local';
+import { setRail, TABS, tabName, useRail, type Tab } from './rail';
+import { SortableRail } from './SortableRail';
 import { core, ui, useCore, useView } from './store';
 import { Icon, IconButton, Link, Popover, Star, Switch } from './widgets';
 import scoutLogo from '../../assets/icon.png';
-
-type Tab = 'starred' | 'router' | 'scoutcode' | 'claude' | 'codex' | 'gemini' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'grok' | 'hermes' | 'local' | 'additional' | 'chatbots';
-// ChatGPT and Claude are Codex and Claude Code too: their pages hold both the chatbot and its models.
-const TABS: [Tab, string][] = [['starred', 'Starred'], ['router', 'Agent Router'], ['codex', 'ChatGPT'], ['claude', 'Claude'], ['gemini', 'Gemini'], ['grok', 'Grok'], ['chatbots', 'Other chatbots'], ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'], ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'],['hermes', 'Hermes'], ['local', 'Local models'], ['additional', 'Additional Providers']];
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
 type ModelRow = { key: string; provider: string; name: string; star: string; model: Model };
@@ -116,19 +114,8 @@ const SORTS = [
 type Sort = (typeof SORTS)[number][0];
 const SORT_KEY = 'scout.modelSort';
 const FREE_KEY = 'scout.modelFreeOnly';
-/** Providers hidden from the rail with a right-click, kept on this PC. */
-const HIDDEN_KEY = 'scout.hiddenProviders';
-/** Set once the menu has shown its right-click tip, the first time it opened. */
-const TIP_KEY = 'scout.modelMenuTipSeen';
-
-function savedHidden(): Tab[] {
-  try {
-    const v = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? '[]');
-    return Array.isArray(v) ? v.filter((t): t is Tab => TABS.some(([id]) => id === t)) : [];
-  } catch {
-    return [];
-  }
-}
+/** Set once the menu has shown its tip, the first time it opened. */
+const TIP_KEY = 'scout.modelMenuTipSeen2';
 
 function savedSort(): Sort {
   const s = localStorage.getItem(SORT_KEY);
@@ -152,14 +139,29 @@ function runsOn(id: string): string {
   return a?.name ?? TABS.find(([t]) => t === id)?.[1] ?? id;
 }
 
-function RailIcon({ tab }: { tab: Tab }) {
-  if (tab === 'starred') return <Star on={false} />;
-  if (tab === 'router') return <Icon name="route" />;
-  if (tab === 'additional') return <Icon name="plus" />;
-  if (tab === 'chatbots') return <Icon name="chat" />;
-  const file = { scoutcode: 'scoutcode', claude: 'claude', codex: 'codex', gemini: 'gemini', openrouter: 'openrouter', nvidia: 'nvidia', opencode: 'opencode', kilo: 'kilo', copilot: 'copilot', devin: 'devin', kiro: 'kiro', grok: 'grok', hermes: 'hermes', local: 'local' }[tab];
-  if (!file) return <img className="logo" src={scoutLogo} width={16} height={16} alt="" />;
-  return <img className="logo" src={logo(file)} width={16} height={16} alt="" />;
+export function RailIcon({ tab, size = 16 }: { tab: Tab; size?: number }) {
+  if (tab === 'router') return <Icon name="route" size={size} />;
+  if (tab === 'additional') return <Icon name="plus" size={size} />;
+  if (tab === 'chatbots') return <Icon name="chat" size={size} />;
+  const src = logo(tab);
+  return <img className="logo" src={src || scoutLogo} width={size} height={size} alt="" draggable={false} />;
+}
+
+/** Pages on the rail that aren't a provider you sign in to. */
+const NOT_PROVIDERS: Tab[] = ['router', 'chatbots'];
+export const isProviderTab = (t: Tab): boolean => !NOT_PROVIDERS.includes(t);
+
+/** Which rail tabs are signed in (or need nothing), and which this user may see at all. */
+export function useTabAccess(picking = false) {
+  const cfg = useView('cfg');
+  const link = useView('link');
+  const { additionalProviders } = useCore((s) => s.statics);
+  // A team's member sees what the team runs, and the providers on this PC it allows.
+  const team = cfg.team;
+  const teamRuns = (t: Tab) => !!team && (team.providers.includes(t) || (t === 'additional' && additionalProviders.some((a) => team.providers.includes(a.id))));
+  const shownTab = (t: Tab) => (!picking || (t !== 'router' && !CHATBOT_ONLY_PAGES.includes(t))) && (!team || t === 'router' || CHATBOT_ONLY_PAGES.includes(t) || teamRuns(t) || team.acp.includes(t));
+  const signedIn = (t: Tab): boolean => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, local: cfg.local.models.length > 0, additional: cfg.additional.length > 0, router: true, kilo: true, chatbots: link.on })[t];
+  return { shownTab, signedIn, teamRuns };
 }
 
 function ModelCard({ m, top, left }: { m: Model; top: number; left: number }) {
@@ -216,6 +218,7 @@ function SignedOut({ tab }: { tab: Tab }) {
         </>
       )}
       {tab === 'opencode' && <><div className="small dim">{OPENCODE_NOTE}</div><OpencodeEntry /></>}
+      {tab === 'codex' && <><div className="small dim">{CODEX_NOTE}</div><SignInEntry which="codex" /></>}
       {tab === 'copilot' && <><div className="small dim">{COPILOT_NOTE}</div><SignInEntry which="copilot" /></>}
       {tab === 'devin' && <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>}
       {tab === 'kiro' && <><div className="small dim">{KIRO_NOTE}</div><SignInEntry which="kiro" /></>}
@@ -224,7 +227,16 @@ function SignedOut({ tab }: { tab: Tab }) {
   );
 }
 
-function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; onPick?: (key: string, provider: string) => void }) {
+function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }: {
+  close: () => void;
+  startTab: Tab;
+  onPick?: (key: string, provider: string) => void;
+  /** Onboarding's copy: each rail icon gets an X to take it off, and nothing here closes. */
+  preview?: boolean;
+  /** Set to control which page shows from outside. */
+  tab?: Tab;
+  onTab?: (t: Tab) => void;
+}) {
   const models = useCore((s) => s.models);
   const cfg = useView('cfg');
   const starred = useView('starred');
@@ -238,23 +250,23 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
   const opencodeError = useView('opencodeModelsError');
   const grokError = useView('grokModelsError');
   const hermesError = useView('hermesModelsError');
-  const link = useView('link');
   const { kiloWarning, additionalProviders } = useCore((s) => s.statics);
-  const [tab, setTab] = useState<Tab>(startTab);
+  const [ownTab, setOwnTab] = useState<Tab>(startTab);
+  const tab = shownAs ?? ownTab;
+  const setTab = onTab ?? setOwnTab;
   const [search, setSearch] = useState('');
   const [sort, setSortState] = useState<Sort>(savedSort);
   const [freeOnly, setFreeOnlyState] = useState(() => localStorage.getItem(FREE_KEY) === '1');
   const setSort = (s: Sort) => { setSortState(s); localStorage.setItem(SORT_KEY, s); };
   const setFreeOnly = (on: boolean) => { setFreeOnlyState(on); localStorage.setItem(FREE_KEY, on ? '1' : '0'); };
   const [adding, setAdding] = useState(false);
-  const [hidden, setHiddenState] = useState<Tab[]>(savedHidden);
-  const setHidden = (h: Tab[]) => { setHiddenState(h); localStorage.setItem(HIDDEN_KEY, JSON.stringify(h)); };
-  // A provider's right-click menu, or with tab 'starred' the list of hidden ones; placed inside the menu.
-  const [ctx, setCtx] = useState<{ tab: Tab; x: number; y: number } | null>(null);
-  const [tip, setTip] = useState(() => localStorage.getItem(TIP_KEY) !== '1');
+  const rail = useRail();
+  // A provider's right-click menu, or with no tab the list of ones not on the rail; placed inside the menu.
+  const [ctx, setCtx] = useState<{ tab: Tab | null; x: number; y: number } | null>(null);
+  const [tip, setTip] = useState(() => !preview && localStorage.getItem(TIP_KEY) !== '1');
   const dismissTip = () => setTip(false);
   // Shown the first time the menu opens, and not again.
-  useEffect(() => localStorage.setItem(TIP_KEY, '1'), []);
+  useEffect(() => { if (!preview) localStorage.setItem(TIP_KEY, '1'); }, [preview]);
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!ctx) return;
@@ -265,94 +277,111 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
     return () => { document.removeEventListener('mousedown', down); window.removeEventListener('keydown', key, true); };
   }, [ctx]);
   const [hover, setHover] = useState<{ m: Model; top: number; left: number } | null>(null);
-  // A team's member sees what the team runs, and the providers on this PC it allows.
   const team = cfg.team;
-  const teamRuns = (t: Tab) => !!team && (team.providers.includes(t) || (t === 'additional' && additionalProviders.some((a) => team.providers.includes(a.id))));
-  const shownTab = (t: Tab) => (!onPick || (t !== 'router' && !CHATBOT_ONLY_PAGES.includes(t))) && (!team || t === 'starred' || t === 'router' || CHATBOT_ONLY_PAGES.includes(t) || teamRuns(t) || team.acp.includes(t));
-  const signedIn = (t: Tab) => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, local: cfg.local.models.length > 0, additional: cfg.additional.length > 0, starred: true, router: true, kilo: true, chatbots: link.on, gemini: chatbotConnected('gemini', link.chatbots) })[t];
+  const { shownTab, signedIn } = useTabAccess(!!onPick);
+  const onRail = rail.filter(shownTab);
+  // Onboarding's copy with nothing on the rail: it shows how to fill it.
+  const bare = preview && onRail.length === 0;
+  const offRail = TABS.map(([t]) => t).filter((t) => shownTab(t) && !rail.includes(t));
+  const removeTab = (t: Tab) => {
+    setRail(rail.filter((x) => x !== t));
+    if (tab === t) {
+      const i = onRail.indexOf(t);
+      const next = onRail[i + 1] ?? onRail[i - 1];
+      if (next) setTab(next);
+    }
+  };
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => {
     const all = allRows(models);
     const pos = (r: ModelRow) => { const i = starred.indexOf(r.star); return i < 0 ? Infinity : i; };
     let list: ModelRow[];
-    const hiddenRow = (r: ModelRow) => hidden.includes(r.provider as Tab) || (hidden.includes('additional') && additionalProviders.some((a) => a.id === r.provider));
-    if (q) list = all.filter((r) => !hiddenRow(r) && [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q)));
-    else if (tab === 'starred') list = all.filter((r) => starred.includes(r.star));
+    const offRow = (r: ModelRow) => additionalProviders.some((a) => a.id === r.provider) ? !rail.includes('additional') : !rail.includes(r.provider as Tab);
+    if (q) list = all.filter((r) => !offRow(r) && [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q)));
     else if (tab === 'additional') list = all.filter((r) => additionalProviders.some((a) => a.id === r.provider));
     else list = all.filter((r) => r.provider === tab && (tab !== 'scoutcode' || signedIn('scoutcode') || r.model.free));
     if (freeOnly) list = list.filter((r) => r.key === 'auto' || rowFree(r));
     // Starred first, in the order they were starred; then the sort picked. Ties keep their order.
     return [...list].sort((a, b) => (pos(a) !== pos(b) ? pos(a) - pos(b) : compare(sort, a, b)));
-  }, [models, q, tab, starred, additionalProviders, sort, freeOnly, hidden]);
+  }, [models, q, tab, starred, additionalProviders, sort, freeOnly, rail]);
   // ScoutCode always lists its free models; signing in only adds the rest and a banner suggests it.
   // A chatbot's page shows its own sign-in (ChatbotPage), so it never gets the plain sign-in screen.
-  const signIn = !q && !isBotPage(tab) && tab !== 'scoutcode' && (!signedIn(tab) || ((tab === 'additional' || tab === 'local') && adding));
-  // A chatbot's page holds its link; ChatGPT and Claude also list their models under it. Chatbots bring their own model.
-  const botPage = !q && isBotPage(tab);
-  const chatbotOnly = !q && CHATBOT_ONLY_PAGES.includes(tab);
-  const routerTab = !q && tab === 'router';
+  const signIn = !q && !bare && !isBotPage(tab) && tab !== 'scoutcode' && (!signedIn(tab) || ((tab === 'additional' || tab === 'local') && adding));
+  // A chatbot's page holds its link; Claude and Grok also list their models under it. Chatbots bring their own model.
+  const botPage = !q && !bare && isBotPage(tab);
+  const chatbotOnly = !q && !bare && CHATBOT_ONLY_PAGES.includes(tab);
+  const routerTab = !q && !bare && tab === 'router';
   // Whether the model list shows: not for the sign-in, the router, or a chatbot-only page.
-  const listed = !routerTab && !signIn && !chatbotOnly && !(botPage && !signedIn(tab));
-  const empty = loading > 0 ? 'Loading models…' : q ? 'No models match.' : tab === 'starred' ? 'Star a model to keep it here.' : 'No models here yet.';
+  const listed = !bare && !routerTab && !signIn && !chatbotOnly && !(botPage && !signedIn(tab));
+  const empty = loading > 0 ? 'Loading models…' : q ? 'No models match.' : 'No models here yet.';
+  const openTab = (t: Tab) => { setTab(t); setSearch(''); setAdding(false); };
+  const menuItem = (t: Tab) => (t === 'opencode' ? 'Set up OpenCode' : t === 'local' ? 'Set up local models' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : `Sign in to ${tabName(t)}`);
   return (
-    <div className="model-menu" ref={menuRef}>
-      <div className="rail">
-        {TABS.filter(([t]) => shownTab(t) && !hidden.includes(t)).map(([t, name]) => {
-          const unlinked = !signedIn(t) && t !== 'starred' && t !== 'router' && !CHATBOT_ONLY_PAGES.includes(t);
-          const status = unlinked ? providerStatus(t) : null;
+    <div className={`model-menu ${preview ? 'preview' : ''}`} ref={menuRef}>
+      <SortableRail
+        items={onRail}
+        onReorder={(next) => setRail([...next, ...rail.filter((t) => !next.includes(t))])}
+        render={(t, leaving) => {
+          const name = tabName(t);
+          const ready = signedIn(t);
+          const label = ready || !isProviderTab(t) ? name : `${name} (${providerStatus(t)})`;
           return (
-            <button
-              key={t}
-              type="button"
-              title={signedIn(t) ? name : `${name} (${status})`}
-              aria-label={signedIn(t) ? name : `${name} (${status})`}
-              className={`rail-tab ${tab === t && !q ? 'on' : ''} ${signedIn(t) ? '' : 'off'}`}
-              onClick={() => { setTab(t); setSearch(''); setAdding(false); }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                if (t === 'starred') return;
-                const box = menuRef.current!.getBoundingClientRect();
-                setCtx({ tab: t, x: e.clientX - box.left, y: e.clientY - box.top });
-                if (tip) dismissTip();
-              }}
-            >
-              <RailIcon tab={t} />
-            </button>
+            <>
+              <button
+                type="button"
+                title={label}
+                aria-label={label}
+                tabIndex={leaving ? -1 : undefined}
+                className={`rail-tab ${tab === t && !q ? 'on' : ''} ${ready ? '' : 'off'}`}
+                onClick={() => openTab(t)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (preview) return;
+                  const box = menuRef.current!.getBoundingClientRect();
+                  setCtx({ tab: t, x: e.clientX - box.left, y: e.clientY - box.top });
+                  if (tip) dismissTip();
+                }}
+              >
+                <RailIcon tab={t} />
+              </button>
+              {preview && !leaving && (
+                <button type="button" className="rail-x" title={`Remove ${name}`} aria-label={`Remove ${name}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => removeTab(t)}>
+                  <Icon name="close" size={9} />
+                </button>
+              )}
+            </>
           );
-        })}
-        {hidden.length > 0 && (
-          <button type="button" className="rail-tab" title={`Show hidden providers (${hidden.length})`} aria-label={`Show hidden providers (${hidden.length})`} onClick={(e) => {
+        }}
+      >
+        {!preview && offRail.length > 0 && (
+          <button type="button" className="rail-tab rail-add" title={`Add a provider to the rail (${offRail.length})`} aria-label={`Add a provider to the rail (${offRail.length})`} onClick={(e) => {
             const box = menuRef.current!.getBoundingClientRect();
             const b = e.currentTarget.getBoundingClientRect();
-            setCtx({ tab: 'starred', x: b.right - box.left + 4, y: b.top - box.top });
+            setCtx({ tab: null, x: b.right - box.left + 4, y: b.top - box.top });
           }}>
-            <Icon name="more" />
+            <Icon name="plus" />
           </button>
         )}
-      </div>
+      </SortableRail>
       {ctx && (
-        <div className="rail-menu" style={{ left: ctx.x, top: Math.max(0, Math.min(ctx.y, (menuRef.current?.clientHeight ?? 470) - 48 - (ctx.tab === 'starred' ? hidden.length : 2) * 32)) }}>
-          {ctx.tab === 'starred' ? hidden.map((t) => (
-            <button key={t} type="button" className="menu-item" onClick={() => { setHidden(hidden.filter((h) => h !== t)); setCtx(null); }}>
-              <RailIcon tab={t} /><span className="grow ellipsis">Show {TABS.find(([id]) => id === t)![1]}</span>
+        <div className="rail-menu" style={{ left: ctx.x, top: Math.max(0, Math.min(ctx.y, (menuRef.current?.clientHeight ?? 470) - 48 - (ctx.tab === null ? offRail.length : 2) * 32)) }}>
+          {ctx.tab === null ? offRail.map((t) => (
+            <button key={t} type="button" className="menu-item" onClick={() => { setRail([...rail, t]); setCtx(null); }}>
+              <RailIcon tab={t} /><span className="grow ellipsis">{tabName(t)}</span>
+              {isProviderTab(t) && !signedIn(t) && <span className="tiny dim">{providerStatus(t)}</span>}
             </button>
           )) : (() => {
             const t = ctx.tab;
-            const name = TABS.find(([id]) => id === t)![1];
             return (
               <>
-                <div className="tiny dim rail-menu-head">{name}{!signedIn(t) && !CHATBOT_ONLY_PAGES.includes(t) ? ` · ${providerStatus(t)}` : ''}</div>
+                <div className="tiny dim rail-menu-head">{tabName(t)}{!signedIn(t) && isProviderTab(t) ? ` · ${providerStatus(t)}` : ''}</div>
                 {!signedIn(t) && (
-                  <button type="button" className="menu-item" onClick={() => { setTab(t); setSearch(''); setAdding(false); setCtx(null); }}>
-                    <Icon name="user" /><span className="grow">{t === 'opencode' ? 'Set up OpenCode' : t === 'local' ? 'Set up local models' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : CHATBOT_ONLY_PAGES.includes(t) ? `Connect ${name}` : `Sign in to ${name}`}</span>
+                  <button type="button" className="menu-item" onClick={() => { openTab(t); setCtx(null); }}>
+                    <Icon name="user" /><span className="grow">{menuItem(t)}</span>
                   </button>
                 )}
-                <button type="button" className="menu-item" onClick={() => {
-                  setHidden([...hidden, t]);
-                  if (tab === t) setTab('starred');
-                  setCtx(null);
-                }}>
-                  <Icon name="close" /><span className="grow">Hide</span>
+                <button type="button" className="menu-item" onClick={() => { removeTab(t); setCtx(null); }}>
+                  <Icon name="close" /><span className="grow">Remove from menu</span>
                 </button>
               </>
             );
@@ -360,14 +389,14 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
         </div>
       )}
       <div className="model-column">
-        <input className="input" autoFocus placeholder="Search models" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="input" autoFocus={!preview} placeholder="Search models" value={search} onChange={(e) => setSearch(e.target.value)} />
         {tip && (
           <div className="card-note menu-tip">
             <div className="row">
               <b className="strong grow small">Tip</b>
               <IconButton icon="close" tip="Got it" size={22} onClick={dismissTip} />
             </div>
-            <div className="small dim">Right-click a provider on the left to hide it, or to sign in if it needs an account. The bars by each model are its Intelligence Index: the more bars, the smarter.</div>
+            <div className="small dim">Hold a provider on the left to drag it into place. Right-click one to remove it, or to sign in if it needs an account. Starred models sit at the top of each list. The bars by each model are its Intelligence Index: the more bars, the smarter.</div>
           </div>
         )}
         {listed && (
@@ -420,7 +449,8 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
             {additionalErrors.map((e) => <div key={e} className="tiny red">{e}</div>)}
           </>
         )}
-        <div className="model-list" onMouseLeave={() => setHover(null)}>
+        <div key={q ? "search" : tab} className="model-list" onMouseLeave={() => setHover(null)}>
+          {bare && <div className="rail-empty small dim"><Icon name="plus" size={18} />Add a provider from the list to see it here.</div>}
           {botPage && <ChatbotPage key={tab} tab={tab} close={close} />}
           {routerTab ? <AgentRouterPanel compact close={close} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
             const m = r.model;
@@ -435,7 +465,7 @@ function Menu({ close, startTab, onPick }: { close: () => void; startTab: Tab; o
                 className={`model-row ${selected ? 'selected' : ''}`}
                 onMouseEnter={(e) => {
                   const row = e.currentTarget.getBoundingClientRect();
-                  const menu = e.currentTarget.closest('.popover')!.getBoundingClientRect();
+                  const menu = (e.currentTarget.closest('.popover') ?? e.currentTarget.closest('.model-menu'))!.getBoundingClientRect();
                   const left = menu.right + 8 + 284 <= window.innerWidth ? menu.right + 8 : menu.left - 8 - 284;
                   setHover({ m, top: Math.max(8, Math.min(row.top, window.innerHeight - 240)), left });
                 }}
@@ -895,6 +925,11 @@ export function ModelPicker({ label, onPick }: { label: string; onPick: (key: st
       {(close) => <Menu close={close} startTab="scoutcode" onPick={onPick} />}
     </Popover>
   );
+}
+
+/** Onboarding's live copy of the model menu: the same pages and sign-ins, with an X on each rail icon to take it off. */
+export function ModelMenuPreview({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+  return <Menu close={() => {}} startTab={tab} tab={tab} onTab={onTab} preview />;
 }
 
 /** The model, as a menu with search and where it runs. */

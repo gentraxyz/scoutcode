@@ -10,7 +10,9 @@ import {
 import { EpsilonScreen, type ScreenHost } from './epsilon/EpsilonScreen';
 import { focusComposer, ui, useUi, useView } from './store';
 import { Markdown, toolTitle } from './Transcript';
-import { Icon, IconButton, MenuItem, Modal, Popover, SectionLabel, Spinner } from './widgets';
+import { CopyIconButton, Icon, IconButton, MenuItem, Modal, Popover, SectionLabel, Spinner } from './widgets';
+import { AsciiBackdrop } from './AsciiBackdrop';
+import { ScoutLogo } from './logo';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 
@@ -21,21 +23,22 @@ export function CloudBadge() {
 
 // ---------- the sidebar ----------
 
-/** A cloud chat in the sidebar's list. */
+/** A cloud chat in the sidebar's list, laid out like a chat on this PC (same lines, same buttons in the same places). */
 export function CloudSessionRow({ t, current }: { t: Task; current: boolean }) {
   const done = useCloud((s) => s.done.has(t.id));
   const live = LIVE.has(t.status);
   const state = live ? 'working' : t.status === 'failed' ? 'error' : null;
+  const title = t.prompt.split('\n')[0] || 'Cloud chat';
   return (
-    <div className={`session-row two-line ${current ? 'selected' : ''}`} title={`${t.prompt.split('\n')[0]}\n${t.repo} (cloud)`}>
+    <div className={`session-row two-line ${current ? 'selected' : ''}`} title={`${title}\n${t.repo} (cloud)`}>
       <button type="button" className="session-open" onClick={() => openCloudTask(t.id)}>
         <span className="session-line">
-          <span className="session-title ellipsis grow">{t.prompt.split('\n')[0] || 'Cloud chat'}</span>
-          {state && <span className={`session-dot ${state}`} title={STATUS[t.status]}>{state === 'error' ? '!' : ''}</span>}
+          <span className="session-title ellipsis grow">{title}</span>
+          {state && <span className={`session-dot ${state}`} title={STATUS[t.status]} aria-label={STATUS[t.status]}>{state === 'error' ? '!' : ''}</span>}
         </span>
         <span className="session-line sub">
-          <CloudBadge />
           <span className="ellipsis grow">{repoShort(t.repo)}</span>
+          <CloudBadge />
           <span className="tiny when">{ago(t.updatedAt)}</span>
         </span>
       </button>
@@ -43,9 +46,48 @@ export function CloudSessionRow({ t, current }: { t: Task; current: boolean }) {
         {done
           ? <IconButton icon="back" tip="Move back to Recent" size={24} onClick={() => setCloudDone(t.id, false)} />
           : <IconButton icon="check" tip={live ? 'Epsilon is still working on this chat' : 'Mark as done'} size={24} disabled={live} onClick={() => setCloudDone(t.id, true)} />}
+        <Popover width={180} trigger={(_, toggle) => <IconButton icon="more" tip="More" size={24} onClick={toggle} />}>
+          {(close) => (
+            <>
+              {done
+                ? <MenuItem onClick={() => { close(); setCloudDone(t.id, false); }}>Move back to Recent</MenuItem>
+                : <MenuItem disabled={live} onClick={() => { close(); setCloudDone(t.id, true); }}>Mark as done</MenuItem>}
+              {t.pr
+                ? <MenuItem onClick={() => { close(); openExternal(t.pr!.url); }}>Open pull request</MenuItem>
+                : t.pushed && <MenuItem onClick={() => { close(); openExternal(`https://github.com/${t.repo}/tree/${t.branch}`); }}>Open branch on GitHub</MenuItem>}
+              {live && <MenuItem onClick={() => { close(); void stopTask(t.id); }}>Stop</MenuItem>}
+            </>
+          )}
+        </Popover>
       </span>
     </div>
   );
+}
+
+/** The top bar's Done chip for the open cloud chat, the same as a local chat's. */
+export function CloudDoneButton() {
+  const at = useUi((u) => u.cloud);
+  const task = useCloud((s) => s.task);
+  const id = at?.taskId;
+  const done = useCloud((s) => !!id && s.done.has(id));
+  if (!id || task?.id !== id) return null;
+  const live = LIVE.has(task.status);
+  return done ? (
+    <button type="button" className="chip top-done on" title="Done. Click to move it back to Recent" onClick={() => setCloudDone(id, false)}>
+      <Icon name="check" size={14} />Done
+    </button>
+  ) : (
+    <button type="button" className="chip top-done" disabled={live} title={live ? 'Epsilon is still working on this chat' : 'Mark this chat as done'} onClick={() => setCloudDone(id, true)}>
+      <Icon name="check" size={14} />Done
+    </button>
+  );
+}
+
+/** Cloud chats whose first message matches the sidebar search. */
+export function useCloudSearch(q: string): Task[] {
+  const tasks = useCloud((s) => s.tasks);
+  const needle = q.trim().toLowerCase();
+  return useMemo(() => (needle ? (tasks ?? []).filter((t) => t.prompt.toLowerCase().includes(needle) || t.repo.toLowerCase().includes(needle)) : []), [tasks, needle]);
 }
 
 function ago(ms: number): string {
@@ -275,9 +317,24 @@ export function NewProjectDialog() {
 function EventRow({ e }: { e: TaskEvent }) {
   switch (e.kind) {
     case 'user':
-      return <div className="user-row"><div className="user-bubble"><div className="pre-wrap">{e.text}</div></div></div>;
+      return (
+        <div className="user-row">
+          <div className="user-actions">{e.text && <CopyIconButton text={e.text} size={26} />}</div>
+          <div className="user-bubble"><div className="pre-wrap">{e.text}</div></div>
+        </div>
+      );
     case 'say':
-      return <div className="assistant"><Markdown text={e.text} /></div>;
+      return (
+        <div className="assistant">
+          <Markdown text={e.text} />
+          {e.text && (
+            <div className="assistant-foot">
+              <div />
+              <div className="assistant-actions"><CopyIconButton text={e.text} size={24} /></div>
+            </div>
+          )}
+        </div>
+      );
     case 'error':
       return <div className="error-box"><Icon name="close" /><span className="pre-wrap">{e.text}</span></div>;
     case 'tool':
@@ -349,7 +406,6 @@ function CloudInput({ placeholder, offPlaceholder, disabled, running, onSend, on
           }}
         />
         <div className="row composer-controls">
-          <span className="chip static cloud-chip"><Icon name="cloud" size={13} />Epsilon</span>
           <span className="grow" />
           <CloudModelChip disabled={running} />
           {running && onStop
@@ -422,9 +478,10 @@ export function CloudChat() {
     const repo = repos?.repos.find((r) => r.id === repoId) ?? null;
     return (
       <div className="chat fresh">
+        <AsciiBackdrop />
         <div className="transcript">
           <div className="empty">
-            <span className="cloud-mark"><Icon name="cloud" size={44} /></span>
+            <ScoutLogo size={48} />
             <div className="splash typed">
               <span className="splash-text static">
                 <span className="accent">{'<'}</span>

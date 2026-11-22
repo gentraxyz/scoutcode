@@ -1,16 +1,27 @@
 // Two small stores: `core`, what Rust last said, and `ui`, what's only about this window.
 import { useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, type Item, type Model, type Snapshot, type Statics, type View } from './api';
 
-export function createStore<T>(initial: T) {
+const reducedMotion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+
+/** `morph` says when a change rearranges the window (a page, a panel, a dialog): the old look then cross-fades into the
+ *  new one through a view transition, where the WebView has them, instead of snapping. The state itself changes at once. */
+export function createStore<T>(initial: T, morph?: (prev: T, patch: Partial<T>) => boolean) {
   let state = initial;
   const subs = new Set<() => void>();
+  const notify = () => subs.forEach((f) => f());
   return {
     get: () => state,
     set(patch: Partial<T>) {
+      const prev = state;
       state = { ...state, ...patch };
-      subs.forEach((f) => f());
+      if (morph && document.startViewTransition && !reducedMotion?.matches && !document.hidden && morph(prev, patch)) {
+        document.startViewTransition(() => flushSync(notify));
+      } else {
+        notify();
+      }
     },
     subscribe(f: () => void) {
       subs.add(f);
@@ -35,7 +46,7 @@ export const ui = createStore({
   cloud: null as { repoId: number | null; taskId: string | null } | null,
   /** "New project" is asking whether it goes on this PC or in the cloud. */
   newProject: false as false | 'ask' | 'cloud',
-  /** The first-run setup is showing: on first run, or reopened from Settings or the account menu. */
+  /** The first-run setup is showing: on first run, or reopened from Settings. */
   onboarding: false,
   dockOpen: false,
   dockTab: 'terminal' as DockTab,
@@ -61,6 +72,12 @@ export const ui = createStore({
   gameOpen: false,
   /** The floating music player card is up. Closing it keeps music playing in the background. */
   musicOpen: false,
+}, (prev, patch) => {
+  // Opening and closing count; moving between tabs inside an open panel doesn't (Settings animates its own pages).
+  const flips = (k: 'settings' | 'deleting' | 'cloud') => k in patch && !prev[k] !== !patch[k];
+  return ('page' in patch && patch.page !== prev.page) || ('sidebar' in patch && patch.sidebar !== prev.sidebar)
+    || ('dockOpen' in patch && patch.dockOpen !== prev.dockOpen) || ('pickingFolder' in patch && patch.pickingFolder !== prev.pickingFolder)
+    || flips('settings') || flips('deleting') || flips('cloud');
 });
 
 export function useCore<T>(pick: (s: CoreState) => T): T {

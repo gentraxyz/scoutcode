@@ -306,6 +306,10 @@ pub struct ModelInfo {
     pub devin_id: Option<String>,
     /// The id Kiro knows it by. Kiro's entries are their own too, under "kiro/…", for the same reason.
     pub kiro_id: Option<String>,
+    /// The id Antigravity knows it by. Its entries are their own too, under "antigravity/…": its models depend on the account.
+    pub antigravity_id: Option<String>,
+    /// The id Mistral Vibe knows it by. Its entries are their own too, under "vibe/…", for the same reason.
+    pub vibe_id: Option<String>,
     /// The id Codex knows it by. Its entries are their own too, under "codex/…": its models depend on the ChatGPT plan.
     pub codex_id: Option<String>,
     /// The id Claude Code knows it by. Its entries are their own too, under "claude/…": its models depend on the Claude plan.
@@ -378,6 +382,8 @@ impl ModelInfo {
             copilot_id: None,
             devin_id: None,
             kiro_id: None,
+            antigravity_id: None,
+            vibe_id: None,
             codex_id: None,
             claude_id: None,
             grok_id: None,
@@ -413,6 +419,12 @@ impl ModelInfo {
             return id;
         }
         if let ("kiro", Some(id)) = (provider, &self.kiro_id) {
+            return id;
+        }
+        if let ("antigravity", Some(id)) = (provider, &self.antigravity_id) {
+            return id;
+        }
+        if let ("vibe", Some(id)) = (provider, &self.vibe_id) {
             return id;
         }
         if let ("codex", Some(id)) = (provider, &self.codex_id) {
@@ -526,7 +538,7 @@ pub fn apply_intelligence(models: &mut [ModelInfo]) {
     }
     for m in models.iter_mut() {
         let mut ids: Vec<&str> = vec![&m.id];
-        ids.extend([&m.openrouter_id, &m.nvidia_id, &m.opencode_id, &m.kilo_id, &m.copilot_id, &m.devin_id, &m.kiro_id, &m.codex_id, &m.claude_id, &m.grok_id, &m.hermes_id].into_iter().flatten().map(String::as_str));
+        ids.extend([&m.openrouter_id, &m.nvidia_id, &m.opencode_id, &m.kilo_id, &m.copilot_id, &m.devin_id, &m.kiro_id, &m.antigravity_id, &m.vibe_id, &m.codex_id, &m.claude_id, &m.grok_id, &m.hermes_id].into_iter().flatten().map(String::as_str));
         if let Some((_, id)) = &m.additional {
             ids.push(id);
         }
@@ -548,7 +560,7 @@ impl ModelInfo {
             "cost": self.cost, "providers": self.providers, "routesTo": self.routes_to, "available": self.available,
             "editTool": if self.edit_tool == crate::tools::EditTool::ApplyPatch { "apply_patch" } else { "str_replace" },
             "openrouterId": self.openrouter_id, "nvidiaId": self.nvidia_id, "opencodeId": self.opencode_id, "kiloId": self.kilo_id,
-            "kiloFree": self.kilo_free, "kiloTier": self.kilo_tier, "copilotId": self.copilot_id, "devinId": self.devin_id, "kiroId": self.kiro_id,
+            "kiloFree": self.kilo_free, "kiloTier": self.kilo_tier, "copilotId": self.copilot_id, "devinId": self.devin_id, "kiroId": self.kiro_id, "antigravityId": self.antigravity_id, "vibeId": self.vibe_id,
             "codexId": self.codex_id, "claudeId": self.claude_id, "grokId": self.grok_id, "hermesId": self.hermes_id, "additional": self.additional, "hosted": self.hosted, "free": self.free,
             "tier": self.tier, "openrouterTier": self.openrouter_tier, "openrouterFree": self.openrouter_free, "intelligence": self.intelligence,
             "uncensored": self.uncensored,
@@ -589,6 +601,8 @@ impl ModelInfo {
             copilot_id: s("copilotId"),
             devin_id: s("devinId"),
             kiro_id: s("kiroId"),
+            antigravity_id: s("antigravityId"),
+            vibe_id: s("vibeId"),
             codex_id: s("codexId"),
             claude_id: s("claudeId"),
             grok_id: s("grokId"),
@@ -1583,27 +1597,50 @@ pub fn search(cfg: &Config, body: &Value) -> Result<Value, ApiError> {
     res.into_body().read_json().map_err(transport)
 }
 
-/// Experimental image generation (an OpenRouter image model, through the server): the answer to /images/generations,
-/// with each image as base64. `body` is the request as that endpoint takes it.
-pub fn generate_image(cfg: &Config, body: &Value) -> Result<Value, ApiError> {
-    let req = http().post(&format!("{}/images/generations", cfg.base_url)).config().timeout_global(Some(Duration::from_secs(300))).build();
-    let res = auth(req, cfg)?.send_json(body).map_err(transport)?;
+pub const OPENAI_URL: &str = "https://api.openai.com/v1";
+/// OpenAI's image models, which its API has no list of.
+const OPENAI_IMAGE_MODELS: [(&str, &str); 2] = [("gpt-image-1", "GPT Image 1"), ("gpt-image-1-mini", "GPT Image 1 Mini")];
+
+/// Image generation on the user's own key: posts `body` to an image provider's endpoint and returns its JSON answer.
+pub fn image_request(url: &str, key: &str, body: &Value) -> Result<Value, ApiError> {
+    let res = http()
+        .post(url)
+        .header("Authorization", &format!("Bearer {key}"))
+        .config()
+        .timeout_global(Some(Duration::from_secs(300)))
+        .build()
+        .send_json(body)
+        .map_err(transport)?;
     if !res.status().is_success() {
         return Err(error_from(res));
     }
     res.into_body().with_config().limit(60 * 1024 * 1024).read_json().map_err(transport)
 }
 
-/// The server's image models, for Settings: (id, name, price).
-pub fn image_models(cfg: &Config) -> Result<Vec<(String, String, String)>, ApiError> {
-    let req = http().get(&format!("{}/images/models", cfg.base_url)).config().timeout_global(Some(Duration::from_secs(20))).build();
-    let res = auth(req, cfg)?.call().map_err(transport)?;
+/// An image the provider answered with as a link rather than as base64.
+pub fn image_bytes(url: &str) -> Result<Vec<u8>, ApiError> {
+    let res = http().get(url).config().timeout_global(Some(Duration::from_secs(120))).build().call().map_err(transport)?;
     if !res.status().is_success() {
         return Err(error_from(res));
     }
-    let body: Value = res.into_body().read_json().map_err(transport)?;
+    res.into_body().with_config().limit(60 * 1024 * 1024).read_to_vec().map_err(transport)
+}
+
+/// A provider's image models, for Settings: (id, name, price). OpenRouter's are the ones on its list that put out images.
+pub fn image_models(provider: &str) -> Result<Vec<(String, String, String)>, ApiError> {
+    if provider == "openai" {
+        return Ok(OPENAI_IMAGE_MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string(), String::new())).collect());
+    }
+    let res = http().get(&format!("{}/models", crate::config::OPENROUTER_URL)).config().timeout_global(Some(Duration::from_secs(20))).build().call().map_err(transport)?;
+    if !res.status().is_success() {
+        return Err(error_from(res));
+    }
+    let body: Value = res.into_body().with_config().limit(30 * 1024 * 1024).read_json().map_err(transport)?;
     let s = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-    Ok(body.get("data").and_then(Value::as_array).into_iter().flatten().map(|m| (s(m, "id"), s(m, "name"), s(m, "cost"))).collect())
+    let makes_images = |m: &Value| m.pointer("/architecture/output_modalities").and_then(Value::as_array).is_some_and(|o| o.iter().any(|x| x.as_str() == Some("image")));
+    let mut models: Vec<_> = body.get("data").and_then(Value::as_array).into_iter().flatten().filter(|m| makes_images(m)).map(|m| (s(m, "id"), s(m, "name"), String::new())).collect();
+    models.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    Ok(models)
 }
 
 pub struct ChatRequest<'a> {

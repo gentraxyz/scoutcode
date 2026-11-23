@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { act, invoke, usd, type View } from './api';
+import { act, invoke, projectDir, usd, type View } from './api';
 import { ui, useUi, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
 import { Hideable, useHidden } from './Hideable';
@@ -9,6 +9,8 @@ import { newCloudChat } from './epsilon';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const sameDir = (a: string, b: string) => norm(a) === norm(b);
+/** A worktree's chats are listed under the repository it was made from. */
+const sameProject = (path: string, cwd: string) => sameDir(path, projectDir(cwd));
 
 /** "New project": asks whether it's a folder on this PC (Scout's folder picker) or a repository in the cloud. */
 export function addProject() {
@@ -20,7 +22,7 @@ type SessionInfo = View['sessions'][number];
 /** The project a chat's folder is listed as, or the folder's own name. */
 export function useProjectName() {
   const projects = useView('projects');
-  return (cwd: string) => projects.find((p) => sameDir(p.path, cwd))?.name ?? (cwd.replaceAll('\\', '/').replace(/\/+$/, '').split('/').pop() || cwd);
+  return (cwd: string) => projects.find((p) => sameProject(p.path, cwd))?.name ?? (cwd.replaceAll('\\', '/').replace(/\/+$/, '').split('/').pop() || cwd);
 }
 
 /** How a chat is doing, as a small mark after its title. Nothing done yet shows no mark; the first that applies wins. */
@@ -287,14 +289,14 @@ function ProjectsMenu() {
                 if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ui.set({ renaming: null }); }
               }} />
             ) : (
-              <div key={p.path} className={`project-row ${sameDir(p.path, chat.cwd) ? 'here' : ''}`} title={p.path}>
+              <div key={p.path} className={`project-row ${sameProject(p.path, chat.cwd) ? 'here' : ''}`} title={p.path}>
                 <button type="button" className="project-open" onClick={() => { close(); ui.set({ page: 'chat', cloud: null }); act('changeProject', { dir: p.path }); }}>
                   <Icon name="folder" size={15} />
                   <span className="ellipsis">{p.name}</span>
                 </button>
                 <IconButton icon="pencil" tip="Rename" size={24} className="row-more" onClick={() => ui.set({ renaming: p.path })} />
                 {/* The open project stays, so the chat on screen always has one. */}
-                {!sameDir(p.path, chat.cwd) && <IconButton icon="close" tip="Remove from list" size={24} className="row-more" onClick={() => act('removeProject', { path: p.path })} />}
+                {!sameProject(p.path, chat.cwd) && <IconButton icon="close" tip="Remove from list" size={24} className="row-more" onClick={() => act('removeProject', { path: p.path })} />}
               </div>
             ))}
           </div>
@@ -343,7 +345,7 @@ function DailyRewardBanner() {
   if (!hasKey || !dr?.canClaim) return null;
   return (
     <div className="daily-reward-bar">
-      <button type="button" className="daily-reward-info grow min0" onClick={() => ui.set({ settings: 'usage' })} title="Open Usage & rewards">
+      <button type="button" className="daily-reward-info grow min0" onClick={() => ui.set({ page: 'usage' })} title="Open Usage & rewards">
         <div className="strong small ellipsis">Daily reward · Day {dr.nextDay}</div>
         <div className="tiny dim ellipsis">+{usd(dr.amount)} to your balance</div>
       </button>

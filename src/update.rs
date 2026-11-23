@@ -273,7 +273,14 @@ impl Updater {
     pub fn restart(&self, args: &[String]) -> Result<(), String> {
         self.install()?;
         // The old copy is still closing, so the new one waits for it (see single_instance.rs) rather than handing off.
-        std::process::Command::new(exe_path()).args(args).env(crate::single_instance::RESTART_ENV, "1").spawn().map(|_| ()).map_err(|e| format!("Installed, but couldn't restart Scout: {e}"))
+        let child = std::process::Command::new(exe_path()).args(args).env(crate::single_instance::RESTART_ENV, "1").spawn().map_err(|e| format!("Installed, but couldn't restart Scout: {e}"))?;
+        // This window is in front now; let the new copy take that over when it opens, so it comes back into focus.
+        #[cfg(windows)]
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(child.id());
+        }
+        let _ = child;
+        Ok(())
     }
 }
 

@@ -1,13 +1,13 @@
 import { useSyncExternalStore } from 'react';
 
 /** The model menu's rail: the providers (and pages) it shows down its left side, in the order the user put them. */
-export type Tab = 'router' | 'scoutcode' | 'claude' | 'codex' | 'grok' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'hermes' | 'local' | 'additional' | 'chatbots';
+export type Tab = 'router' | 'scoutcode' | 'claude' | 'codex' | 'grok' | 'openrouter' | 'nvidia' | 'opencode' | 'kilo' | 'copilot' | 'devin' | 'kiro' | 'antigravity' | 'vibe' | 'hermes' | 'local' | 'additional' | 'chatbots';
 
 // Claude and Grok are also chatbots: their pages hold both the chatbot and its models.
 export const TABS: [Tab, string][] = [
   ['router', 'Agent Router'], ['codex', 'Codex'], ['claude', 'Claude'], ['grok', 'Grok'], ['chatbots', 'Other chatbots'],
   ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'],
-  ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['hermes', 'Hermes'], ['local', 'Local models'], ['additional', 'Additional Providers'],
+  ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['antigravity', 'Antigravity'], ['vibe', 'Mistral Vibe'], ['hermes', 'Hermes'], ['local', 'Local models'], ['additional', 'Additional Providers'],
 ];
 
 export const tabName = (t: Tab): string => TABS.find(([id]) => id === t)?.[1] ?? t;

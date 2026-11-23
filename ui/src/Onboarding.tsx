@@ -279,7 +279,7 @@ function LanguageStep({ onNext }: { onNext: () => void }) {
 const SPECIAL_FEATURE_KEYS: { icon: string; titleKey: TranslationKey; descKey: TranslationKey }[] = [
   { icon: 'gift', titleKey: 'special_free_title', descKey: 'special_free_desc' },
   { icon: 'layers', titleKey: 'special_providers_title', descKey: 'special_providers_desc' },
-  { icon: 'cloud', titleKey: 'special_epsilon_title', descKey: 'special_epsilon_desc' },
+  { icon: 'epsilon', titleKey: 'special_epsilon_title', descKey: 'special_epsilon_desc' },
   { icon: 'memory', titleKey: 'special_memory_title', descKey: 'special_memory_desc' },
   { icon: 'sparkle', titleKey: 'special_dream_title', descKey: 'special_dream_desc' },
   { icon: 'game', titleKey: 'special_play_title', descKey: 'special_play_desc' },
@@ -1028,13 +1028,6 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
                   <option value="float">{t('opt_games_float')}</option>
                   <option value="panel">{t('opt_games_panel')}</option>
                 </select>
-              </OptionRow>
-              <OptionRow
-                icon="bolt"
-                title={t('opt_games_auto_open')}
-                sub={t('opt_games_auto_open_sub')}
-              >
-                <Toggle label={t('opt_games_auto_open')} on={games.openOnRun} onChange={(openOnRun) => setGames({ openOnRun })} />
               </OptionRow>
             </>
           )}

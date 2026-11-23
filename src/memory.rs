@@ -435,7 +435,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let cwd = dir.to_string_lossy().to_string();
         let (cancel, mut read, mut progress) = (std::sync::atomic::AtomicBool::new(false), Default::default(), |_: &str| {});
-        let mut ctx = Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut progress };
+        let mut ctx = Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut progress };
         let call = json!({"memory":"project","action":"add","section":"Commands","text":"- cargo test -p scout"});
         assert_eq!(target(&cwd, &call), Some(dir.join(".scout").join("memory.md")));
         assert!(matches!(preview(&call, &ctx), Display::Diff { created: true, .. }));

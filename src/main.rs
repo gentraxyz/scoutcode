@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The window's settings view is one large `json!`, past the default limit.
+#![recursion_limit = "256"]
 
 mod acp;
 mod agent;
@@ -13,6 +15,7 @@ mod api;
 mod bridge;
 mod config;
 mod copilot;
+mod browser;
 mod browser_ext;
 mod core;
 mod delta;
@@ -21,6 +24,8 @@ mod discord;
 mod explore;
 mod review;
 mod kiro;
+mod antigravity;
+mod vibe;
 mod local;
 mod diff;
 mod dream;
@@ -42,6 +47,7 @@ mod opencode;
 mod patch;
 mod prompt;
 mod remote;
+mod scout_pages;
 mod session;
 mod single_instance;
 mod skills;
@@ -52,6 +58,7 @@ mod redact;
 mod secrets;
 mod usage;
 mod waker;
+mod worktree;
 #[cfg(all(windows, not(target_env = "msvc")))]
 mod webview2;
 
@@ -106,6 +113,7 @@ fn main() {
             std::thread::spawn(move || responder.respond(music::serve(&req)));
         })
         .setup(|app| {
+            browser::init(app.handle());
             let (tx, rx) = channel();
             let (wake_tx, wake_rx) = channel();
             let core = Arc::new(Mutex::new(core::Core::new(app.handle().clone(), tx, waker::Waker::new(wake_tx))));
@@ -117,6 +125,9 @@ fn main() {
                 .min_inner_size(560.0, 420.0)
                 .maximized(true)
                 .center()
+                // Hidden until the UI has drawn (see bridge::window_ready and reveal_window): a transparent window has nothing to show
+                // before then, so it would appear as an empty see-through frame.
+                .visible(false)
                 // The UI draws its own title bar and window buttons.
                 .decorations(false)
                 // So that Settings > Appearance can let Windows draw Mica or Acrylic behind the UI. Without the
@@ -128,6 +139,16 @@ fn main() {
                 // Links open in the browser (see openExternal in the UI), so the window itself never leaves the app.
                 .on_navigation(|url| matches!(url.host_str(), Some("tauri.localhost" | "localhost")))
                 .build()?;
+            // If the UI never says it's ready (it failed to load), show the window anyway so there's something to close.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                if let Some(w) = handle.get_webview_window("main") {
+                    if !w.is_visible().unwrap_or(true) {
+                        bridge::reveal_window(&w);
+                    }
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

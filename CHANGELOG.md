@@ -4,6 +4,16 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.2.2
+A built-in browser beside your chats, worktrees for new chats, and Google Antigravity and Mistral Vibe as providers.
+
+- A built-in browser in the side panel: browse the web next to your chat, with an address bar. With Settings > Browser on, the agent can use it too.
+- New chats can run in their own git worktree, on a new branch, so their changes stay apart from the folder you opened.
+- Google Antigravity and Mistral Vibe are providers now, each signed in with its own account.
+- Web search also finds library docs (Context7) and GitHub READMEs, which web_fetch can read.
+- The panel's tabs work like a browser's: a + opens a New Tab page that lists what the panel can show.
+- An error in one panel no longer blanks the whole window.
+
 ## 0.2.1
 Steer Codex, Claude Code and the other agents mid-task, a message rail in place of the scrollbar, terminal tabs, and a model menu you arrange yourself.
 

@@ -4,7 +4,7 @@ How Scout connects to each outside provider, what it installs, and how to move e
 download is checked against SHA-256 hashes pinned in the source before anything runs, and everything goes in
 `~/.scoutcode/runtime`.
 
-Providers that run their own agent (Claude Code, Codex, Devin, Kiro, OpenCode and Grok Build) are started one process per turn and spoken
+Providers that run their own agent (Claude Code, Codex, Devin, Kiro, Antigravity, Mistral Vibe, OpenCode and Grok Build) are started one process per turn and spoken
 to over the [Agent Client Protocol](https://agentclientprotocol.com) (`src/acp.rs`). They bring their own system
 prompt; Scout sends the conversation as text, with the user's saved instructions.
 
@@ -86,6 +86,42 @@ in the user's own account and plan.
 [release manifest](https://prod.download.cli.kiro.dev/stable/latest/manifest.json), and change `VERSION` and `PACKAGES` in
 `src/kiro.rs`. Read `kiro-cli acp --help` and the [ACP migration guide](https://kiro.dev/docs/cli/v3/acp-migration/), and run
 `cargo test -- --ignored live_kiro --nocapture` while signed in.
+
+## Antigravity
+
+Settings > Providers downloads Google's own Antigravity ACP server (about 100 MB, unpacking to about 210 MB, checked against
+the hashes in `src/antigravity.rs`) from `dl.google.com` to `~/.scoutcode/runtime/antigravity`, and signs in with Google in the
+browser. It works in the user's own Google account and plan.
+
+- **Run the way T3 Code runs it.** Google's terms don't allow using an Antigravity login through other software (proxies,
+  reused OAuth tokens). So the only thing Scout does is start Google's own CLI from the official ACP registry and talk ACP to
+  it: the sign-in is the CLI's own `authenticate`, the CLI keeps the login, and every request to Google comes from it. Scout
+  never reads the token, never calls Antigravity's backend and runs no proxy. Keep it that way: never add a direct API path.
+- It runs its own tools, so Scout shows them and answers what it asks permission for, but its edits are outside Scout's diffs
+  and undo. Models, modes and effort are only set where the session offers them (`acp::start_with`).
+- Sign-out asks the server's own `logout` extension, where the version has one, and turns Antigravity off in Scout.
+
+**Updating:** take the version, URLs and hashes from the registry's
+[`antigravity-acp/agent.json`](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json) and change
+`VERSION` and `PACKAGES`. Run `SCOUT_HOME=<temp> cargo test -- --ignored live_antigravity --nocapture`, which prints what
+`initialize` and `session/new` return, so a change to its sign-in methods or model list shows up.
+
+## Mistral Vibe
+
+Settings > Providers downloads Mistral's `vibe-acp` (about 95 MB, checked against the hashes in `src/vibe.rs`) from Mistral's
+GitHub releases to `~/.scoutcode/runtime/vibe`, and signs in through Mistral AI Studio in the browser with ACP's `authenticate`
+(`browser-auth`). It works in the user's own Mistral account.
+
+- Vibe keeps the key it makes in the system keyring or `~/.vibe/.env`, shared with any other Vibe on the PC; `MISTRAL_API_KEY`
+  works too. `_auth/status` tells if it's signed in and `_auth/signOut` removes the key. Its `~/.vibe` settings, agents and
+  skills apply.
+- Its modes are its agents: Accept edits runs `accept-edits`, Auto `smart-approve`, Yolo `auto-approve`, and Plan `plan`. Its
+  models and thinking level are config options. Finished sessions are removed with its `_session/delete` extension.
+
+**Updating:** take the version, URLs and hashes from the registry's
+[`mistral-vibe/agent.json`](https://github.com/agentclientprotocol/registry/blob/main/mistral-vibe/agent.json), change `VERSION`
+and `PACKAGES`, read `vibe/acp/agent.py` for changed auth methods or config option ids, and run
+`SCOUT_HOME=<temp> cargo test -- --ignored live_vibe --nocapture`.
 
 ## OpenCode
 

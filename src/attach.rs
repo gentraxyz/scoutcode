@@ -311,7 +311,7 @@ mod tests {
         let mut noop = |_: &str| {};
         let args = json!({ "path": path });
         // Not until it's attached.
-        let mut ctx = tools::Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
+        let mut ctx = tools::Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
         assert!(tools::run("view", &args, &mut ctx).is_err());
         let (_, attached) = build(&cwd, "", std::slice::from_ref(&path));
         ctx.read_files.extend(attached);

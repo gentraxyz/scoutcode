@@ -5,14 +5,15 @@ import { act, invoke, openExternal } from './api';
 import { AsciiBackdrop } from './AsciiBackdrop';
 import { Composer, PermissionBody } from './Composer';
 import { Dock } from './Dock';
-import { closeGame, FloatingGame, gameShowing, openGame, useGameAutomation } from './Games';
-import { closeMusic, FloatingMusic, openMusic, useMusicPlaying } from './Music';
+import { handleDockKeys, isTermTab, newDockTab, openDockTab, useAutoTaskTabs, useTasks } from './DockTabs';
+import { FloatingGame } from './Games';
+import { FloatingMusic } from './Music';
 import { Onboarding } from './Onboarding';
-import { Settings, restartBlocker } from './Settings';
+import { Settings, UsagePage, restartBlocker } from './Settings';
 import { addProject, Sidebar } from './Sidebar';
 import { Hideable, HideMenu } from './Hideable';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
-import { Transcript } from './Transcript';
+import { Markdown, Transcript } from './Transcript';
 import { DeltaPage } from './DeltaPage';
 import { Inbox } from './Inbox';
 import { NavRail } from './NavRail';
@@ -20,7 +21,7 @@ import { DeltaTabsBar } from './delta/DeltaTabsBar';
 import { deltaTabs } from './delta/tabs';
 import { FolderPicker } from './FolderPicker';
 import { UsageAlert } from './UsageAlert';
-import { Icon, IconButton, Modal } from './widgets';
+import { Icon, IconButton, Modal, Spinner } from './widgets';
 import { useActivityPing } from './Dreams';
 import { CloudChat, CloudDoneButton, CloudTitle, EpsilonSidebar, NewProjectDialog, VmBar, VmPage } from './Cloud';
 import { cloud, LIVE, newCloudChat, stopTask, useEpsilonSync } from './epsilon';
@@ -46,7 +47,43 @@ function WindowButtons() {
 
 function toggleDock(tab: DockTab) {
   const { dockOpen, dockTab } = ui.get();
-  ui.set(dockOpen && dockTab === tab ? { dockOpen: false } : { dockOpen: true, dockTab: tab });
+  if (tab === 'terminal') {
+    // Ctrl+` shows a terminal already open (the one in front closes the panel), or opens one.
+    if (dockOpen && isTermTab(dockTab)) return ui.set({ dockOpen: false });
+    const term = ui.get().dockTabs.find(isTermTab);
+    return term ? ui.set({ dockOpen: true, dockTab: term }) : openDockTab('terminal');
+  }
+  if (dockOpen && dockTab === tab) ui.set({ dockOpen: false });
+  else openDockTab(tab);
+}
+
+/** Opens and closes the panel. Opened with no tabs, it starts on a New Tab page. */
+function togglePanel() {
+  const { dockOpen, dockTabs } = ui.get();
+  if (dockOpen) ui.set({ dockOpen: false });
+  else if (!dockTabs.length) newDockTab();
+  else ui.set({ dockOpen: true });
+}
+
+/** The panel's button: what used to be a button per page is now the New Tab page inside it. */
+function PanelButton() {
+  const dockOpen = useUi((u) => u.dockOpen);
+  const running = useTasks().some((t) => !t.result);
+  return (
+    <span className="panel-button">
+      <IconButton icon="panel" tip={dockOpen ? 'Close the panel' : 'Open the panel: terminal, browser, files and more'} active={dockOpen} onClick={togglePanel} />
+      {running && !dockOpen && <span className="panel-button-dot" title="A sub-agent is working" />}
+    </span>
+  );
+}
+
+/** Versions whose update card the user put off with Later, for this run: the top bar's pill stays. */
+const laterVersions = new Set<string>();
+
+function restartNow() {
+  ui.set({ restarting: true });
+  // A restart that didn't happen (the core said why in the status line) leaves the window as it was.
+  invoke('restart_to_update').then(() => setTimeout(() => ui.set({ restarting: false }), 20_000), () => ui.set({ restarting: false }));
 }
 
 function UpdatePill() {
@@ -57,7 +94,54 @@ function UpdatePill() {
   const blocker = restartBlocker(anyRunning, dirty);
   const summary = status.summary.trim() ? `\n${status.summary.trim()}` : '';
   return (
-    <button type="button" className="button primary pill" disabled={!!blocker} title={blocker ?? `Scout ${status.version} is ready. Your chat reopens after the restart.${summary}`} onClick={() => invoke('restart_to_update')}>Restart to update</button>
+    <button type="button" className="button primary pill" disabled={!!blocker} title={blocker ?? `Scout ${status.version} is ready. Your chat reopens after the restart.${summary}`} onClick={restartNow}>Restart to update</button>
+  );
+}
+
+/** A card in the corner while an update downloads and once it's ready, with what's in it and a restart button. */
+function UpdateCard() {
+  const { status } = useView('updater');
+  const { anyRunning } = useView('run');
+  const dirty = useUi((u) => u.editorDirty);
+  const restarting = useUi((u) => u.restarting);
+  const [, redraw] = useState(0);
+  const version = 'version' in status ? status.version : '';
+  if (restarting) {
+    return (
+      <div className="update-restarting" role="status">
+        <div className="update-restarting-card">
+          <Spinner size={18} />
+          <b className="strong">Installing Scout {version}</b>
+          <span className="small dim">Scout reopens on its own in a few seconds, right where you left off.</span>
+        </div>
+      </div>
+    );
+  }
+  if ((status.state !== 'ready' && status.state !== 'downloading') || laterVersions.has(version)) return null;
+  const later = () => { laterVersions.add(version); redraw((n) => n + 1); };
+  const blocker = restartBlocker(anyRunning, dirty);
+  const pct = status.state === 'downloading' && status.total > 0 ? Math.min(100, Math.round((status.got / status.total) * 100)) : null;
+  const summary = status.state === 'ready' ? status.summary.trim() : '';
+  return (
+    <div className="update-card" role="status">
+      <div className="update-card-head">
+        <span className="update-card-icon"><Icon name="download" size={15} /></span>
+        <div className="stack grow" style={{ minWidth: 0, gap: 2 }}>
+          <b className="strong">{status.state === 'ready' ? `Scout ${version} is ready` : `Downloading Scout ${version}`}</b>
+          <span className="tiny dim">{status.state === 'ready' ? 'Restart to install it. Your chats reopen as they were.' : pct != null ? `${pct}%` : 'Starting…'}</span>
+        </div>
+        <IconButton icon="close" tip="Later" size={24} onClick={later} />
+      </div>
+      {status.state === 'downloading' && <div className="update-card-bar"><span style={{ width: `${pct ?? 4}%` }} /></div>}
+      {summary && <p className="small muted update-card-summary">{summary}</p>}
+      {status.state === 'ready' && (
+        <div className="row end" style={{ gap: 8 }}>
+          <button type="button" className="button ghost compact" onClick={later}>Later</button>
+          <button type="button" className="button primary compact" disabled={!!blocker} title={blocker ?? undefined} onClick={restartNow}>Restart now</button>
+        </div>
+      )}
+      {status.state === 'ready' && blocker && <span className="tiny dim">{blocker}</span>}
+    </div>
   );
 }
 
@@ -68,40 +152,24 @@ function WhatsNew() {
   const close = () => act('dismissWhatsNew');
   return (
     <Modal onClose={close} className="whats-new">
-      <b className="strong big">Scout updated to {releases[0].version}</b>
+      <div className="whats-new-head">
+        <span className="whats-new-badge"><Icon name="check" size={16} /></span>
+        <div className="stack" style={{ gap: 2 }}>
+          <b className="strong big">You're on Scout {releases[0].version}</b>
+          <span className="small dim">{releases.length > 1 ? `${releases.length} updates since you last opened Scout` : "Here's what's new"}</span>
+        </div>
+      </div>
       <div className="whats-new-list stack-wide">
         {releases.map((r) => (
-          <div key={r.version} className="stack">
-            {releases.length > 1 && <div className="section-label">Version {r.version}</div>}
+          <div key={r.version} className="whats-new-release stack">
+            {releases.length > 1 && <span className="whats-new-version tiny">{r.version}</span>}
             {r.summary.trim() && <div className="strong">{r.summary}</div>}
-            {r.changelog.trim() && <div className="muted pre-wrap small">{r.changelog}</div>}
+            {r.changelog.trim() && <div className="whats-new-body small muted"><Markdown text={r.changelog} /></div>}
           </div>
         ))}
       </div>
       <div className="row end"><button type="button" className="button primary" onClick={close}>Got it</button></div>
     </Modal>
-  );
-}
-
-function GameButton() {
-  const { games } = useView('cfg');
-  const showing = useUi(() => gameShowing(games));
-  if (!games.on) return null;
-  return <IconButton icon="game" tip={showing ? 'Close the game' : 'Play a game while Scout works'} active={showing} onClick={() => (showing ? closeGame() : openGame(games, true))} />;
-}
-
-function MusicButton() {
-  const { music } = useView('cfg');
-  const showing = useUi((u) => u.musicOpen);
-  const playing = useMusicPlaying();
-  if (!music.on) return null;
-  return (
-    <IconButton
-      icon="music"
-      tip={showing ? 'Close music player' : playing ? 'Music playing — open player' : 'Open music player'}
-      active={showing || playing}
-      onClick={() => (showing ? closeMusic() : openMusic())}
-    />
   );
 }
 
@@ -125,8 +193,6 @@ function DoneButton() {
 
 function TopBar() {
   const sidebar = useUi((u) => u.sidebar);
-  const dockOpen = useUi((u) => u.dockOpen);
-  const dockTab = useUi((u) => u.dockTab);
   const chat = useView('chat');
   const page = useUi((u) => u.page);
   const inCloud = useUi((u) => !!u.cloud);
@@ -153,11 +219,11 @@ function TopBar() {
     );
   }
   // Issues and Inbox have no chats sidebar (the rail gets you back), so no button to show it either.
-  if (page === 'inbox') {
+  if (page === 'inbox' || page === 'usage') {
     return (
       <header className="top-bar" data-tauri-drag-region>
-        <Icon name="inbox" size={15} />
-        <b className="chat-title inbox-title" data-tauri-drag-region>Inbox</b>
+        <Icon name={page === 'inbox' ? 'inbox' : 'chart'} size={15} />
+        <b className="chat-title inbox-title" data-tauri-drag-region>{page === 'inbox' ? 'Inbox' : 'Usage'}</b>
         <span className="grow" data-tauri-drag-region />
         <UpdatePill />
         <WindowButtons />
@@ -184,12 +250,7 @@ function TopBar() {
       <DoneButton />
       {!sidebar && <Hideable id="top.project"><button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button></Hideable>}
       <UpdatePill />
-      <Hideable id="top.music"><MusicButton /></Hideable>
-      <Hideable id="top.game"><GameButton /></Hideable>
-      <Hideable id="top.terminal"><IconButton icon="terminal" tip="Terminal (Ctrl+`)" active={dockOpen && dockTab === 'terminal'} onClick={() => toggleDock('terminal')} /></Hideable>
-      <Hideable id="top.changes"><IconButton icon="changes" tip="Changes" active={dockOpen && dockTab === 'changes'} onClick={() => toggleDock('changes')} /></Hideable>
-      <Hideable id="top.files"><IconButton icon="files" tip="Files" active={dockOpen && dockTab === 'files'} onClick={() => toggleDock('files')} /></Hideable>
-      <Hideable id="top.review"><IconButton icon="shield" tip="Code Review: a second opinion from another model" active={dockOpen && dockTab === 'review'} onClick={() => toggleDock('review')} /></Hideable>
+      <Hideable id="top.panel"><PanelButton /></Hideable>
       <WindowButtons />
     </header>
   );
@@ -362,8 +423,8 @@ function useShortcuts() {
         }
         return;
       }
-      // The Inbox has no chat on screen: only Ctrl+N, which makes one.
-      if (ui.get().page === 'inbox') {
+      // The Inbox and Usage have no chat on screen: only Ctrl+N, which makes one.
+      if (ui.get().page === 'inbox' || ui.get().page === 'usage') {
         if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
           e.preventDefault();
           ui.set({ page: 'chat' });
@@ -375,6 +436,8 @@ function useShortcuts() {
         e.preventDefault();
         return toggleDock('terminal');
       }
+      // The panel's tabs: Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+1–9 (see handleDockKeys).
+      if (handleDockKeys(e)) return;
       if (document.activeElement?.closest('.dock')) return;
       if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
@@ -393,7 +456,7 @@ function useShortcuts() {
         return act('cycleMode');
       }
       // Esc closes whatever is open on top before it stops Scout.
-      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().newProject) {
+      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().pickingFiles && !ui.get().newProject) {
         const at = ui.get().cloud;
         if (!at) return act('stop');
         // In a cloud chat, Esc stops Epsilon, as it stops Scout in a local one.
@@ -416,10 +479,10 @@ export function App() {
   const inCloud = useUi((u) => !!u.cloud);
   useShortcuts();
   useEpsilonSync();
+  useAutoTaskTabs();
   // Opening or starting a chat on this PC (from anywhere: the Inbox, a notification) puts it back on screen.
   const chatEpoch = useView('chat').epoch;
   useEffect(() => { ui.set({ cloud: null }); }, [chatEpoch]);
-  useGameAutomation();
   useActivityPing();
   useEffect(() => {
     const offs = [
@@ -433,6 +496,11 @@ export function App() {
       }),
       listen('drop-hover', () => ui.set({ dropping: true })),
       listen('drop-leave', () => ui.set({ dropping: false })),
+      // Scout opened a page in the built-in browser: the panel shows it, so the user sees what it does.
+      listen('browser-show', () => {
+        const u = ui.get();
+        if (u.page === 'chat' && !(u.dockOpen && u.dockTab === 'browser')) ui.set({ dockOpen: true, dockTab: 'browser' });
+      }),
     ];
     // Links never navigate the window; anything that gets past their own handlers stops here.
     const click = (e: MouseEvent) => {
@@ -463,7 +531,7 @@ export function App() {
       {sidebar && page === 'epsilon' && <EpsilonSidebar />}
       <div className="main">
         <TopBar />
-        {page === 'delta' ? <DeltaPage /> : page === 'inbox' ? <Inbox /> : page === 'epsilon' ? <VmPage /> : inCloud ? (
+        {page === 'delta' ? <DeltaPage /> : page === 'inbox' ? <Inbox /> : page === 'usage' ? <UsagePage /> : page === 'epsilon' ? <VmPage /> : inCloud ? (
           <div className="main-body"><CloudChat /></div>
         ) : (
           <div className="main-body">
@@ -478,7 +546,7 @@ export function App() {
       </div>
       <FloatingGame />
       <FloatingMusic />
-      <Settings />
+      <Settings windowButtons={<WindowButtons />} />
       <DeleteDialog />
       <UncensoredDialog />
       <HideMenu />
@@ -486,6 +554,7 @@ export function App() {
       <NewProjectDialog />
       <LinkPermission />
       <WhatsNew />
+      <UpdateCard />
       <UsageAlert />
       {dropping && <div className="drop-overlay"><div><Icon name="paperclip" /> Drop files to attach them</div></div>}
     </div>

@@ -1755,6 +1755,7 @@ fn start_and_wait(local: &Local, run: &Run, tuning: Tuning, key: &str, margin: O
                 }
                 crate::tools::no_window(&mut c);
                 let mut child = c.spawn().map_err(|e| plain(format!("Couldn't start llama.cpp: {e}")))?;
+                crate::tools::contain(child.id());
                 let _ = std::fs::write(pid_file(), child.id().to_string());
                 let log = Arc::new(Mutex::new(VecDeque::new()));
                 // Before its log is read, which fills this in.

@@ -11,10 +11,12 @@ import { HighlightStyle, LanguageDescription, syntaxHighlighting } from '@codemi
 import { languages } from '@codemirror/language-data';
 import { tags } from '@lezer/highlight';
 import { invoke, type DiffLines } from './api';
+import { BrowserTab } from './BrowserTab';
 import { GamesTab } from './Games';
 import { ReviewTab } from './ReviewTab';
+import { closeDockTab, DockTabStrip, isDockKey, isNewTab, isShellTab, isTaskTab, isTermTab, NewTabPage, setTermFolder, ShellTab, TaskTab } from './DockTabs';
 import { Resizer } from './Sidebar';
-import { ui, useUi, useView } from './store';
+import { ui, useUi, useView, type DockTab } from './store';
 import { subscribeTheme, themeColor } from './theme';
 import { DiffBody, Icon, IconButton, Modal, Spinner } from './widgets';
 
@@ -353,6 +355,8 @@ function TerminalSession({ id, cwd, visible, onExit, onFolder }: { id: number; c
     // Ctrl+C copies a selection (or interrupts without one) and Ctrl+V pastes.
     xterm.attachCustomKeyEventHandler((e) => {
       if (suggest.key(e)) return false;
+      // The panel's tab keys (Ctrl+T, Ctrl+W, Ctrl+Tab…) go to the panel, not the shell.
+      if (isDockKey(e)) return false;
       if (e.type !== 'keydown' || !e.ctrlKey || e.shiftKey || e.altKey) return true;
       if (e.key === 'c' && xterm.hasSelection()) {
         navigator.clipboard.writeText(xterm.getSelection());
@@ -428,56 +432,19 @@ function TerminalSession({ id, cwd, visible, onExit, onFolder }: { id: number; c
   );
 }
 
-let nextTermId = 1;
-type TermTab = { id: number; folder: string };
-const newTermTab = (): TermTab => ({ id: nextTermId++, folder: '' });
-const folderName = (dir: string) => dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || dir || 'Terminal';
+/** The shell behind a terminal tab: the first terminal is 1, others carry their number (terminal:2, …). */
+const termId = (tab: string) => (tab === 'terminal' ? 1 : Number(tab.slice(9)));
 
-/** The terminal: a row of small round tabs, one shell each. Stays mounted while the panel is open. */
-function TerminalTab({ cwd, visible }: { cwd: string; visible: boolean }) {
-  const [tabs, setTabs] = useState<TermTab[]>(() => [newTermTab()]);
-  const [active, setActive] = useState(tabs[0].id);
-  const add = () => {
-    const t = newTermTab();
-    setTabs((ts) => [...ts, t]);
-    setActive(t.id);
-  };
-  const close = (id: number) => {
-    const i = tabs.findIndex((t) => t.id === id);
-    if (i < 0) return;
-    const rest = tabs.filter((t) => t.id !== id);
-    // The last one closing closes the panel; a fresh shell is ready for next time.
-    if (!rest.length) {
-      if (visible) ui.set({ dockOpen: false });
-      rest.push(newTermTab());
-    }
-    setTabs(rest);
-    if (active === id || !rest.some((t) => t.id === active)) setActive(rest[Math.min(i, rest.length - 1)].id);
-  };
-  const setFolder = (id: number, dir: string) => setTabs((ts) => (ts.some((t) => t.id === id && t.folder !== dir) ? ts.map((t) => (t.id === id ? { ...t, folder: dir } : t)) : ts));
+/** Every terminal tab's shell, kept running while its tab is open even when another tab is in front. */
+function Terminals({ cwd, tabs, active }: { cwd: string; tabs: DockTab[]; active: DockTab | null }) {
   return (
-    <div className="terminal-tab" style={{ display: visible ? undefined : 'none' }}>
-      <div className="term-tabs" role="tablist">
-        {tabs.map((t) => (
-          <div
-            key={t.id}
-            role="tab"
-            aria-selected={t.id === active}
-            className={`term-tab${t.id === active ? ' on' : ''}`}
-            title={t.folder || cwd}
-            onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); close(t.id); } }}
-            onClick={() => setActive(t.id)}
-          >
-            <span className="term-tab-name">{folderName(t.folder || cwd)}</span>
-            <button type="button" className="term-tab-x" aria-label="Close" onClick={(e) => { e.stopPropagation(); close(t.id); }}><Icon name="close" size={10} /></button>
-          </div>
-        ))}
-        <button type="button" className="term-tab-add" aria-label="New terminal" title="New terminal" onClick={add}><Icon name="plus" size={12} /></button>
-      </div>
+    <>
       {tabs.map((t) => (
-        <TerminalSession key={t.id} id={t.id} cwd={cwd} visible={visible && t.id === active} onExit={() => close(t.id)} onFolder={(d) => setFolder(t.id, d)} />
+        <div key={t} className="terminal-tab" style={{ display: t === active ? undefined : 'none' }}>
+          <TerminalSession id={termId(t)} cwd={cwd} visible={t === active} onExit={() => closeDockTab(t)} onFolder={(d) => setTermFolder(t, d)} />
+        </div>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -782,23 +749,31 @@ export function Dock() {
   const { games } = useView('cfg');
   const gamesTab = games.on && games.place === 'panel';
   const picked = useUi((u) => u.dockTab);
-  const tab = picked === 'games' && !gamesTab ? 'terminal' : picked;
+  const tabs = useUi((u) => u.dockTabs);
+  const tab = picked === 'games' && !gamesTab ? 'new' : picked;
+  // Whatever opens the panel on a page (a shortcut, a file link, the agent's browser) adds its tab to the strip.
+  useEffect(() => {
+    if (!open) return;
+    if (!tabs.includes(tab)) ui.set({ dockTabs: [...tabs, tab], dockTab: tab });
+  }, [open, tab, tabs]);
   const { cwd } = useView('chat');
   const [width, setWidth] = useState(560);
-  const [termStarted, setTermStarted] = useState(false);
-  useEffect(() => {
-    if (open && tab === 'terminal') setTermStarted(true);
-  }, [open, tab]);
-  usePrewarm(cwd, termStarted, width);
+  const terms = tabs.filter(isTermTab);
+  usePrewarm(cwd, terms.length > 0, width);
   // Leave the chat at least a readable column.
   const max = Math.max(320, window.innerWidth - 380);
   return (
-    <aside className="dock" style={{ width: Math.min(width, max), display: open ? undefined : 'none' }}>
+    <aside className="dock" tabIndex={-1} style={{ width: Math.min(width, max), display: open ? undefined : 'none' }}>
       <Resizer side="left" width={Math.min(width, max)} min={320} max={max} onChange={setWidth} />
-      {termStarted && <TerminalTab cwd={cwd} visible={open && tab === 'terminal'} />}
+      <DockTabStrip />
+      {open && isNewTab(tab) && <NewTabPage key={tab} tab={tab} />}
+      {open && isTaskTab(tab) && <TaskTab id={Number(tab.slice(5))} />}
+      {open && isShellTab(tab) && <ShellTab id={tab.slice(6)} />}
+      <Terminals cwd={cwd} tabs={terms} active={open && isTermTab(tab) ? tab : null} />
       {open && tab === 'changes' && <ChangesTab cwd={cwd} />}
       {open && tab === 'games' && <GamesTab />}
       {open && tab === 'review' && <ReviewTab />}
+      {open && tab === 'browser' && <BrowserTab />}
       {/* Kept mounted once used: it may hold unsaved edits. */}
       <div className="dock-keep" style={{ display: tab === 'files' ? undefined : 'none' }}><FilesTab cwd={cwd} /></div>
     </aside>

@@ -516,7 +516,7 @@ mod tests {
             let stop = loop {
                 match run.next(Duration::from_secs(180)).expect("no answer from Grok Build") {
                     Msg::Text(t) => text.push_str(&t),
-                    Msg::Permission { id, kind, title, options } => {
+                    Msg::Permission { id, kind, title, options, .. } => {
                         asked.push(format!("{kind}: {title}"));
                         run.reply_permission(&id, allow, &options);
                     }

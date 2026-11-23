@@ -1,13 +1,18 @@
-// Scout's own folder picker, for adding a project: places on the left, the folders in one on the right.
+// Scout's own folder picker, for adding a project or attaching files: places on the left, what's in one on the right.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from './api';
-import { ui, useUi, useView } from './store';
+import { focusComposer, ui, useUi, useView } from './store';
 import { Icon, IconButton, Modal, Spinner } from './widgets';
 
 type Place = { name: string; path: string; icon: string };
 type Places = { home: string; places: Place[]; drives: Place[] };
 type Folder = { name: string; path: string; hidden: boolean; repo: boolean };
-type Listing = { path: string; parent: string | null; folders: Folder[]; error: string | null };
+type FileRow = { name: string; path: string; hidden: boolean; size: number };
+type Listing = { path: string; parent: string | null; folders: Folder[]; files: FileRow[]; error: string | null };
+type Mode = 'project' | 'files';
+
+const MAX_FILES = 500;
+const fileSize = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1000 ? `${Math.round(n / 1000)} KB` : `${n} B`);
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const same = (a: string, b: string) => norm(a) === norm(b);
@@ -83,7 +88,8 @@ function PathBar({ path, onGo }: { path: string; onGo: (p: string) => void }) {
   );
 }
 
-function Picker({ onClose }: { onClose: () => void }) {
+function Picker({ mode, onClose }: { mode: Mode; onClose: () => void }) {
+  const files = mode === 'files';
   const chat = useView('chat');
   const projects = useView('projects');
   const [places, setPlaces] = useState<Places | null>(null);
@@ -91,6 +97,7 @@ function Picker({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<{ back: string[]; forward: string[] }>({ back: [], forward: [] });
   const [selected, setSelected] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
   const [filter, setFilter] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
@@ -103,7 +110,7 @@ function Picker({ onClose }: { onClose: () => void }) {
   const load = async (dir: string, select: string | null = null) => {
     const n = ++seq.current;
     setLoading(true);
-    const l = await invoke<Listing>('folder_list', { dir }).catch((e) => ({ path: dir, parent: parentOf(dir), folders: [], error: String(e) }) as Listing);
+    const l = await invoke<Listing>('folder_list', { dir, files }).catch((e) => ({ path: dir, parent: parentOf(dir), folders: [], files: [], error: String(e) }) as Listing);
     if (n !== seq.current) return;
     setLoading(false);
     setListing(l);
@@ -136,8 +143,8 @@ function Picker({ onClose }: { onClose: () => void }) {
   // It opens beside the current project, with that project picked out: projects tend to sit next to each other.
   useEffect(() => {
     invoke<Places>('folder_places').then(setPlaces).catch(() => {});
-    const start = chat.cwd ? parentOf(chat.cwd) ?? chat.cwd : null;
-    if (start) load(start, chat.cwd);
+    const start = chat.cwd ? (files ? chat.cwd : parentOf(chat.cwd) ?? chat.cwd) : null;
+    if (start) load(start, files ? null : chat.cwd);
     else invoke<Places>('folder_places').then((p) => load(p.home));
   }, []);
 
@@ -146,12 +153,21 @@ function Picker({ onClose }: { onClose: () => void }) {
     const q = filter.trim().toLowerCase();
     return listing.folders.filter((f) => (showHidden || !f.hidden || same(f.path, selected ?? '')) && (!q || f.name.toLowerCase().includes(q)));
   }, [listing, filter, showHidden, selected]);
-  const hiddenCount = listing ? listing.folders.filter((f) => f.hidden).length : 0;
+  const matchedFiles = useMemo(() => {
+    if (!listing) return [];
+    const q = filter.trim().toLowerCase();
+    return listing.files.filter((f) => (showHidden || !f.hidden || picked.includes(f.path)) && (!q || f.name.toLowerCase().includes(q)));
+  }, [listing, filter, showHidden, picked]);
+  const shownFiles = matchedFiles.slice(0, MAX_FILES);
+  const rows = useMemo(() => [...shown.map((f) => f.path), ...shownFiles.map((f) => f.path)], [shown, matchedFiles]);
+  const hiddenCount = listing ? listing.folders.filter((f) => f.hidden).length + listing.files.filter((f) => f.hidden).length : 0;
+  const isFile = (p: string | null) => !!p && !!listing?.files.some((f) => f.path === p);
+  const toggle = (p: string) => setPicked((had) => (had.includes(p) ? had.filter((x) => x !== p) : [...had, p]));
 
   // Typing narrows the list; the first match is picked so Enter goes straight in.
   useEffect(() => {
-    if (filter && shown.length && !shown.some((f) => same(f.path, selected ?? ''))) setSelected(shown[0].path);
-  }, [filter, shown]);
+    if (filter && rows.length && !rows.some((p) => same(p, selected ?? ''))) setSelected(rows[0]);
+  }, [filter, rows]);
   useEffect(() => {
     listRef.current?.querySelector('.fp-row.selected')?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
@@ -169,6 +185,15 @@ function Picker({ onClose }: { onClose: () => void }) {
       setBusy(false);
     }
   };
+  const attach = async (paths: string[] = picked) => {
+    if (!paths.length || busy) return;
+    setBusy(true);
+    const shownAs = await Promise.all(paths.map((path) => invoke<string>('display_path', { cwd: chat.cwd, path })));
+    const had = ui.get().attachments;
+    ui.set({ attachments: [...had, ...shownAs.filter((f) => !had.includes(f))] });
+    onClose();
+    focusComposer();
+  };
   const create = async () => {
     if (!listing || creating === null) return;
     try {
@@ -180,10 +205,10 @@ function Picker({ onClose }: { onClose: () => void }) {
   };
 
   const move = (by: number) => {
-    if (!shown.length) return;
-    const i = shown.findIndex((f) => same(f.path, selected ?? ''));
-    const next = i < 0 ? (by > 0 ? 0 : shown.length - 1) : Math.max(0, Math.min(shown.length - 1, i + by));
-    setSelected(shown[next].path);
+    if (!rows.length) return;
+    const i = rows.findIndex((p) => same(p, selected ?? ''));
+    const next = i < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.max(0, Math.min(rows.length - 1, i + by));
+    setSelected(rows[next]);
   };
   const onKey = (e: React.KeyboardEvent) => {
     if ((e.target as HTMLElement).closest('.fp-path-edit, .fp-new input')) return;
@@ -191,8 +216,8 @@ function Picker({ onClose }: { onClose: () => void }) {
     else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
     else if (e.key === 'PageDown') { e.preventDefault(); move(10); }
     else if (e.key === 'PageUp') { e.preventDefault(); move(-10); }
-    else if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); choose(); }
-    else if (e.key === 'Enter') { e.preventDefault(); if (selected) go(selected); }
+    else if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); if (files) attach(); else choose(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (isFile(selected)) toggle(selected!); else if (selected) go(selected); }
     else if (e.key === 'Backspace' && !filter) { e.preventDefault(); up(); }
     else if (e.key === 'ArrowLeft' && e.altKey) { e.preventDefault(); back(); }
     else if (e.key === 'ArrowRight' && e.altKey) { e.preventDefault(); forward(); }
@@ -207,7 +232,7 @@ function Picker({ onClose }: { onClose: () => void }) {
   return (
     <div className="fp" onKeyDown={onKey}>
       <aside className="fp-side">
-        <div className="fp-title">Add a project</div>
+        <div className="fp-title">{files ? 'Attach files' : 'Add a project'}</div>
         {places && (
           <>
             <div className="fp-group">
@@ -233,7 +258,7 @@ function Picker({ onClose }: { onClose: () => void }) {
           <div className="fp-group">
             <div className="fp-label">Projects</div>
             {projects.map((p) => (
-              <button key={p.path} type="button" className={`fp-place ${here(p.path) ? 'on' : ''}`} onClick={() => go(parentOf(p.path) ?? p.path, p.path)} title={p.path}>
+              <button key={p.path} type="button" className={`fp-place ${here(p.path) ? 'on' : ''}`} onClick={() => (files ? go(p.path) : go(parentOf(p.path) ?? p.path, p.path))} title={p.path}>
                 <Icon name="folder" size={15} /><span className="ellipsis">{p.name}</span>
               </button>
             ))}
@@ -253,17 +278,19 @@ function Picker({ onClose }: { onClose: () => void }) {
         <div className="fp-tools">
           <label className="fp-filter">
             <Icon name="search" size={14} />
-            <input ref={filterRef} autoFocus placeholder="Filter folders" spellCheck={false} value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <input ref={filterRef} autoFocus placeholder={files ? 'Filter files and folders' : 'Filter folders'} spellCheck={false} value={filter} onChange={(e) => setFilter(e.target.value)} />
             {loading && <Spinner size={11} />}
           </label>
           {hiddenCount > 0 && (
-            <button type="button" className={`fp-tool ${showHidden ? 'on' : ''}`} title={showHidden ? 'Hide hidden folders' : 'Show hidden folders'} onClick={() => setShowHidden(!showHidden)}>
+            <button type="button" className={`fp-tool ${showHidden ? 'on' : ''}`} title={showHidden ? 'Hide hidden items' : 'Show hidden items'} onClick={() => setShowHidden(!showHidden)}>
               <Icon name="eye" size={14} />{hiddenCount} hidden
             </button>
           )}
-          <button type="button" className="fp-tool" title="Make a folder here" disabled={!listing || !!listing.error} onClick={() => setCreating('')}>
-            <Icon name="folderPlus" size={14} />New folder
-          </button>
+          {!files && (
+            <button type="button" className="fp-tool" title="Make a folder here" disabled={!listing || !!listing.error} onClick={() => setCreating('')}>
+              <Icon name="folderPlus" size={14} />New folder
+            </button>
+          )}
         </div>
 
         <div ref={listRef} className="fp-list" onClick={(e) => e.target === e.currentTarget && setSelected(null)}>
@@ -288,8 +315,8 @@ function Picker({ onClose }: { onClose: () => void }) {
           )}
           {listing?.error ? (
             <div className="fp-empty">{listing.error}</div>
-          ) : listing && !shown.length && creating === null ? (
-            <div className="fp-empty">{filter ? `No folders match “${filter}”.` : 'No folders in here. You can add this one.'}</div>
+          ) : listing && !rows.length && creating === null ? (
+            <div className="fp-empty">{filter ? `Nothing matches “${filter}”.` : files ? 'Nothing in here.' : 'No folders in here. You can add this one.'}</div>
           ) : (
             shown.map((f) => (
               <button
@@ -307,11 +334,36 @@ function Picker({ onClose }: { onClose: () => void }) {
               </button>
             ))
           )}
+          {!listing?.error && shownFiles.map((f) => {
+            const on = picked.includes(f.path);
+            return (
+              <button
+                key={f.path}
+                type="button"
+                className={`fp-row fp-file ${same(f.path, selected ?? '') ? 'selected' : ''} ${on ? 'picked' : ''} ${f.hidden ? 'hidden' : ''}`}
+                aria-pressed={on}
+                onClick={() => { setSelected(f.path); toggle(f.path); }}
+                onDoubleClick={() => attach([...picked.filter((p) => p !== f.path), f.path])}
+                title={f.path}
+              >
+                <Icon name="file" size={16} />
+                <span className="grow ellipsis">{f.name}</span>
+                <span className="tiny dim nowrap">{fileSize(f.size)}</span>
+                <span className="fp-check">{on && <Icon name="check" size={13} />}</span>
+              </button>
+            );
+          })}
+          {matchedFiles.length > MAX_FILES && <div className="fp-more tiny dim">{matchedFiles.length - MAX_FILES} more files. Type to filter them.</div>}
         </div>
 
         <footer className="fp-foot">
           <div className="grow fp-choice">
-            {error ? <span className="fp-error ellipsis">{error}</span> : target ? (
+            {error ? <span className="fp-error ellipsis">{error}</span> : files ? (
+              <>
+                <span className="dim small">{picked.length ? `${picked.length} file${picked.length === 1 ? '' : 's'} selected` : 'Click files to select them'}</span>
+                {picked.length > 0 && <span className="ellipsis small" title={picked.join('\n')}>{picked.map(baseName).join(', ')}</span>}
+              </>
+            ) : target ? (
               <>
                 <span className="dim small">Project folder</span>
                 <span className="ellipsis mono small" title={target}>{target}</span>
@@ -319,9 +371,15 @@ function Picker({ onClose }: { onClose: () => void }) {
             ) : null}
           </div>
           <button type="button" className="button" onClick={onClose}>Cancel</button>
-          <button type="button" className="button primary" disabled={!target || !!listing?.error || busy} title="Ctrl+Enter" onClick={() => choose()}>
-            {busy ? <Spinner size={11} /> : null}Add {target ? `“${baseName(target)}”` : 'folder'}
-          </button>
+          {files ? (
+            <button type="button" className="button primary" disabled={!picked.length || busy} title="Ctrl+Enter" onClick={() => attach()}>
+              {busy ? <Spinner size={11} /> : null}Attach{picked.length ? ` ${picked.length} file${picked.length === 1 ? '' : 's'}` : ''}
+            </button>
+          ) : (
+            <button type="button" className="button primary" disabled={!target || !!listing?.error || busy} title="Ctrl+Enter" onClick={() => choose()}>
+              {busy ? <Spinner size={11} /> : null}Add {target ? `“${baseName(target)}”` : 'folder'}
+            </button>
+          )}
         </footer>
       </section>
     </div>
@@ -329,12 +387,13 @@ function Picker({ onClose }: { onClose: () => void }) {
 }
 
 export function FolderPicker() {
-  const open = useUi((u) => u.pickingFolder);
-  if (!open) return null;
-  const close = () => ui.set({ pickingFolder: false });
+  const folder = useUi((u) => u.pickingFolder);
+  const files = useUi((u) => u.pickingFiles);
+  if (!folder && !files) return null;
+  const close = () => ui.set({ pickingFolder: false, pickingFiles: false });
   return (
     <Modal onClose={close} className="folder-picker">
-      <Picker onClose={close} />
+      <Picker mode={files ? 'files' : 'project'} onClose={close} />
     </Modal>
   );
 }

@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { act, tokens, type AgentRouteStep, type AgentRouter, type Model, type ModelRef } from './api';
-import { AdditionalOptions, BrowserEntry, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalOptions, BrowserEntry, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, ANTIGRAVITY_NOTE, VIBE_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ChatbotPage, CHATBOT_ONLY_PAGES, isBotPage } from './Chatbots';
 import { LocalSetup } from './Local';
 import { setRail, TABS, tabName, useRail, type Tab } from './rail';
 import { SortableRail } from './SortableRail';
 import { core, ui, useCore, useView } from './store';
-import { Icon, IconButton, Link, Popover, Star, Switch } from './widgets';
+import { Icon, IconButton, Link, Popover, Switch } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
@@ -32,6 +32,8 @@ function allRows(models: Model[]): ModelRow[] {
   add((m) => (m.copilotId ? 'copilot' : null), (m) => m.id);
   add((m) => (m.devinId ? 'devin' : null), (m) => m.id);
   add((m) => (m.kiroId ? 'kiro' : null), (m) => m.id);
+  add((m) => (m.antigravityId ? 'antigravity' : null), (m) => m.id);
+  add((m) => (m.vibeId ? 'vibe' : null), (m) => m.id);
   add((m) => (m.grokId ? 'grok' : null), (m) => m.id);
   add((m) => (m.hermesId ? 'hermes' : null), (m) => m.id);
   add((m) => (m.id.startsWith('local/') ? 'local' : null), (m) => m.id);
@@ -115,7 +117,7 @@ type Sort = (typeof SORTS)[number][0];
 const SORT_KEY = 'scout.modelSort';
 const FREE_KEY = 'scout.modelFreeOnly';
 /** Set once the menu has shown its tip, the first time it opened. */
-const TIP_KEY = 'scout.modelMenuTipSeen2';
+const TIP_KEY = 'scout.modelMenuTipSeen3';
 
 function savedSort(): Sort {
   const s = localStorage.getItem(SORT_KEY);
@@ -160,24 +162,120 @@ export function useTabAccess(picking = false) {
   const team = cfg.team;
   const teamRuns = (t: Tab) => !!team && (team.providers.includes(t) || (t === 'additional' && additionalProviders.some((a) => team.providers.includes(a.id))));
   const shownTab = (t: Tab) => (!picking || (t !== 'router' && !CHATBOT_ONLY_PAGES.includes(t))) && (!team || t === 'router' || CHATBOT_ONLY_PAGES.includes(t) || teamRuns(t) || team.acp.includes(t));
-  const signedIn = (t: Tab): boolean => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, local: cfg.local.models.length > 0, additional: cfg.additional.length > 0, router: true, kilo: true, chatbots: link.on })[t];
+  const signedIn = (t: Tab): boolean => teamRuns(t) || ({ scoutcode: cfg.hasKey || cfg.guest, openrouter: cfg.openrouterKeys.length > 0, nvidia: cfg.nvidiaKey !== null, opencode: cfg.opencode, copilot: cfg.copilot, devin: cfg.devin, kiro: cfg.kiro, antigravity: cfg.antigravity, vibe: cfg.vibe, codex: cfg.codex, claude: cfg.claude, grok: cfg.grokSignedIn || cfg.grokKey !== null, hermes: cfg.hermesSignedIn || cfg.hermesKey !== null, local: cfg.local.models.length > 0, additional: cfg.additional.length > 0, router: true, kilo: true, chatbots: link.on })[t];
   return { shownTab, signedIn, teamRuns };
 }
 
-function ModelCard({ m, top, left }: { m: Model; top: number; left: number }) {
-  const caps = [m.tools && 'Tools', m.vision && 'Vision'].filter(Boolean).join(' · ');
-  const on = [m.hosted && 'ScoutCode', m.openrouterId && 'OpenRouter', m.nvidiaId && 'NVIDIA NIM', m.opencodeId && 'OpenCode', m.kiloId && 'Kilo Code', m.hermesId && 'Hermes', m.additional && runsOn(m.additional[0])].filter(Boolean).join(' or ');
-  const stats: [string, string | null | undefined][] = [
-    ['Smarts', intelligence(m) ? `${INTEL_NAMES[intelligence(m)!]} (${intelligence(m)} of 3)` : null],
-    ['Context', m.context ? `${tokens(m.context)} tokens` : null], ['Cost', m.cost], ['Supports', caps], ['Runs on', on],
-    ['Providers', m.providers.join(', ')], ['Tries', m.routesTo.join(' → ')],
-  ];
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** What the card beside the menu is about: the model row or Agent Router under the pointer, and where the card goes. */
+type Hover = { row?: ModelRow; router?: AgentRouter; top: number; left: number };
+const CARD_W = 304;
+
+function hoverAt(el: HTMLElement): { top: number; left: number } {
+  const row = el.getBoundingClientRect();
+  const menu = (el.closest('.popover') ?? el.closest('.model-menu'))!.getBoundingClientRect();
+  return { top: row.top, left: Math.min(menu.right + 8, window.innerWidth - CARD_W - 8) };
+}
+
+/** What a row's own provider charges, as tiles: per million tokens, per request, or just its price tier. */
+function costTiles(r: ModelRow): [string, string, string][] | null {
+  const m = r.model;
+  if (r.key === 'auto' || r.provider === 'nvidia') return null;
+  if (rowFree(r)) return [['Price', 'Free', '']];
+  const tierOnly = r.provider === 'kilo' ? m.kiloTier : r.provider === 'openrouter' && m.hosted ? m.openrouterTier : undefined;
+  if (tierOnly !== undefined) return tierOnly ? [['Price', '$'.repeat(tierOnly), '']] : null;
+  const cost = m.cost ?? '';
+  const perToken = /\$([\d.]+) in · \$([\d.]+) out/.exec(cost);
+  const perRequest = /\$([\d.]+) \/ request/.exec(cost);
+  const tiles: [string, string, string][] = [];
+  if (perToken) tiles.push(['Input', `$${perToken[1]}`, '/ 1M'], ['Output', `$${perToken[2]}`, '/ 1M']);
+  if (perRequest) tiles.push(['Request', `$${perRequest[1]}`, 'each']);
+  if (tiles.length) return tiles;
+  return cost ? [['Price', cost, '']] : m.tier ? [['Price', '$'.repeat(m.tier), '']] : null;
+}
+
+function EffortRow() {
+  const effort = useView('effort');
+  const efforts = useCore((s) => s.statics.efforts);
   return (
-    <div className="model-card" style={{ top, left }}>
-      <div className="strong bold">{m.label}</div>
-      <div className="mono small dim">{m.id}</div>
+    <div className="mc-row">
+      <span className="small dim">Effort</span>
+      <div className="mc-seg" role="radiogroup" aria-label="Reasoning effort">
+        {efforts.map((e) => (
+          <button key={e} type="button" role="radio" aria-checked={e === effort} className={e === effort ? 'on' : ''} onClick={() => act('setEffort', { effort: e })}>{capital(e)}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The card beside the menu for the row under the pointer. It can be hovered itself: the effort, the pin and the model's details are in it. */
+function ModelCard({ hover, pinned, picking, onEnter, onLeave }: { hover: Hover; pinned: boolean; picking: boolean; onEnter: () => void; onLeave: () => void }) {
+  const effort = useView('effort');
+  const ref = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(hover.top);
+  useLayoutEffect(() => {
+    const h = ref.current?.offsetHeight ?? 0;
+    setTop(Math.max(8, Math.min(hover.top, window.innerHeight - h - 8)));
+  });
+  const frame = { ref, className: 'model-card', 'data-popover-part': true, style: { top, left: hover.left, width: CARD_W }, onMouseEnter: onEnter, onMouseLeave: onLeave };
+  const effortName = !picking && <span className="chip-effort"> {capital(effort)}</span>;
+  if (hover.router) {
+    return (
+      <div {...frame}>
+        <div className="ellipsis"><b className="strong">{hover.router.name}</b>{effortName}</div>
+        <div className="tiny dim">{routeSummary(hover.router)}</div>
+        <EffortRow />
+      </div>
+    );
+  }
+  const r = hover.row!;
+  const m = r.model;
+  const level = intelligence(m);
+  const tiles = costTiles(r);
+  const caps: [string, string][] = [];
+  if (m.vision) caps.push(['eye', 'Vision: it can see the images and screenshots you attach']);
+  if (m.tools) caps.push(['hammer', 'Tools: it can read and edit files and run commands itself']);
+  const on = [m.hosted && 'ScoutCode', m.openrouterId && 'OpenRouter', m.nvidiaId && 'NVIDIA NIM', m.opencodeId && 'OpenCode', m.kiloId && 'Kilo Code', m.hermesId && 'Hermes', m.additional && runsOn(m.additional[0])].filter(Boolean).join(' or ');
+  const stats: [string, string | null | undefined][] = [['Runs on', on], ['Providers', r.provider === 'scoutcode' ? null : m.providers.join(', ')], ['Tries', m.routesTo.join(' → ')]];
+  return (
+    <div {...frame}>
+      <div className="mc-head">
+        <div className="grow min0">
+          <div className="ellipsis"><b className="strong">{r.name}</b>{effortName}</div>
+          <div className="tiny dim ellipsis">{[m.context ? `${tokens(m.context)} context` : null, runsOn(r.provider)].filter(Boolean).join(' · ')}</div>
+        </div>
+        <button type="button" className={`mc-pin ${pinned ? 'on' : ''}`} aria-pressed={pinned} title={pinned ? 'Unpin' : 'Pin to the top of the list'} aria-label={pinned ? 'Unpin' : 'Pin to the top of the list'} onClick={() => act('toggleStar', { id: r.star })}>
+          <Icon name="pin" size={15} />
+        </button>
+      </div>
       {m.description && <div className="small muted">{m.description}</div>}
-      {stats.some(([, v]) => v) && <hr />}
+      {caps.length > 0 && (
+        <div className="mc-caps">
+          {caps.map(([icon, tip]) => <span key={icon} className="mc-cap" data-tip={tip} aria-label={tip} role="img"><Icon name={icon} size={15} /></span>)}
+        </div>
+      )}
+      {!picking && <EffortRow />}
+      {level && (
+        <div className="mc-row">
+          <span className="small dim">Intelligence Index</span>
+          <span className="mc-intel small"><IntelBars level={level} />{INTEL_NAMES[level]}</span>
+        </div>
+      )}
+      {tiles && (
+        <>
+          <hr />
+          <div className="mc-tiles">
+            {tiles.map(([k, v, unit]) => (
+              <div key={k} className="mc-tile">
+                <div className="tiny dim">{k}</div>
+                <div className="ellipsis"><b className="strong">{v}</b>{unit && <span className="tiny dim"> {unit}</span>}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       {stats.filter(([, v]) => v).map(([k, v]) => <div key={k} className="stat-row"><span className="small dim">{k}</span><span className="small">{v}</span></div>)}
       {m.available === false && <div className="small red">Unavailable right now</div>}
     </div>
@@ -222,6 +320,8 @@ function SignedOut({ tab }: { tab: Tab }) {
       {tab === 'copilot' && <><div className="small dim">{COPILOT_NOTE}</div><SignInEntry which="copilot" /></>}
       {tab === 'devin' && <><div className="small dim">{DEVIN_NOTE}</div><SignInEntry which="devin" /></>}
       {tab === 'kiro' && <><div className="small dim">{KIRO_NOTE}</div><SignInEntry which="kiro" /></>}
+      {tab === 'antigravity' && <><div className="small dim">{ANTIGRAVITY_NOTE}</div><SignInEntry which="antigravity" /></>}
+      {tab === 'vibe' && <><div className="small dim">{VIBE_NOTE}</div><SignInEntry which="vibe" /></>}
       {tab === 'hermes' && <><div className="small dim">{HERMES_NOTE}</div><HermesEntry /></>}
     </div>
   );
@@ -245,6 +345,8 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
   const loading = useView('modelsLoading');
   const additionalErrors = useView('additionalErrors');
   const kiroError = useView('kiroModelsError');
+  const antigravityError = useView('antigravityModelsError');
+  const vibeError = useView('vibeModelsError');
   const codexError = useView('codexModelsError');
   const claudeError = useView('claudeModelsError');
   const opencodeError = useView('opencodeModelsError');
@@ -276,7 +378,15 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
     window.addEventListener('keydown', key, true);
     return () => { document.removeEventListener('mousedown', down); window.removeEventListener('keydown', key, true); };
   }, [ctx]);
-  const [hover, setHover] = useState<{ m: Model; top: number; left: number } | null>(null);
+  const [hover, setHover] = useState<Hover | null>(null);
+  // The card follows the pointer a beat late, so crossing other rows on the way to it doesn't swap it, and it stays
+  // while the pointer is on it.
+  const hoverTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const hoverSoon = (next: Hover | null, ms: number) => {
+    clearTimeout(hoverTimer.current);
+    hoverTimer.current = setTimeout(() => setHover(next), ms);
+  };
+  useEffect(() => () => clearTimeout(hoverTimer.current), []);
   const team = cfg.team;
   const { shownTab, signedIn } = useTabAccess(!!onPick);
   const onRail = rail.filter(shownTab);
@@ -396,7 +506,7 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
               <b className="strong grow small">Tip</b>
               <IconButton icon="close" tip="Got it" size={22} onClick={dismissTip} />
             </div>
-            <div className="small dim">Hold a provider on the left to drag it into place. Right-click one to remove it, or to sign in if it needs an account. Starred models sit at the top of each list. The bars by each model are its Intelligence Index: the more bars, the smarter.</div>
+            <div className="small dim">Hold a provider on the left to drag it into place. Right-click one to remove it, or to sign in if it needs an account. Hover a model for its card: set the reasoning effort there, pin the model to the top of its list, and see its Intelligence Index and price.</div>
           </div>
         )}
         {listed && (
@@ -416,6 +526,8 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
         )}
         {tab === 'scoutcode' && cfg.guest && <div className="tiny dim">{GUEST_NOTE} Sign in from Settings &gt; Account for more.</div>}
         {tab === 'kiro' && cfg.kiro && kiroError && <div className="tiny red">{kiroError}</div>}
+        {tab === 'antigravity' && cfg.antigravity && antigravityError && <div className="tiny red">{antigravityError}</div>}
+        {tab === 'vibe' && cfg.vibe && vibeError && <div className="tiny red">{vibeError}</div>}
         {tab === 'codex' && cfg.codex && codexError && <div className="tiny red">{codexError}</div>}
         {tab === 'claude' && cfg.claude && claudeError && <div className="tiny red">{claudeError}</div>}
         {tab === 'grok' && signedIn('grok') && grokError && <div className="tiny red">{grokError}</div>}
@@ -449,10 +561,10 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
             {additionalErrors.map((e) => <div key={e} className="tiny red">{e}</div>)}
           </>
         )}
-        <div key={q ? "search" : tab} className="model-list" onMouseLeave={() => setHover(null)}>
+        <div key={q ? "search" : tab} className="model-list" onMouseLeave={() => hoverSoon(null, 240)}>
           {bare && <div className="rail-empty small dim"><Icon name="plus" size={18} />Add a provider from the list to see it here.</div>}
           {botPage && <ChatbotPage key={tab} tab={tab} close={close} />}
-          {routerTab ? <AgentRouterPanel compact close={close} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
+          {routerTab ? <AgentRouterPanel compact close={close} onRowHover={(router, el) => hoverSoon({ router, ...hoverAt(el) }, hover ? 160 : 60)} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
             const m = r.model;
             // NIM's list has no prices, and what another provider charges says nothing about it.
             const free = rowFree(r);
@@ -463,12 +575,7 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
               <div
                 key={`${r.provider}:${r.key}`}
                 className={`model-row ${selected ? 'selected' : ''}`}
-                onMouseEnter={(e) => {
-                  const row = e.currentTarget.getBoundingClientRect();
-                  const menu = (e.currentTarget.closest('.popover') ?? e.currentTarget.closest('.model-menu'))!.getBoundingClientRect();
-                  const left = menu.right + 8 + 284 <= window.innerWidth ? menu.right + 8 : menu.left - 8 - 284;
-                  setHover({ m, top: Math.max(8, Math.min(row.top, window.innerHeight - 240)), left });
-                }}
+                onMouseEnter={(e) => hoverSoon({ row: r, ...hoverAt(e.currentTarget) }, hover ? 160 : 60)}
                 onClick={() => {
                   const pick = () => { if (onPick) onPick(r.key, r.provider); else act('chooseModel', { key: r.key, provider: r.provider }); };
                   // An uncensored model needs an account that agreed to its terms: the popup asks first, then picks it.
@@ -477,19 +584,35 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
                   close();
                 }}
               >
-                <button type="button" className={`star ${on ? 'on' : ''}`} title={on ? 'Unstar' : 'Star'} onClick={(e) => { e.stopPropagation(); act('toggleStar', { id: r.star }); }}><Star on={on} /></button>
                 <span className="grow ellipsis">{r.name}</span>
+                {on && <span className="row-pin" title="Pinned" aria-label="Pinned"><Icon name="pin" size={12} /></span>}
                 {r.provider === 'scoutcode' && m.uncensored && <span className="badge warn" title="Uncensored: needs an account that agreed to the uncensored model terms">18+</span>}
-                <IntelBars level={intelligence(m)} />
                 {free ? <span className="badge">Free</span> : tier ? <span className="tiny dim">{'$'.repeat(tier)}</span> : null}
                 {logo(r.provider) && <img className="logo row-logo" src={logo(r.provider)} width={13} height={13} alt="" />}
               </div>
             );
           })}
-          {listed && rows.length === 0 && <div className="small dim pad">{empty}</div>}
+          {listed && rows.length === 0 && (
+            <div className="small dim pad">
+              {empty}
+              {loading === 0 && !q && (
+                <div><button type="button" className="button compact" onClick={() => act('reloadModels')}>Reload models</button></div>
+              )}
+            </div>
+          )}
         </div>
       </div>
-      {hover && createPortal(<ModelCard {...hover} />, document.body)}
+      {hover && createPortal(
+        <ModelCard
+          key={hover.row ? `${hover.row.provider}:${hover.row.key}` : hover.router?.id}
+          hover={hover}
+          pinned={!!hover.row && starred.includes(hover.row.star)}
+          picking={!!onPick || preview}
+          onEnter={() => clearTimeout(hoverTimer.current)}
+          onLeave={() => hoverSoon(null, 240)}
+        />,
+        document.body,
+      )}
     </div>
   );
 }
@@ -507,7 +630,7 @@ function routeSummary(r: AgentRouter): string {
  * The Agent Routers: a list to pick from like models, each with an edit button, and a button to make another.
  * Shared by the Model Menu tab and Settings > Agent Router.
  */
-export function AgentRouterPanel({ compact = false, close }: { compact?: boolean; close?: () => void }) {
+export function AgentRouterPanel({ compact = false, close, onRowHover }: { compact?: boolean; close?: () => void; onRowHover?: (r: AgentRouter, el: HTMLElement) => void }) {
   const cfg = useView('cfg');
   const current = useView('model');
   const routers: AgentRouter[] = cfg.agentRouters ?? [];
@@ -560,7 +683,8 @@ export function AgentRouterPanel({ compact = false, close }: { compact?: boolean
             <div
               key={r.id}
               className={`model-row router-row ${activeId === r.id ? 'selected' : ''}`}
-              title={`Use ${r.name}`}
+              title={onRowHover ? undefined : `Use ${r.name}`}
+              onMouseEnter={onRowHover && ((e) => onRowHover(r, e.currentTarget))}
               onClick={() => choose(r.id)}
             >
               <Icon name="route" size={14} />
@@ -610,6 +734,8 @@ function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, o
       { id: 'copilot', name: 'GitHub Copilot' },
       { id: 'devin', name: 'Devin' },
       { id: 'kiro', name: 'Kiro' },
+      { id: 'antigravity', name: 'Antigravity' },
+      { id: 'vibe', name: 'Mistral Vibe' },
       { id: 'grok', name: 'Grok Build' },
       { id: 'hermes', name: 'Hermes' },
     ];
@@ -866,6 +992,8 @@ function AgentRouteStepRow({
       x.copilotId === step.key ||
       x.devinId === step.key ||
       x.kiroId === step.key ||
+      x.antigravityId === step.key ||
+      x.vibeId === step.key ||
       x.codexId === step.key ||
       x.claudeId === step.key ||
       x.grokId === step.key ||
@@ -941,12 +1069,13 @@ export function ModelChip() {
   const label = isRouter ? current.short || 'Agent Router' : models.find((m) => m.id === current.key)?.label ?? current.short;
   const shown = label.length > 26 ? `${label.slice(0, 25)}…` : label;
   const onAdditional = additionalProviders.some((a) => a.id === current.provider);
+  const effort = useView('effort');
   const hint = isRouter ? `Agent Router · ${current.short}` : current.provider === 'scoutcode' ? 'Model' : `Model · running on ${runsOn(current.provider)}`;
   const start: Tab = isRouter ? 'router' : onAdditional ? 'additional' : TABS.some(([t]) => t === current.provider) ? (current.provider as Tab) : 'scoutcode';
   const [key, setKey] = useState(0);
   return (
     <Popover align="end" side="top" className="model-popover" onOpen={() => setKey(key + 1)} trigger={(open, toggle) => (
-      <button type="button" className={`chip ${open ? 'open' : ''}`} title={hint} onClick={toggle}>{shown}<Icon name="chevronDown" size={12} /></button>
+      <button type="button" className={`chip ${open ? 'open' : ''}`} title={`${hint} · ${capital(effort)} reasoning effort`} onClick={toggle}>{shown}<span className="chip-effort">{capital(effort)}</span><Icon name="chevronDown" size={12} /></button>
     )}>
       {(close) => <Menu key={key} close={close} startTab={start} />}
     </Popover>
@@ -970,6 +1099,8 @@ export function useModelName(m?: Partial<ModelRef> | null): string {
       x.copilotId === key ||
       x.devinId === key ||
       x.kiroId === key ||
+      x.antigravityId === key ||
+      x.vibeId === key ||
       x.codexId === key ||
       x.claudeId === key ||
       x.grokId === key ||

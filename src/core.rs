@@ -89,6 +89,10 @@ struct Login {
     devin_error: Option<String>,
     kiro: Option<SignIn>,
     kiro_error: Option<String>,
+    antigravity: Option<SignIn>,
+    antigravity_error: Option<String>,
+    vibe: Option<SignIn>,
+    vibe_error: Option<String>,
     codex: Option<SignIn>,
     codex_error: Option<String>,
     claude: Option<SignIn>,
@@ -249,6 +253,8 @@ pub struct Core {
     start_hermes: bool,
     hermes_models_error: Option<String>,
     kiro_models_error: Option<String>,
+    antigravity_models_error: Option<String>,
+    vibe_models_error: Option<String>,
     codex_models_error: Option<String>,
     claude_models_error: Option<String>,
     opencode_models_error: Option<String>,
@@ -269,6 +275,8 @@ pub struct Core {
     focus_epoch: u64,
     /// Goes up with each chat opened, so the window drops what belongs to the last one.
     chat_epoch: u64,
+    /// The new chat on screen goes in its own git worktree when its first message is sent. Off for each new chat.
+    worktree: bool,
     /// The link that lets web chatbots use Scout, while it's on. It stays off until turned on each run.
     link: Option<crate::mcp::Link>,
     link_status: String,
@@ -366,7 +374,7 @@ fn model_sources(cfg: &Config) -> Vec<&'static str> {
     if let Some(t) = &cfg.team {
         let relayed = ["scoutcode", "openrouter", "nvidia", "kilo"].into_iter().chain(config::ADDITIONAL.iter().map(|a| a.id)).chain(["hermes"]);
         out.extend(relayed.filter(|s| t.runs(s)));
-        let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on())];
+        let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("antigravity", cfg.antigravity_enabled), ("vibe", cfg.vibe_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on())];
         out.extend(on.into_iter().filter(|(s, on)| *on && cfg.acp_allowed(s)).map(|(s, _)| s));
         return out;
     }
@@ -385,7 +393,7 @@ fn model_sources(cfg: &Config) -> Vec<&'static str> {
     if cfg.local_on() {
         out.push(crate::local::PROVIDER);
     }
-    let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
+    let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("antigravity", cfg.antigravity_enabled), ("vibe", cfg.vibe_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on()), ("hermes", cfg.hermes_on())];
     out.extend(on.into_iter().filter(|(_, on)| *on).map(|(s, _)| s));
     out
 }
@@ -397,6 +405,8 @@ fn cli_model(source: &str, id: String, name: String) -> ModelInfo {
         "copilot" => m.copilot_id = Some(id),
         "devin" => m.devin_id = Some(id),
         "kiro" => m.kiro_id = Some(id),
+        "antigravity" => m.antigravity_id = Some(id),
+        "vibe" => m.vibe_id = Some(id),
         "codex" => m.codex_id = Some(id),
         "claude" => m.claude_id = Some(id),
         "opencode" => {
@@ -415,6 +425,8 @@ fn default_models(source: &str) -> Vec<ModelInfo> {
         "copilot" => "Copilot Auto",
         "devin" => "Devin Default",
         "kiro" => "Kiro Auto",
+        "antigravity" => "Antigravity Default",
+        "vibe" => "Mistral Vibe Default",
         "codex" => "Codex Default",
         "claude" => "Claude Code Default",
         "opencode" => "OpenCode Default",
@@ -455,9 +467,11 @@ fn fetch_source(cfg: &Config, source: &str, h: &Hooks) -> Result<Vec<ModelInfo>,
         "kilo" => crate::api::list_kilo(cfg).map_err(|e| format!("Kilo Code: {}", e.message)),
         "copilot" => Ok(with_default(crate::copilot::list_models(cfg.copilot_token.as_deref().unwrap_or_default()))),
         "devin" => Ok(with_default(crate::devin::list_models())),
-        "codex" | "claude" => {
+        "codex" | "claude" | "antigravity" | "vibe" => {
             let (which, listed, explain): (_, _, fn(&String) -> String) = match source {
                 "codex" => ("codex", crate::codex::list_models(), |e| crate::codex::explain(e)),
+                "antigravity" => ("antigravity", crate::antigravity::list_models(), |e| crate::antigravity::explain(e)),
+                "vibe" => ("vibe", crate::vibe::list_models(), |e| crate::vibe::explain(e)),
                 _ => ("claude", crate::claude::list_models(), |e| crate::claude::explain(e)),
             };
             let error = listed.as_ref().err().map(explain);
@@ -585,7 +599,7 @@ fn model_json(m: &ModelInfo) -> Value {
     json!({
         "id": m.id, "label": m.label(), "description": m.description, "context": m.context, "tools": m.tools, "vision": m.vision, "cost": m.cost,
         "providers": m.providers, "routesTo": m.routes_to, "available": m.available, "openrouterId": m.openrouter_id, "nvidiaId": m.nvidia_id, "opencodeId": m.opencode_id,
-        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "codexId": m.codex_id, "claudeId": m.claude_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
+        "kiloId": m.kilo_id, "kiloFree": m.kilo_free, "kiloTier": m.kilo_tier, "copilotId": m.copilot_id, "devinId": m.devin_id, "kiroId": m.kiro_id, "antigravityId": m.antigravity_id, "vibeId": m.vibe_id, "codexId": m.codex_id, "claudeId": m.claude_id, "grokId": m.grok_id, "hermesId": m.hermes_id,
         "additional": m.additional, "hosted": m.hosted, "free": m.free, "tier": m.tier, "openrouterTier": m.openrouter_tier, "openrouterFree": m.openrouter_free,
         "intelligence": m.intelligence, "uncensored": m.uncensored,
     })
@@ -687,7 +701,7 @@ impl Core {
     pub fn new(handle: AppHandle, tx: Sender<Ev>, waker: Waker) -> Self {
         let mut cfg = config::load_config();
         if !MODES.contains(&cfg.mode.as_str()) {
-            cfg.mode = "default".into();
+            cfg.mode = config::DEFAULT_MODE.into();
         }
         let hooks = Hooks { chat: None, tx, ctx: waker.clone() };
         crate::analytics::init(cfg.usage_analytics, cfg.username.clone());
@@ -722,6 +736,8 @@ impl Core {
             opencode_models_error: None,
             grok_models_error: None,
             kiro_models_error: None,
+            antigravity_models_error: None,
+            vibe_models_error: None,
             codex_models_error: None,
             claude_models_error: None,
             projects: cfg.projects.clone(),
@@ -740,6 +756,7 @@ impl Core {
             files_epoch: 0,
             focus_epoch: 0,
             chat_epoch: 0,
+            worktree: false,
             link_status: String::new(),
             link_online: false,
             link_since: 0,
@@ -875,9 +892,9 @@ impl Core {
     /// Shows a model list, and tells the agent what it needs to know about each model.
     fn set_models(&mut self, m: Vec<ModelInfo>) {
         // The agent picks each model's edit tools from these, under the id it sends on any provider.
-        *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
-        *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
-        *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
+        *self.chat.shared.edit_tools.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.antigravity_id.clone()).chain(m.vibe_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.edit_tool))).collect();
+        *self.chat.shared.model_names.lock().unwrap() = m.iter().flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.antigravity_id.clone()).chain(m.vibe_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone())).map(move |id| (id, m.label()))).collect();
+        *self.chat.shared.no_vision.lock().unwrap() = m.iter().filter(|m| m.vision == Some(false)).flat_map(|m| std::iter::once(m.id.clone()).chain(m.openrouter_id.clone()).chain(m.nvidia_id.clone()).chain(m.opencode_id.clone()).chain(m.copilot_id.clone()).chain(m.devin_id.clone()).chain(m.kiro_id.clone()).chain(m.antigravity_id.clone()).chain(m.vibe_id.clone()).chain(m.codex_id.clone()).chain(m.claude_id.clone()).chain(m.grok_id.clone()).chain(m.hermes_id.clone()).chain(m.additional.as_ref().map(|(_, id)| id.clone()))).collect();
         self.models = m;
         self.models_changed = true;
     }
@@ -983,6 +1000,8 @@ impl Core {
                     "bash" => "run a command",
                     "devin" => "use a Devin tool",
                     "kiro" => "use a Kiro tool",
+                    "antigravity" => "use an Antigravity tool",
+                    "vibe" => "use a Mistral Vibe tool",
                     "codex" => "use a Codex tool",
                     "claude" => "use a Claude Code tool",
                     "opencode" => "use an OpenCode tool",
@@ -1130,7 +1149,10 @@ impl Core {
             Ev::KiroModelsError(e) => self.kiro_models_error = e,
             Ev::AgentSignIn(which, u) => self.agent_update(which, u),
             Ev::AgentModelsError("codex", e) => self.codex_models_error = e,
+            Ev::AgentModelsError("antigravity", e) => self.antigravity_models_error = e,
+            Ev::AgentModelsError("vibe", e) => self.vibe_models_error = e,
             Ev::AgentModelsError(_, e) => self.claude_models_error = e,
+            Ev::AcpSignIn(which, u) => self.acp_update(which, u),
             Ev::Opencode(u) => self.opencode_update(u),
             Ev::OpencodeModelsError(e) => self.opencode_models_error = e,
             Ev::Grok(u) => self.grok_update(u),
@@ -1657,6 +1679,83 @@ impl Core {
         }
     }
 
+    /// Where signing in to Antigravity ("antigravity") or Mistral Vibe ("vibe") stands.
+    fn acp_login(&mut self, which: &str) -> (&mut Option<SignIn>, &mut Option<String>) {
+        if which == "antigravity" { (&mut self.login.antigravity, &mut self.login.antigravity_error) } else { (&mut self.login.vibe, &mut self.login.vibe_error) }
+    }
+
+    /// Starts signing in to Antigravity or Mistral Vibe: its CLI downloads, then opens the browser to sign in itself.
+    pub fn acp_sign_in(&mut self, which: &str) {
+        let which = if which == "antigravity" { "antigravity" } else { "vibe" };
+        let sign_in = SignIn::default();
+        let cancel = sign_in.cancel.clone();
+        let (slot, error) = self.acp_login(which);
+        *slot = Some(sign_in);
+        *error = None;
+        let h = self.hooks.clone();
+        let send = move |u| h.send(Ev::AcpSignIn(which, u));
+        if which == "antigravity" { crate::antigravity::sign_in(cancel, send) } else { crate::vibe::sign_in(cancel, send) }
+    }
+
+    fn acp_update(&mut self, which: &'static str, update: crate::kiro::Update) {
+        use crate::kiro::Update;
+        match update {
+            Update::Done => {
+                *self.acp_login(which).0 = None;
+                self.save_acp(which, true);
+                self.choose_model("auto", which);
+            }
+            Update::Failed(e) => {
+                // Cancelling fails with no message.
+                let (slot, error) = self.acp_login(which);
+                *slot = None;
+                *error = (!e.is_empty()).then_some(e);
+            }
+            Update::Progress { done, total } => {
+                if let Some(s) = self.acp_login(which).0 {
+                    s.progress = (done, total);
+                }
+            }
+            Update::Waiting => {
+                if let Some(s) = self.acp_login(which).0 {
+                    s.waiting = true;
+                }
+            }
+        }
+    }
+
+    /// Turns Antigravity or Mistral Vibe on or off. Without it, a model that ran there moves back to ScoutCode.
+    fn save_acp(&mut self, which: &str, on: bool) {
+        if which == "antigravity" {
+            config::save_one("antigravityEnabled", json!(on));
+            self.cfg.antigravity_enabled = on;
+        } else {
+            config::save_one("vibeEnabled", json!(on));
+            self.cfg.vibe_enabled = on;
+        }
+        if !on && self.chat.provider == which {
+            self.choose_model("auto", "scoutcode");
+        }
+        self.keys_changed();
+    }
+
+    /// Signs out of Antigravity or Mistral Vibe, in its CLI too. Uninstalling deletes the CLI as well.
+    pub fn acp_sign_out(&mut self, which: &str, uninstall: bool) {
+        if which == "antigravity" {
+            crate::antigravity::sign_out();
+            self.save_acp("antigravity", false);
+            if uninstall {
+                crate::antigravity::remove_runtime();
+            }
+        } else {
+            crate::vibe::sign_out();
+            self.save_acp("vibe", false);
+            if uninstall {
+                crate::vibe::remove_runtime();
+            }
+        }
+    }
+
     /// Where signing in to Codex ("codex") or Claude Code ("claude") stands.
     fn agent_login(&mut self, which: &str) -> (&mut Option<SignIn>, &mut Option<String>) {
         if which == "codex" { (&mut self.login.codex, &mut self.login.codex_error) } else { (&mut self.login.claude, &mut self.login.claude_error) }
@@ -1964,6 +2063,8 @@ impl Core {
             "opencode" => &mut self.login.opencode,
             "grok" => &mut self.login.grok,
             "hermes" => &mut self.login.hermes,
+            "antigravity" => &mut self.login.antigravity,
+            "vibe" => &mut self.login.vibe,
             _ => &mut self.login.kiro,
         };
         if let Some(s) = slot.take() {
@@ -2218,10 +2319,32 @@ impl Core {
         true
     }
 
+    /// Turns the worktree on or off for the new chat on screen. Only before its first message, in a git repository.
+    pub fn set_worktree(&mut self, on: bool) {
+        let started = self.chat.items.iter().any(|i| matches!(i.kind, ItemKind::User { .. }));
+        self.worktree = on && !started && crate::worktree::in_repo(&self.chat.cwd) && crate::worktree::home_of(&self.chat.cwd).is_none();
+    }
+
     /// Starts a turn with the message.
     fn submit(&mut self, o: Outgoing) {
         if self.chat.agent.is_none() {
             return;
+        }
+        // The first message of a chat with the worktree on: the chat moves into a new worktree, then starts there.
+        if self.worktree && !self.chat.items.iter().any(|i| matches!(i.kind, ItemKind::User { .. })) {
+            self.worktree = false;
+            match crate::worktree::create(&self.chat.cwd) {
+                Ok(dir) => {
+                    self.change_project(dir);
+                    if self.chat.agent.is_none() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    self.chat.status = format!("Couldn't make a worktree: {e}");
+                    return;
+                }
+            }
         }
         let (cwd, files) = (self.chat.cwd.clone(), o.files.clone());
         let raw_text = o.text.clone();
@@ -2368,6 +2491,7 @@ impl Core {
             return;
         }
         self.background.retain(|c| c.session_id != id);
+        tools::kill_chat_shells(id);
         self.refresh_sessions();
         if current {
             self.new_chat();
@@ -2512,9 +2636,13 @@ impl Core {
         std::mem::swap(&mut self.chat, &mut chat);
         if chat.running {
             self.background.push(chat);
+        } else if chat.session_id != self.chat.session_id {
+            // Nothing can read its background shells now, so they don't run on unseen.
+            tools::kill_chat_shells(&chat.session_id);
         }
         self.refresh_sessions();
         self.chat_epoch += 1;
+        self.worktree = false;
         let cwd = self.chat.cwd.clone();
         self.enter_project(&cwd);
         // Chatbots work in the project that's open.
@@ -2544,7 +2672,8 @@ impl Core {
     // ---------- projects: named folders that chats belong to (by the folder they ran in) ----------
 
     fn project_index(&self, dir: &str) -> Option<usize> {
-        self.projects.iter().position(|p| session::same_dir(&p.path, dir))
+        let dir = crate::worktree::project_dir(dir);
+        self.projects.iter().position(|p| session::same_dir(&p.path, &dir))
     }
 
     /// The current folder's project name.
@@ -2559,6 +2688,8 @@ impl Core {
     /// Every folder Scout works in is a project; the first visit names it after the folder.
     /// Also remembers it as the folder to open next launch.
     fn enter_project(&mut self, dir: &str) {
+        // A worktree's chats belong to the repository it was made from.
+        let dir = &crate::worktree::project_dir(dir);
         if self.project_index(dir).is_none() {
             self.projects.push(config::Project { name: project_name(dir), path: dir.to_string() });
             self.save_projects();
@@ -2670,6 +2801,12 @@ impl Core {
     }
 
     pub fn answer_plan(&mut self, a: PlanAnswer) {
+        // Approving leaves plan mode for one that can carry the plan out: Code, unless Auto was asked for.
+        let a = match a {
+            PlanAnswer::Approve(m) if m == "auto" => PlanAnswer::Approve(m),
+            PlanAnswer::Approve(_) => PlanAnswer::Approve(config::DEFAULT_MODE.into()),
+            other => other,
+        };
         if let Some(p) = self.chat.plan.take() {
             let _ = p.reply.send(a);
         }
@@ -2913,15 +3050,32 @@ impl Core {
         crate::discord::update(activity);
     }
 
-    /// Experimental image generation: whether the agent gets generate_image, and which server image model it uses.
-    /// Applies from the next message, when the agent takes the settings.
-    pub fn set_images(&mut self, on: bool, model: Option<String>) {
+    /// Whether the agent may use the built-in browser. Applies from the next message, when the agent takes the settings.
+    pub fn set_browser_agent(&mut self, on: bool) {
+        self.cfg.browser_agent = on;
+        config::save_one("browserAgent", json!(on));
+    }
+
+    /// Image generation: whether the agent gets generate_image, whose key it runs on, and which of that provider's
+    /// image models it uses. Applies from the next message, when the agent takes the settings.
+    pub fn set_images(&mut self, on: bool, provider: Option<String>, model: Option<String>) {
         self.cfg.experimental_images = on;
+        if let Some(p) = provider.filter(|p| config::IMAGE_PROVIDERS.contains(&p.as_str())) {
+            self.cfg.image_provider = p;
+        }
         self.cfg.image_model = model.filter(|m| !m.is_empty());
         let mut m = serde_json::Map::new();
         m.insert("experimentalImages".into(), json!(on));
+        m.insert("imageProvider".into(), json!(self.cfg.image_provider));
         m.insert("imageModel".into(), json!(self.cfg.image_model));
         config::save_config(m);
+    }
+
+    /// Saves or forgets the OpenAI key image generation uses.
+    pub fn save_image_key(&mut self, key: Option<String>) {
+        let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+        config::save_one("imageKey", json!(key));
+        self.cfg.image_key = key;
     }
 
     /// Explore: whether it's on and the models it runs on, in order (none for its default). Each model's id is worked out
@@ -3312,7 +3466,7 @@ impl Core {
                 }
                 match c["answer"].as_str() {
                     Some("approve") => {
-                        let mode = s("mode").filter(|m| m == "default" || m == "acceptEdits").unwrap_or_else(|| "default".into());
+                        let mode = s("mode").unwrap_or_default();
                         self.answer_plan(PlanAnswer::Approve(mode));
                     }
                     Some("revise") => self.answer_plan(PlanAnswer::Revise(s("feedback").unwrap_or_default())),
@@ -3372,6 +3526,8 @@ impl Core {
             "copilot" => c.copilot_token.is_some(),
             "devin" => c.devin_enabled,
             "kiro" => c.kiro_enabled,
+            "antigravity" => c.antigravity_enabled,
+            "vibe" => c.vibe_enabled,
             "codex" => c.codex_enabled,
             "claude" => c.claude_enabled,
             "grok" => c.grok_signed_in || c.grok_key.is_some(),
@@ -3412,7 +3568,7 @@ impl Core {
             if let Some(id) = &m.kilo_id {
                 add("kilo", id, m.kilo_free, m.kilo_tier);
             }
-            for (p, on) in [("copilot", m.copilot_id.is_some()), ("devin", m.devin_id.is_some()), ("kiro", m.kiro_id.is_some()), ("grok", m.grok_id.is_some()), ("hermes", m.hermes_id.is_some())] {
+            for (p, on) in [("copilot", m.copilot_id.is_some()), ("devin", m.devin_id.is_some()), ("kiro", m.kiro_id.is_some()), ("antigravity", m.antigravity_id.is_some()), ("vibe", m.vibe_id.is_some()), ("grok", m.grok_id.is_some()), ("hermes", m.hermes_id.is_some())] {
                 if on {
                     add(p, &m.id, m.free, m.tier);
                 }
@@ -3550,6 +3706,8 @@ impl Core {
                 "copilotUser": cfg.copilot_user,
                 "devin": cfg.devin_enabled,
                 "kiro": cfg.kiro_enabled,
+                "antigravity": cfg.antigravity_enabled,
+                "vibe": cfg.vibe_enabled,
                 "codex": cfg.codex_enabled,
                 "claude": cfg.claude_enabled,
                 "opencode": cfg.opencode_enabled,
@@ -3569,8 +3727,9 @@ impl Core {
                 "fallbacks": cfg.fallbacks,
                 "agentRouters": cfg.agent_routers,
                 "experimentalImages": cfg.experimental_images,
-                "imageModel": cfg.image_model,
-                "explore": { "on": cfg.explore.on, "models": cfg.explore.models, "tokens": crate::explore::total(), "showFrom": crate::explore::SHOW_FROM },
+                "browserAgent": cfg.browser_agent,
+                "image": { "provider": cfg.image_provider, "model": cfg.image_model, "key": cfg.image_key.as_deref().map(mask_key) },
+                "explore": { "on": cfg.explore.on, "models": cfg.explore.models },
                 "games": cfg.games,
                 "music": cfg.music,
                 "local": cfg.local,
@@ -3598,6 +3757,8 @@ impl Core {
             ("modelsLoading", json!(self.models_loading)),
             ("additionalErrors", json!(self.additional_errors)),
             ("kiroModelsError", json!(self.kiro_models_error)),
+            ("antigravityModelsError", json!(self.antigravity_models_error)),
+            ("vibeModelsError", json!(self.vibe_models_error)),
             ("codexModelsError", json!(self.codex_models_error)),
             ("claudeModelsError", json!(self.claude_models_error)),
             ("opencodeModelsError", json!(self.opencode_models_error)),
@@ -3618,7 +3779,10 @@ impl Core {
                 json!({ "id": s.id, "cwd": s.cwd, "title": s.title, "ago": session::ago(s.updated), "updated": s.updated, "running": running, "waiting": waiting, "unread": live.is_some_and(|c| c.unread), "errored": s.errored, "done": done })
             }).collect::<Vec<_>>())),
             ("projects", json!(self.projects)),
-            ("chat", json!({ "id": self.chat.session_id, "cwd": self.chat.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch })),
+            ("chat", json!({
+                "id": self.chat.session_id, "cwd": self.chat.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch,
+                "git": crate::worktree::in_repo(&self.chat.cwd), "inWorktree": crate::worktree::home_of(&self.chat.cwd).is_some(), "worktree": self.worktree,
+            })),
             ("filesEpoch", json!(self.files_epoch)),
             ("focusEpoch", json!(self.focus_epoch)),
             ("login", json!({
@@ -3626,6 +3790,8 @@ impl Core {
                 "copilot": self.login.copilot.as_ref().map(SignIn::json), "copilotError": self.login.copilot_error,
                 "devin": self.login.devin.as_ref().map(SignIn::json), "devinError": self.login.devin_error,
                 "kiro": self.login.kiro.as_ref().map(SignIn::json), "kiroError": self.login.kiro_error,
+                "antigravity": self.login.antigravity.as_ref().map(SignIn::json), "antigravityError": self.login.antigravity_error,
+                "vibe": self.login.vibe.as_ref().map(SignIn::json), "vibeError": self.login.vibe_error,
                 "codex": self.login.codex.as_ref().map(SignIn::json), "codexError": self.login.codex_error,
                 "claude": self.login.claude.as_ref().map(SignIn::json), "claudeError": self.login.claude_error,
                 "opencode": self.login.opencode.as_ref().map(SignIn::json), "opencodeError": self.login.opencode_error,
@@ -3709,7 +3875,7 @@ impl Core {
             "efforts": EFFORTS,
             "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name, "needsKey": a.needs_key, "note": a.note, "keyUrl": a.key_url, "keyLink": a.key_link, "keyHint": a.key_hint })).collect::<Vec<_>>(),
             "kiloWarning": config::KILO_WARNING,
-            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "codex": crate::codex::PLAN_URL, "claude": crate::claude::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL, "hermes": crate::hermes::PLAN_URL },
+            "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "antigravity": crate::antigravity::PLAN_URL, "vibe": crate::vibe::PLAN_URL, "codex": crate::codex::PLAN_URL, "claude": crate::claude::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL, "hermes": crate::hermes::PLAN_URL },
             "languages": crate::instructions::LANGUAGES,
             "exe": std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "Scout.exe".into()),
         })
@@ -3754,7 +3920,7 @@ mod tests {
     #[test]
     fn mode_transitions_and_cycling() {
         let modes = MODES;
-        assert_eq!(modes, ["default", "acceptEdits", "auto", "plan", "yolo"]);
+        assert_eq!(modes, ["plan", "acceptEdits", "auto", "yolo"]);
         for (i, m) in modes.iter().enumerate() {
             let next = modes[(modes.iter().position(|x| x == m).unwrap() + 1) % modes.len()];
             assert_eq!(next, modes[(i + 1) % modes.len()]);
@@ -3787,6 +3953,8 @@ mod tests {
             copilot_user: None,
             devin_enabled: false,
             kiro_enabled: false,
+            antigravity_enabled: false,
+            vibe_enabled: false,
             codex_enabled: false,
             claude_enabled: false,
             opencode_enabled: false,
@@ -3819,7 +3987,10 @@ mod tests {
             last_version: None,
             fallbacks: Default::default(),
             experimental_images: false,
+            browser_agent: false,
+            image_provider: "openrouter".into(),
             image_model: None,
+            image_key: None,
             explore: Default::default(),
             games: Default::default(),
             music: Default::default(),

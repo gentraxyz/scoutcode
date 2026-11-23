@@ -370,6 +370,7 @@ impl Server {
             c.process_group(0);
         }
         let mut child = c.spawn().map_err(|e| format!("Couldn't start Devin: {e}"))?;
+        crate::tools::contain(child.id());
         let (stdin, stdout) = (child.stdin.take().ok_or("Devin has no input.")?, child.stdout.take().ok_or("Devin has no output.")?);
         let conn = Arc::new(Conn { stdin: Mutex::new(stdin), next: AtomicU64::new(1), waiting: Default::default() });
         let terminals: Terminals = Default::default();

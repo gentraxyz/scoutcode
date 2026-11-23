@@ -17,8 +17,6 @@ use std::time::SystemTime;
 /// The MCP server's name, and so the tool's name in Claude Code: `mcp__scout_explore__explore`.
 pub const SERVER: &str = "scout_explore";
 pub const TOOL: &str = "explore";
-/// The note on a new chat shows from this many tokens.
-pub const SHOW_FROM: u64 = 100_000;
 /// What it can call: the codebase only, nothing that writes or leaves the computer.
 const TOOLS: [&str; 4] = ["view", "list_dir", "glob", "grep"];
 const MAX_STEPS: usize = 40;
@@ -209,7 +207,7 @@ pub fn run(cfg: &Config, cwd: &str, question: &str, cancel: &Arc<AtomicBool>, on
                     seen.extend(viewed(&args));
                 }
                 let mut noop = |_: &str| {};
-                let mut ctx = Ctx { cwd, cancel, read_files: &mut read_files, on_progress: &mut noop };
+                let mut ctx = Ctx { cwd, chat: "", cancel, read_files: &mut read_files, on_progress: &mut noop };
                 let (out, summary, failed) = match tools::run(&name, &args, &mut ctx) {
                     Ok(r) => (r.output, r.summary, r.is_error),
                     Err(e) => (format!("Error: {e}"), Some(e.lines().next().unwrap_or("").chars().take(100).collect()), true),
@@ -382,16 +380,6 @@ pub fn record(tokens: u64) {
     TOTAL.store(total + tokens, Ordering::Relaxed);
 }
 
-/// The tokens explore runs have used so far, on every chat and app.
-pub fn total() -> u64 {
-    let mut read_at = READ_AT.lock().unwrap();
-    let modified = std::fs::metadata(stats_file()).and_then(|m| m.modified()).ok();
-    if modified.is_some() && *read_at != modified {
-        *read_at = modified;
-        TOTAL.store(read_stats().0, Ordering::Relaxed);
-    }
-    TOTAL.load(Ordering::Relaxed)
-}
 
 // ---------- for Claude Code and Codex ----------
 

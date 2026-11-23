@@ -88,6 +88,8 @@ pub enum Ev {
     Kiro(crate::kiro::Update),
     /// Why Kiro's models couldn't be listed, from the last time the lists were loaded.
     KiroModelsError(Option<String>),
+    /// How setting up Antigravity ("antigravity") or Mistral Vibe ("vibe") and signing in to it is going.
+    AcpSignIn(&'static str, crate::kiro::Update),
     /// How setting up Codex ("codex") or Claude Code ("claude") and signing in to it is going.
     AgentSignIn(&'static str, crate::node::Update),
     /// Why Codex's or Claude Code's models couldn't be listed, from the last time the lists were loaded.
@@ -162,7 +164,7 @@ pub struct Shared {
     pub mode: Mutex<String>,
     /// The id to send to `provider`.
     pub model: Mutex<String>,
-    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id.
+    /// "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "antigravity", "vibe", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id.
     pub provider: Mutex<String>,
     pub effort: Mutex<String>,
     pub cancel: Arc<AtomicBool>,
@@ -478,6 +480,28 @@ static KIRO: AcpCli = AcpCli {
     forget: |_| {},
 };
 
+static ANTIGRAVITY: AcpCli = AcpCli {
+    tool: "antigravity",
+    name: "Antigravity",
+    installed: crate::antigravity::installed,
+    ensure_runtime: crate::antigravity::ensure_runtime,
+    start: crate::antigravity::start,
+    explain: crate::antigravity::explain,
+    no_reply: "Antigravity finished without replying. Try rephrasing, or say \"continue\".",
+    forget: |_| {},
+};
+
+static VIBE: AcpCli = AcpCli {
+    tool: "vibe",
+    name: "Mistral Vibe",
+    installed: crate::vibe::installed,
+    ensure_runtime: crate::vibe::ensure_runtime,
+    start: crate::vibe::start,
+    explain: crate::vibe::explain,
+    no_reply: "Mistral Vibe finished without replying. Try rephrasing, or say \"continue\".",
+    forget: |_| {},
+};
+
 static CODEX: AcpCli = AcpCli {
     tool: "codex",
     name: "Codex",
@@ -669,7 +693,7 @@ impl Agent {
             let content = self.acp_run(&KIRO, messages, false, h)?;
             return Ok(StreamResult { content, ..Default::default() });
         }
-        for cli in [&CODEX, &CLAUDE] {
+        for cli in [&ANTIGRAVITY, &VIBE, &CODEX, &CLAUDE] {
             if provider == cli.tool {
                 let content = self.acp_run(cli, messages, false, h)?;
                 return Ok(StreamResult { content, ..Default::default() });
@@ -854,7 +878,14 @@ impl Agent {
         if self.cfg.experimental_images {
             all.push(tools::image_spec());
         }
+        if self.cfg.browser_agent {
+            all.push(crate::browser::activation_spec());
+        }
         all.extend(crate::mcp_client::hub().specs());
+        // Last, so turning the browser on only adds to the end of the list, and only once per chat.
+        if self.cfg.browser_agent && crate::browser::active(&self.session.messages) {
+            all.extend(crate::browser::specs());
+        }
         all
     }
 
@@ -910,7 +941,7 @@ impl Agent {
             }
         }
         let mut noop = |_: &str| {};
-        let ctx = Ctx { cwd: &self.session.cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
+        let ctx = Ctx { cwd: &self.session.cwd, chat: &self.session.id, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
         // What an MCP tool is about to do is all in its arguments.
         let (label, preview) = if tools::is_mcp(name) {
             (name.trim_start_matches(tools::MCP_PREFIX).replacen("__", " / ", 1), Some(Display::Text(serde_json::to_string_pretty(args).unwrap_or_default())))
@@ -933,6 +964,32 @@ impl Agent {
             }
         }
         answer
+    }
+
+    /// A browser action that would submit, buy, send or delete something: the user's OK first, outside full access.
+    /// None when it may go ahead, or the result that says it was denied.
+    fn ask_browser(&mut self, name: &str, what: String, h: &Hooks) -> Option<ToolResult> {
+        let mode = self.shared.mode();
+        if mode == "yolo" {
+            return None;
+        }
+        let fb = if mode == "plan" {
+            self.read_only_note.to_string()
+        } else {
+            let (tx, rx) = channel();
+            let reason = Some("It may submit, buy, send or delete something on the website.".to_string());
+            h.send(Ev::AskPermission(PermissionRequest { tool: name.to_string(), label: what, preview: None, prefix: None, reason }, tx));
+            match rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())) {
+                PermissionAnswer::Deny(fb) => fb,
+                _ => return None,
+            }
+        };
+        Some(ToolResult {
+            output: format!("The user denied this browser action.{}", if fb.is_empty() { " Do not retry it unchanged; ask the user how to proceed.".to_string() } else { format!(" They said: {fb}") }),
+            is_error: true,
+            summary: Some("denied".into()),
+            display: Some(Display::Text(denied_display(name, &fb))),
+        })
     }
 
     pub fn run_tool(&mut self, call: &ToolCall, h: &Hooks) -> ToolResult {
@@ -1027,6 +1084,23 @@ impl Agent {
             result.display = Some(Display::Agent { steps, answer });
             return result;
         }
+        if crate::browser::is_tool(name) {
+            if !self.cfg.browser_agent {
+                return ToolResult::err("The built-in browser is off for agents. The user can turn it on in Settings > Browser.", "off");
+            }
+            if name != "browser" && !crate::browser::active(&self.session.messages) {
+                return ToolResult::err("Call browser first to turn the browser on.", "not on");
+            }
+            // browser_eval is asked about like a command, below; the rest only when they'd submit, buy, send or delete.
+            if name != "browser_eval" {
+                if let Some(what) = crate::browser::risky(name, args) {
+                    if let Some(denied) = self.ask_browser(name, what, h) {
+                        return denied;
+                    }
+                }
+                return crate::browser::run(name, args, &self.shared.cancel);
+            }
+        }
 
         // Memory edited with the ordinary file tools gets update_memory's check too.
         if tools::permission(name) == Permission::Edit && name != "update_memory" {
@@ -1065,18 +1139,21 @@ impl Agent {
         if tools::is_mcp(name) {
             return crate::mcp_client::hub().call(name, args, &self.shared.cancel);
         }
+        if name == "browser_eval" {
+            return crate::browser::run(name, args, &self.shared.cancel);
+        }
         if name == "web_search" {
             return tools::web_search(&self.cfg, args).unwrap_or_else(|e| ToolResult::err(e.clone(), e.chars().take(100).collect::<String>()));
         }
         if name == "generate_image" {
             if !self.cfg.experimental_images {
-                return ToolResult::err("Image generation is off. The user can turn it on in Settings > Experimental.", "off");
+                return ToolResult::err("Image generation is off. The user can turn it on in Settings > Image generation.", "off");
             }
             return tools::generate_image(&self.cfg, args, &self.session.cwd).unwrap_or_else(|e| ToolResult::err(e.clone(), e.chars().take(100).collect::<String>()));
         }
         let cwd = self.session.cwd.clone();
         let mut progress = |t: &str| h.send(Ev::ToolProgress { id: id.to_string(), text: t.to_string() });
-        let mut ctx = Ctx { cwd: &cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut progress };
+        let mut ctx = Ctx { cwd: &cwd, chat: &self.session.id, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut progress };
         let mut result = match tools::run(name, args, &mut ctx) {
             Ok(r) => r,
             Err(_) if self.cancelled() => ToolResult::err("Interrupted by the user.", "interrupted"),
@@ -1170,7 +1247,7 @@ impl Agent {
             tools::web_search(&self.cfg, &args)
         } else {
             let mut noop = |_: &str| {};
-            let mut ctx = Ctx { cwd, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
+            let mut ctx = Ctx { cwd, chat: &self.session.id, cancel: &self.shared.cancel, read_files: &mut self.read_files, on_progress: &mut noop };
             tools::run(n, &args, &mut ctx)
         };
         let (out, summary, is_error) = match r {
@@ -1586,6 +1663,7 @@ impl Agent {
         // A message sent while it works stops its prompt after the step it's on, and is its next prompt: `stepped` is a
         // step just ended, `interrupted` the stop asked for.
         let (mut stepped, mut interrupted) = (false, false);
+        let mut retries = 0;
         let result = loop {
             if self.cancelled() {
                 run.abort();
@@ -1670,21 +1748,48 @@ impl Agent {
                     self.session.messages.push(Message::Tool { tool_call_id: id, content: cap_output(if out.is_empty() { label } else { out }) });
                     save_session(&mut self.session);
                 }
-                CliMsg::Permission { id, kind, title, options } => {
+                CliMsg::Permission { id, kind, title, command, options } => {
                     let req_tool = if kind == "execute" || title.eq_ignore_ascii_case("terminal") { "bash" } else if kind == "edit" { "edit_file" } else { tool };
                     let allow = main
                         && match self.shared.mode().as_str() {
                             "yolo" => true,
                             "plan" => false,
                             "acceptEdits" if kind == "edit" => true,
-                            _ => {
-                                let (tx, rx) = channel();
-                                h.send(Ev::AskPermission(PermissionRequest { tool: req_tool.into(), label: title, preview: None, prefix: None, reason: None }, tx));
-                                !matches!(rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())), PermissionAnswer::Deny(_))
+                            mode => {
+                                // Codex's own reviewer is off (see `codex::mode_for`): in auto mode Scout's checks its
+                                // commands instead, as it checks its own, and only asks about the ones it holds.
+                                let mut reason = None;
+                                let mut cleared = false;
+                                if let Some(cmd) = command.as_ref().filter(|_| mode == "auto" && tool == "codex") {
+                                    h.send(Ev::Status("Checking the command with Jev…".into()));
+                                    match api::review_command(&self.cfg, cmd, &cwd, tools::shell_name()) {
+                                        Ok(None) => cleared = true,
+                                        Ok(Some(r)) => reason = Some(r),
+                                        Err(e) => reason = Some(format!("The safety check failed ({}), so it needs your OK.", e.message.chars().take(120).collect::<String>())),
+                                    }
+                                }
+                                cleared || {
+                                    let (tx, rx) = channel();
+                                    h.send(Ev::AskPermission(PermissionRequest { tool: req_tool.into(), label: title, preview: None, prefix: None, reason }, tx));
+                                    !matches!(rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())), PermissionAnswer::Deny(_))
+                                }
                             }
                         };
                     refused |= !allow;
                     run.reply_permission(&id, allow, &options);
+                }
+                // Mistral Vibe retries a refused request forever without saying so in the chat. A few rate-limit retries
+                // in a row mean the account's limit, so the turn stops with that rather than hanging.
+                CliMsg::Retrying { category, detail } => {
+                    retries += 1;
+                    let why = if detail.is_empty() { category.replace('_', " ") } else { detail.clone() };
+                    if category.contains("rate") && retries >= 3 {
+                        run.abort();
+                        break Err(fail((cli.explain)(&format!("rate limit: {name}'s model kept refusing the request ({why})"))));
+                    }
+                    if main {
+                        h.send(Ev::Status(format!("{name} is retrying ({why})…")));
+                    }
                 }
                 CliMsg::Idle(stop) => {
                     // Grok ends its turn as cancelled when a tool is refused, which isn't the user stopping it.
@@ -2115,7 +2220,7 @@ impl Agent {
             save_session(&mut self.session);
             return r;
         }
-        for cli in [&KIRO, &CODEX, &CLAUDE, &OPENCODE, &GROK] {
+        for cli in [&KIRO, &ANTIGRAVITY, &VIBE, &CODEX, &CLAUDE, &OPENCODE, &GROK] {
             if *self.shared.provider.lock().unwrap() == cli.tool {
                 self.session.model = self.shared.model.lock().unwrap().clone();
                 self.session.provider = Some(self.shared.provider.lock().unwrap().clone());

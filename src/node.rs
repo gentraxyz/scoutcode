@@ -166,6 +166,7 @@ impl Agent {
                 .stderr(Stdio::piped());
             no_window(&mut c);
             let mut child = c.spawn().map_err(|e| format!("Couldn't install {name}: {e}"))?;
+            crate::tools::contain(child.id());
             let mut said = String::new();
             if let Some(mut err) = child.stderr.take() {
                 let _ = err.read_to_string(&mut said);

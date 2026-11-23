@@ -126,6 +126,9 @@ fn spawn(cwd: &str, rows: u16, cols: u16) -> Result<Session, String> {
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    if let Some(pid) = child.process_id() {
+        crate::tools::contain(pid);
+    }
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;

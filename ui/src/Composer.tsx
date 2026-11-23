@@ -1,14 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { act, invoke, type Permission } from './api';
-import { LevelPicker, type Level } from './Levels';
 import { ModelChip } from './ModelMenu';
 import { FreeQuotaChip, meterText, PlanLimits, usePlanLimit, usedShare } from './Quota';
 import { Markdown } from './Transcript';
-import { focusComposer, ui, useCore, useUi, useView } from './store';
+import { ui, useCore, useUi, useView } from './store';
 import { CodeBlock, Icon, IconButton, Popover, ShowDisplay, Spinner, TodoList } from './widgets';
 import { WorkingOn } from './Cloud';
-
-const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** How far a ScoutCode model on Modal has got starting, from the status line api::modal_status_line writes, or null. */
 const modalProgress = (status: string): number | null => {
@@ -109,8 +106,8 @@ function PlanCard() {
       <div className="card-head"><b className="strong">Scout's plan</b><span className="small dim">Review before it starts</span></div>
       <div className="card-scroll tall"><Markdown text={plan} /></div>
       <div className="row wrap">
-        <button type="button" className="button primary" onClick={() => act('approvePlan', { mode: 'default' })}>Approve</button>
-        <button type="button" className="button" onClick={() => act('approvePlan', { mode: 'acceptEdits' })}>Approve, accept edits</button>
+        <button type="button" className="button primary" onClick={() => act('approvePlan', { mode: 'acceptEdits' })}>Approve</button>
+        <button type="button" className="button" onClick={() => act('approvePlan', { mode: 'auto' })}>Approve, Auto</button>
         <input className="input feedback" placeholder="what to change" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
         <button type="button" className="button ghost" onClick={() => { act('revisePlan', { feedback: feedback.trim() }); setFeedback(''); }}>Keep planning</button>
       </div>
@@ -373,9 +370,6 @@ function InputBox() {
   };
 
   const ready = !!input.trim() || attachments.length > 0;
-  const effort = useView('effort');
-  const efforts = useCore((s) => s.statics.efforts);
-  const totals = useView('totals').totals;
   return (
     <div className={`input-box ${running ? 'working' : ''}`}>
       {attachments.length > 0 && (
@@ -426,28 +420,11 @@ function InputBox() {
         </div>
       )}
       <div className="row composer-controls">
-        <button type="button" className="round attach" title="Attach files (or drop them on the window, or type @)" aria-label="Attach files" onClick={async () => {
-          const files = await invoke<string[]>('pick_attachments', { cwd: chat.cwd });
-          const had = ui.get().attachments;
-          ui.set({ attachments: [...had, ...files.filter((f) => !had.includes(f))] });
-          focusComposer();
-        }}><Icon name="plus" /></button>
+        <button type="button" className="round attach" title="Attach files (or drop them on the window, or type @)" aria-label="Attach files" onClick={() => ui.set({ pickingFiles: true })}><Icon name="plus" /></button>
         <ComposerSettings />
         <span className="grow" />
         <ModelChip />
-        <LevelPicker
-          title="Reasoning Effort"
-          tip="Reasoning effort"
-          tone="reason"
-          less="Faster"
-          more="Smarter"
-          align="end"
-          levels={efforts.map((e) => ({ id: e, label: capital(e) }))}
-          value={effort}
-          onChange={(id) => act('setEffort', { effort: id })}
-        />
         <FreeQuotaChip />
-        {totals.balance !== undefined && <span className="tiny dim nowrap">balance ${totals.balance.toFixed(2)}</span>}
         <UsageRing />
         {(ready || !running) && (
           <button type="button" className={`round send ${ready ? 'ready' : ''}`} disabled={!ready} aria-label="Send" title={running ? 'Queue (Enter) · Ctrl+click or Ctrl+Enter to send it now' : undefined} onClick={(e) => send(e.ctrlKey)}><Icon name="arrowUp" /></button>
@@ -462,6 +439,7 @@ function InputBox() {
 function UsageRing() {
   const { totals, context } = useView('totals');
   const { autoCompactTokens } = useView('cfg');
+  const started = useCore((s) => s.items.length > 0);
   // A plan with limits (Claude, Codex, Grok): how much of the window closest to running out is used. Otherwise the
   // share of the funds this session has spent, grey until the server reports a balance.
   const plan = usePlanLimit();
@@ -470,13 +448,14 @@ function UsageRing() {
   const low = plan !== null && frac >= 0.9;
   const c = 2 * Math.PI * 6;
   const limit = Math.max(1, autoCompactTokens);
+  if (!plan && !started && b === undefined) return null;
   const rows: [string, string][] = [
     ['Cost', `$${totals.cost.toFixed(4)}`], ['Requests', String(totals.requests)], ['Prompt tokens', `${totals.promptTokens} (${totals.cachedTokens} cached)`],
     ['Completion tokens', String(totals.completionTokens)], ['Context', `${(context / 1000).toFixed(1)}k tokens · ${Math.min(100, (context / limit) * 100).toFixed(0)}% of auto-compact`],
   ];
   return (
     <Popover align="end" side="top" width={280} trigger={(_, toggle) => (
-      <button type="button" className="usage-ring" title={plan ? `${plan.top.label}: ${meterText(plan.top)}` : 'Usage this session'} onClick={() => { if (plan) act('quotaRefresh'); toggle(); }}>
+      <button type="button" className="usage-ring" title={plan ? `${plan.top.label}: ${meterText(plan.top)}` : 'Usage this session'} aria-label="Usage" onClick={() => { if (plan) act('quotaRefresh'); toggle(); }}>
         <svg width={16} height={16} viewBox="0 0 16 16">
           <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className="ring-track" />
           {frac > 0 && <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className={`ring-fill ${low ? 'low' : ''}`} strokeDasharray={`${frac * c} ${c}`} transform="rotate(-90 8 8)" />}
@@ -486,21 +465,19 @@ function UsageRing() {
       {() => (
         <div className="stack pad">
           {plan && <PlanLimits snapshots={plan.snapshots} />}
-          <b className="strong">Usage this session</b>
-          {rows.map(([k, v]) => <div key={k} className="stat-row wide-key"><span className="small dim">{k}</span><span className="small">{v}</span></div>)}
+          {b !== undefined && <div className="stat-row wide-key"><span className="small dim">Balance</span><span className="small">${b.toFixed(2)}</span></div>}
+          {started && <b className="strong">Usage this session</b>}
+          {started && rows.map(([k, v]) => <div key={k} className="stat-row wide-key"><span className="small dim">{k}</span><span className="small">{v}</span></div>)}
         </div>
       )}
     </Popover>
   );
 }
 
-/** Permission modes from the most caution to the most freedom, so right on the slider is freer. */
-const SECURITY_ORDER = ['plan', 'default', 'acceptEdits', 'auto', 'yolo'];
-
-function securityLevels(modes: { id: string; label: string; about?: string }[]): Level[] {
-  const rank = (id: string) => { const i = SECURITY_ORDER.indexOf(id); return i < 0 ? SECURITY_ORDER.length : i; };
-  return [...modes].sort((a, b) => rank(a.id) - rank(b.id)).map((m) => ({ id: m.id, label: m.label, about: m.about }));
-}
+/** Permission modes from the most caution to the most freedom, top to bottom in the list. */
+const SECURITY_ORDER = ['plan', 'acceptEdits', 'auto', 'yolo'];
+/** Each mode's icon: Chat, Code, Auto, Accept All. */
+const MODE_ICONS: Record<string, string> = { plan: 'chat', acceptEdits: 'code', auto: 'sparkle', yolo: 'bolt' };
 
 function Footer() {
   const { running, status, stopped } = useView('run');
@@ -526,19 +503,43 @@ function Footer() {
   );
 }
 
+/** The permission mode: a chip with the mode's icon and name, opening a list of the modes to pick from. */
 function ComposerSettings() {
   const mode = useView('mode');
   const { modes } = useCore((s) => s.statics);
-  return <LevelPicker
-    title="Permissions"
-    tip="Permission mode (Shift+Tab)"
-    tone="free"
-    less="Safer"
-    more="Freer"
-    levels={securityLevels(modes)}
-    value={mode}
-    onChange={(id) => act('setMode', { mode: id })}
-  />;
+  const rank = (id: string) => { const i = SECURITY_ORDER.indexOf(id); return i < 0 ? SECURITY_ORDER.length : i; };
+  const list = [...modes].filter((m) => SECURITY_ORDER.includes(m.id)).sort((a, b) => rank(a.id) - rank(b.id));
+  const cur = list.find((m) => m.id === mode);
+  return (
+    <Popover align="start" side="top" width={264} trigger={(open, toggle) => (
+      <button type="button" className={`chip mode-chip ${mode === 'yolo' ? 'free' : ''} ${open ? 'open' : ''}`} title="Permission mode (Shift+Tab)" onClick={toggle}>
+        <Icon name={MODE_ICONS[mode] ?? 'shield'} size={14} />
+        <span className="ellipsis">{cur?.label ?? mode}</span>
+      </button>
+    )}>
+      {(close) => (
+        <div className="menu mode-menu" role="menu" aria-label="Permissions">
+          {list.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={m.id === mode}
+              className={`menu-item mode-item ${m.id === mode ? 'selected' : ''} ${m.id === 'yolo' ? 'free' : ''}`}
+              onClick={() => { if (m.id !== mode) act('setMode', { mode: m.id }); close(); }}
+            >
+              <Icon name={MODE_ICONS[m.id] ?? 'shield'} />
+              <span className="grow mode-item-text">
+                <span className="ellipsis">{m.label}</span>
+                {m.about && <span className="tiny dim ellipsis">{m.about}</span>}
+              </span>
+              {m.id === mode && <Icon name="check" size={14} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </Popover>
+  );
 }
 
 export function Composer() {

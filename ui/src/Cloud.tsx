@@ -2,13 +2,13 @@
 // that switches between this PC's projects and cloud repositories, the New project question, and the account's two
 // Epsilon computers in the sidebar and on their own page. The data lives in epsilon.ts.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { act, openExternal } from './api';
+import { act, openExternal, projectDir } from './api';
 import {
   cloud, createTask, ep, KIND_NAME, leaveCloud, LIVE, loadMachines, loadModels, loadRepos, newCloudChat, openCloudTask, repoShort,
   replyTask, setCloudDone, setMachine, setModel, STATUS, stopMachine, stopTask, useCloud, useSite, vmStateText, type CloudModel, type Machine, type Task, type TaskEvent, type VmKind,
 } from './epsilon';
 import { EpsilonScreen, type ScreenHost } from './epsilon/EpsilonScreen';
-import { focusComposer, ui, useUi, useView } from './store';
+import { focusComposer, ui, useCore, useUi, useView } from './store';
 import { Markdown, toolTitle } from './Transcript';
 import { CopyIconButton, Icon, IconButton, MenuItem, Modal, Popover, SectionLabel, Spinner } from './widgets';
 import { AsciiBackdrop } from './AsciiBackdrop';
@@ -133,7 +133,7 @@ export function EpsilonSidebar() {
       </div>
       {!hasKey ? (
         <button type="button" className="vm-row" onClick={() => act('browserLogin')}>
-          <Icon name="cloud" size={15} /><span className="grow ellipsis small">Sign in to use Epsilon</span>
+          <Icon name="epsilon" size={15} /><span className="grow ellipsis small">Sign in to use Epsilon</span>
         </button>
       ) : !info && error ? (
         <div className="tiny dim vm-error" title={error}>{error}</div>
@@ -176,25 +176,26 @@ export function WorkingOn({ disabled }: { disabled?: boolean }) {
   const inCloud = !!at;
   const cloudRepo = at?.taskId ? task?.repo ?? null : repos?.repos.find((r) => r.id === (at?.repoId ?? repoId))?.name ?? null;
   const name = inCloud ? (cloudRepo ? repoShort(cloudRepo) : 'a repository') : chat.project;
+  // A new chat in a git repository can go in its own worktree; once it has started in one, the chip says so.
+  const started = useCore((s) => s.items.length > 0);
+  const worktreeChip = !inCloud && (chat.inWorktree || (chat.git && !started));
   return (
     <span className="working-on">
-      <span className="tiny dim">Working on</span>
       <Popover width={280} side="top" trigger={(open, toggle) => (
         <button type="button" className={`chip working-chip ${open ? 'open' : ''}`} disabled={disabled} title={inCloud ? 'In the cloud on Epsilon · click to switch' : `${chat.cwd} · click to switch`} onClick={() => { if (!open && hasKey) loadRepos(); toggle(); }}>
-          <Icon name={inCloud ? 'cloud' : 'folder'} size={13} />
+          <Icon name={inCloud ? 'cloud' : 'folderOpen'} size={14} />
           <span className="ellipsis">{name}</span>
           {inCloud && <CloudBadge />}
-          <Icon name="chevronDown" size={12} />
         </button>
       )}>
         {(close) => (
           <div className="working-menu">
             <div className="tiny dim menu-label">On this PC</div>
             {projects.map((p) => (
-              <MenuItem key={p.path} icon="folder" selected={!inCloud && norm(p.path) === norm(chat.cwd)} onClick={() => {
+              <MenuItem key={p.path} icon="folder" selected={!inCloud && norm(p.path) === norm(projectDir(chat.cwd))} onClick={() => {
                 close();
                 leaveCloud();
-                if (norm(p.path) !== norm(chat.cwd)) act('changeProject', { dir: p.path });
+                if (norm(p.path) !== norm(projectDir(chat.cwd))) act('changeProject', { dir: p.path });
                 focusComposer();
               }}>{p.name}</MenuItem>
             ))}
@@ -220,6 +221,19 @@ export function WorkingOn({ disabled }: { disabled?: boolean }) {
           </div>
         )}
       </Popover>
+      {worktreeChip && (
+        <button
+          type="button"
+          className={`chip working-chip worktree-chip ${chat.worktree || chat.inWorktree ? 'on' : ''}`}
+          disabled={disabled || chat.inWorktree}
+          aria-pressed={!!(chat.worktree || chat.inWorktree)}
+          title={chat.inWorktree ? `This chat runs in its own worktree: ${chat.cwd}` : chat.worktree ? 'On: the first message makes a new git worktree and branch for this chat · click to turn off' : 'Run this chat in its own git worktree, on a new branch'}
+          onClick={() => act('setWorktree', { on: !chat.worktree })}
+        >
+          <Icon name="layers" size={14} />
+          <span>Worktree</span>
+        </button>
+      )}
     </span>
   );
 }
@@ -582,7 +596,7 @@ export function VmPage() {
   if (!hasKey) {
     return (
       <div className="vm-page"><div className="vm-card">
-        <Icon name="cloud" size={32} />
+        <Icon name="epsilon" size={32} />
         <b className="strong big">Epsilon computers</b>
         <p className="small dim">Linux computers in the cloud, yours to use from Scout. Sign in to your ScoutCode account to use them.</p>
         <button type="button" className="button primary" onClick={() => act('browserLogin')}>Sign in with your browser</button>

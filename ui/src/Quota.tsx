@@ -7,7 +7,7 @@ import { Icon, Popover } from './widgets';
 const HOW: Record<string, 'asks' | 'answers' | 'never'> = {
   scoutcode: 'asks', openrouter: 'asks', claude: 'asks', codex: 'asks', grok: 'asks',
   copilot: 'answers', nvidia: 'answers', kilo: 'answers', hermes: 'answers',
-  devin: 'never', kiro: 'never', opencode: 'never',
+  devin: 'never', kiro: 'never', antigravity: 'never', vibe: 'never', opencode: 'never',
 };
 
 const TIERS: Record<string, string> = { guest: 'Without an account', desktop: 'Without an account', starter: 'Free account', paying: 'Account with money' };
@@ -109,7 +109,7 @@ export function FreeQuotaChip() {
               {s.meters.map((m) => <MeterRow key={m.label} m={m} now={now} />)}
             </div>
           ))}
-          <button type="button" className="link small quota-all" onClick={() => { close(); ui.set({ settings: 'usage' }); }}>Every provider's limits</button>
+          <button type="button" className="link small quota-all" onClick={() => { close(); ui.set({ page: 'usage' }); }}>Every provider's limits</button>
         </div>
       )}
     </Popover>
@@ -134,6 +134,21 @@ export function usePlanLimit(): { top: QuotaMeter; snapshots: QuotaSnapshot[] } 
 
 /** Share of a meter used, 0 to 1. */
 export const usedShare = (m: QuotaMeter) => 1 - (share(m) ?? 1);
+
+/** How much is used, 0 to 1, as the composer's ring and the rail's gauge show it: on a plan with limits (Claude, Codex,
+ *  Grok), the window closest to running out; otherwise the share of the funds this session has spent. `low` is a plan
+ *  at 90% or more. `tip` says it in words. */
+export function useUsageShare(): { frac: number; low: boolean; tip: string } {
+  const plan = usePlanLimit();
+  const { totals } = useView('totals');
+  const b = totals.balance;
+  if (plan) {
+    const frac = usedShare(plan.top);
+    return { frac, low: frac >= 0.9, tip: `${plan.top.label}: ${meterText(plan.top)}` };
+  }
+  const frac = b !== undefined && b >= 0 && totals.cost + b > 0 ? Math.min(1, totals.cost / (totals.cost + b)) : 0;
+  return { frac, low: false, tip: b !== undefined && b >= 0 ? `${usd(b)} left` : '' };
+}
 
 /** Every meter of a provider's snapshots, for a popover. */
 export function PlanLimits({ snapshots }: { snapshots: QuotaSnapshot[] }) {
@@ -167,6 +182,8 @@ function linkedProviders(cfg: View['cfg'], additional: { id: string; name: strin
     ['kilo', 'Kilo Code', cfg.kilo],
     ['devin', 'Devin', cfg.devin],
     ['kiro', 'Kiro', cfg.kiro],
+    ['antigravity', 'Antigravity', cfg.antigravity],
+    ['vibe', 'Mistral Vibe', cfg.vibe],
     ['grok', 'Grok Build', cfg.grokSignedIn || !!cfg.grokKey],
     ['hermes', 'Hermes', cfg.hermesSignedIn || !!cfg.hermesKey],
   ];

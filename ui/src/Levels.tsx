@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Icon, Popover } from './widgets';
+import { Popover } from './widgets';
 
 /** One stop on a level slider, from least to most. */
 export type Level = { id: string; label: string; about?: string };
@@ -38,9 +38,7 @@ export function LevelPicker({ title, tip, levels, value, onChange, less, more, t
   return (
     <Popover align={align} side="top" width={268} trigger={(open, toggle) => (
       <button type="button" className={`chip level-chip ${look} ${open ? 'open' : ''}`} title={tip} onClick={toggle}>
-        <LevelBars count={last} filled={at} />
         <span className="ellipsis">{cur?.label ?? shown}</span>
-        <Icon name="chevronDown" size={12} />
       </button>
     )}>
       {(close) => (
@@ -92,14 +90,5 @@ function LevelRange({ title, last, at, label, onPick, onDone }: { title: string;
       onChange={(e) => onPick(Number(e.target.value))}
       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onDone(); } }}
     />
-  );
-}
-
-/** Little bars of rising height, `filled` of `count` lit: the level at a glance on the chip. */
-function LevelBars({ count, filled }: { count: number; filled: number }) {
-  return (
-    <span className="level-bars" aria-hidden>
-      {Array.from({ length: count }, (_, i) => <span key={i} className={i < filled ? 'on' : ''} style={{ height: 5 + (i * 7) / Math.max(1, count - 1) }} />)}
-    </span>
   );
 }

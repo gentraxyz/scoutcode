@@ -243,6 +243,7 @@ impl StdioLink {
         }
         crate::tools::no_window(&mut c);
         let mut child = c.spawn().map_err(|e| format!("Could not start {}: {e}", cfg.command))?;
+        crate::tools::contain(child.id());
         let stdout = child.stdout.take().ok_or("No output pipe")?;
         let errors = child.stderr.take().ok_or("No error pipe")?;
         let stdin = Arc::new(Mutex::new(child.stdin.take()));

@@ -411,12 +411,12 @@ mod tests {
         let mut progress = |_: &str| {};
         let patch = serde_json::json!({"input": "*** Begin Patch\n*** Update File: a.txt\n one\n-two\n+2\n*** Add File: new/b.md\n+hi\n*** Delete File: old.txt\n*** End Patch"});
         {
-            let mut ctx = Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut progress };
+            let mut ctx = Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut progress };
             assert!(run(&patch, &mut ctx).unwrap_err().contains("view tool"), "files must be read first");
         }
         read.insert(dir.join("a.txt"));
         read.insert(dir.join("old.txt"));
-        let mut ctx = Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut progress };
+        let mut ctx = Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut progress };
         // One bad hunk and nothing is written.
         let bad = serde_json::json!({"input": "*** Begin Patch\n*** Delete File: old.txt\n*** Update File: a.txt\n-nope\n+x\n*** End Patch"});
         assert!(run(&bad, &mut ctx).is_err());

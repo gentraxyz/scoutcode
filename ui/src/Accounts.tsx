@@ -7,6 +7,8 @@ import scoutClassic from '../../assets/icon.png';
 
 export const COPILOT_NOTE = "Uses your own GitHub account's Copilot plan, from this PC. Each request counts against that plan's allowance, so don't share an account or run it unattended at volume. Signing in downloads about 150 MB.";
 export const KIRO_NOTE = "Uses your own Kiro account and plan, from this PC, so your chats go to AWS and its model providers, and Kiro's free plan allows 50 credits a month. Don't share an account. Kiro runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. Signing in downloads about 330 MB and shares the sign-in with any other Kiro CLI on this PC.";
+export const ANTIGRAVITY_NOTE = "Uses your own Google account's Antigravity plan, from this PC, so your chats go to Google and count against that account's limits. Scout runs Google's own Antigravity CLI, from the official ACP registry: it does the Google sign-in and keeps the login, and every request to Google comes from it, so Scout never sees the login or calls Google itself. Google decides which apps may drive that CLI, and can limit or turn off accounts it thinks break its terms. Don't share an account. Antigravity runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits. Signing in downloads about 100 MB.";
+export const VIBE_NOTE = "Uses your own Mistral account, from this PC, so your chats go to Mistral and count against that account's plan. Signing in goes through Mistral AI Studio in your browser, and the key it makes is kept by Vibe and shared with any other Mistral Vibe on this PC. Its settings, agents and skills in ~/.vibe apply here too. Mistral Vibe runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. Signing in downloads about 95 MB.";
 export const CLAUDE_NOTE = "Uses your own Claude Pro or Max plan, from this PC, so your chats go to Anthropic and count against that plan's limits. Don't share an account. Claude Code runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode lets it act without asking. It doesn't load a project's Claude Code settings, hooks or MCP servers. Signing in installs Node.js and Claude Code, about 450 MB, and keeps the sign-in apart from any other Claude Code on this PC.";
 export const CODEX_NOTE = "Uses your own ChatGPT plan, from this PC, so your chats go to OpenAI and count against that plan's Codex limits. Don't share an account. Codex runs its own tools: Scout shows them and asks first, but Scout's undo doesn't cover its edits, and Yolo mode gives it full access. Signing in installs Node.js and Codex, about 500 MB, and keeps the sign-in apart from any other Codex on this PC.";
 export const OPENCODE_WARNING = "Some of OpenCode's free models may keep your prompts or use them to improve the model, so don't send them anything private.";
@@ -137,6 +139,8 @@ const SIGN_INS = {
   copilot: { name: 'Copilot', button: 'Sign in with GitHub' },
   devin: { name: 'Devin', button: 'Sign in to Devin' },
   kiro: { name: 'Kiro', button: 'Sign in to Kiro' },
+  antigravity: { name: 'Antigravity', button: 'Sign in with Google' },
+  vibe: { name: 'Mistral Vibe', button: 'Sign in with Mistral' },
   codex: { name: 'Codex', button: 'Sign in with ChatGPT' },
   claude: { name: 'Claude Code', button: 'Sign in with Claude' },
   opencode: { name: 'OpenCode', button: 'Sign in to OpenCode' },
@@ -144,7 +148,7 @@ const SIGN_INS = {
   hermes: { name: 'Hermes', button: 'Sign in with Nous Portal' },
 };
 
-export type SignInWhich = 'copilot' | 'devin' | 'kiro' | 'codex' | 'claude' | 'opencode' | 'grok' | 'hermes';
+export type SignInWhich = 'copilot' | 'devin' | 'kiro' | 'antigravity' | 'vibe' | 'codex' | 'claude' | 'opencode' | 'grok' | 'hermes';
 
 /** The sign-in button, or the code and the download's progress while it's going on. */
 export function SignInEntry({ which, compact = false }: { which: SignInWhich; compact?: boolean }) {
@@ -203,7 +207,7 @@ export function logo(id: string): string {
 
 /** Whether an unlinked provider is Free or Paid. */
 export function providerStatus(id: string): 'Free' | 'Paid' {
-  return ['claude', 'codex', 'devin', 'grok', 'deepseek'].includes(id) ? 'Paid' : 'Free';
+  return ['claude', 'devin', 'grok', 'deepseek'].includes(id) ? 'Paid' : 'Free';
 }
 
 /** Every additional provider not linked yet, and how to link it. */

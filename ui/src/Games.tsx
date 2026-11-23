@@ -5,7 +5,7 @@ import { act, type Games } from './api';
 import { Chess, ChessPiece } from './Chess';
 import { FlappyIcon, FlappyScout } from './FlappyScout';
 import { DashIcon, ScoutDash } from './ScoutDash';
-import { core, focusComposer, ui, useUi, useView } from './store';
+import { focusComposer, ui, useUi, useView } from './store';
 import { IconButton } from './widgets';
 
 // ---------- 2048 ----------
@@ -281,8 +281,10 @@ export function openGame(games: Games, byUser: boolean) {
 }
 
 export function closeGame() {
-  const { dockOpen, dockTab } = ui.get();
-  ui.set({ gameOpen: false, ...(dockOpen && dockTab === 'games' ? { dockOpen: false } : {}) });
+  // Its tab closes; the panel stays open on another tab if it has one.
+  const { dockTabs, dockTab } = ui.get();
+  const rest = dockTabs.filter((t) => t !== 'games');
+  ui.set({ gameOpen: false, dockTabs: rest, ...(dockTab === 'games' ? (rest.length ? { dockTab: rest[rest.length - 1] } : { dockOpen: false }) : {}) });
 }
 
 export function gameShowing(games: Games) {
@@ -290,21 +292,6 @@ export function gameShowing(games: Games) {
   return games.place === 'panel' ? u.dockOpen && u.dockTab === 'games' : u.gameOpen;
 }
 
-/** Opens the game when Scout starts working, as the settings say. It stays open once Scout finishes. */
-export function useGameAutomation() {
-  const { anyRunning } = useView('run');
-  const was = useRef(anyRunning);
-  useEffect(() => {
-    if (was.current === anyRunning) return;
-    was.current = anyRunning;
-    const { games } = core.get().view.cfg;
-    if (!games.on) return;
-    const { dockOpen, dockTab } = ui.get();
-    // In the panel, the game never takes the place of a tab the user is looking at.
-    const panelFree = games.place !== 'panel' || !dockOpen || dockTab === 'games';
-    if (anyRunning && games.openOnRun && panelFree) openGame(games, false);
-  }, [anyRunning]);
-}
 
 /** The games in the panel's Games tab. */
 export function GamesTab() {

@@ -4,7 +4,7 @@ import { closeGame } from './Games';
 import { closeMusic } from './Music';
 import { AgentRouterPanel, FallbackList, ModelPicker, useModelName } from './ModelMenu';
 import { ProviderQuotas } from './Quota';
-import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, ANTIGRAVITY_NOTE, VIBE_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
@@ -12,33 +12,34 @@ import { ClaudeSetup } from './ClaudeSetup';
 import { LocalSetup, localStatus } from './Local';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
-import { CodeBlock, CopyButton, Icon, IconButton, Link, Modal, SectionLabel, Spinner, Toggle } from './widgets';
+import { CodeBlock, CopyButton, Icon, IconButton, Link, SectionLabel, Spinner, Toggle } from './widgets';
 import { DreamEntry, DreamingNow } from './Dreams';
+import { ErrorBoundary } from './ErrorBoundary';
 
-const TABS: { id: SettingsTab; title: string; icon: string; keywords: string }[] = [
-  { id: 'appearance', title: 'Appearance', icon: 'palette', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style language interface translation' },
-  { id: 'instructions', title: 'Instructions', icon: 'chat', keywords: 'instructions project global rules preferences language russian english responses' },
-  { id: 'memory', title: 'Memory', icon: 'file', keywords: 'memory remember project user profile facts context' },
-  { id: 'dreaming', title: 'Dreaming', icon: 'sparkle', keywords: 'dreaming dream dreams idle away sleep memory tidy learn recent chats free model log undo' },
-  { id: 'notifications', title: 'Notifications', icon: 'bell', keywords: 'notifications alerts taskbar flash toast windows attention' },
-  { id: 'discord', title: 'Discord', icon: 'chat', keywords: 'discord rich presence profile status privacy share activity' },
-  { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
-  { id: 'router', title: 'Agent Router', icon: 'route', keywords: 'agent router routing route fallback fallbacks jev rate limit 429 retry provider models intelligence tier' },
-  { id: 'explore', title: 'Explore', icon: 'search', keywords: 'explore explorer sub-agent subagent search research free qwen save plan tokens claude code codex limits cheaper' },
-  { id: 'usage', title: 'Usage', icon: 'chart', keywords: 'usage tokens cost spend daily weekly monthly 5-hour limits balance banked reset chart history quota free requests rate limit providers rewards login streak claim referral referrals invite code bonus credit' },
-  { id: 'account', title: 'Account', icon: 'user', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
-  { id: 'providers', title: 'Providers', icon: 'user', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro kilo models local llama llama.cpp gguf gpu offload offline ollama tools small model' },
-  { id: 'skills', title: 'Skills', icon: 'file', keywords: 'skills upload directory skills.sh install instructions @ mention' },
-  { id: 'mcp', title: 'MCP servers', icon: 'terminal', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
-  { id: 'chatbots', title: 'Chatbots', icon: 'chat', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
-  { id: 'scoutmote', title: 'ScoutMote', icon: 'terminal', keywords: 'scoutmote remote control browser web phone away online computer pc' },
-  { id: 'experimental', title: 'Experimental', icon: 'refresh', keywords: 'experimental beta labs image generation generate images pictures art openrouter games game 2048 chess flappy bird scout dash runner endless lanes play puzzle fun waiting music mp3 soundcloud audio song player' },
-  { id: 'privacy', title: 'Privacy', icon: 'shield', keywords: 'privacy analytics telemetry usage data tracking posthog statistics opt out' },
-  { id: 'updates', title: 'Updates', icon: 'download', keywords: 'updates version upgrade download restart release notes about' },
+const TABS: { id: SettingsTab; title: string; icon: string; group: string; keywords: string }[] = [
+  { id: 'appearance', title: 'Appearance', icon: 'palette', group: 'General', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style language interface translation logo material glass mica hidden games game 2048 chess flappy bird scout dash runner play fun waiting music mp3 soundcloud audio song player' },
+  { id: 'preferences', title: 'Preferences', icon: 'sliders', group: 'General', keywords: 'preferences notifications alerts taskbar flash toast windows attention discord rich presence profile status share activity explore explorer sub-agent subagent search research free qwen save plan tokens limits cheaper scoutmote remote control browser web phone away online computer pc privacy analytics telemetry usage data tracking posthog statistics opt out' },
+  { id: 'instructions', title: 'Instructions', icon: 'chat', group: 'General', keywords: 'instructions project global rules preferences language russian english responses' },
+  { id: 'memory', title: 'Memory', icon: 'memory', group: 'General', keywords: 'memory remember project user profile facts context dreaming dream dreams idle away sleep tidy learn recent chats free model log undo' },
+  { id: 'providers', title: 'Providers', icon: 'layers', group: 'Models', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro antigravity google gemini mistral vibe devstral kilo models local llama llama.cpp gguf gpu offload offline ollama tools small model' },
+  { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', group: 'Models', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
+  { id: 'router', title: 'Agent Router', icon: 'route', group: 'Models', keywords: 'agent router routing route fallback fallbacks jev rate limit 429 retry provider models intelligence tier' },
+  { id: 'images', title: 'Image generation', icon: 'sparkle', group: 'Models', keywords: 'image images generation generate generator pictures art icons illustrations openrouter openai key byok gpt image gemini' },
+  { id: 'browser', title: 'Browser', icon: 'globe', group: 'Tools', keywords: 'browser built-in web browse website page click forms localhost test agent computer use webview automation' },
+  { id: 'skills', title: 'Skills', icon: 'file', group: 'Tools', keywords: 'skills upload directory skills.sh install instructions @ mention' },
+  { id: 'mcp', title: 'MCP servers', icon: 'terminal', group: 'Tools', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
+  { id: 'chatbots', title: 'Chatbots', icon: 'chat', group: 'Tools', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
+  { id: 'account', title: 'Account', icon: 'user', group: 'Scout', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
+  { id: 'updates', title: 'Updates', icon: 'download', group: 'Scout', keywords: 'updates version upgrade download restart release notes about' },
 ];
 
 function Heading({ title, sub }: { title: string; sub: string }) {
   return <div className="settings-heading"><h2>{title}</h2><p className="small dim">{sub}</p></div>;
+}
+
+/** The head of one part of a page that holds several, such as Preferences. */
+function Part({ title, sub, icon }: { title: string; sub: string; icon?: string }) {
+  return <div className="settings-part"><h3>{icon && <Icon name={icon} size={17} />}{title}</h3><p className="small dim">{sub}</p></div>;
 }
 
 function SettingRow({ title, sub, children }: { title: string; sub?: ReactNode; children?: ReactNode }) {
@@ -128,6 +129,7 @@ function Memory() {
         {dirty && <span className="small dim">Unsaved changes</span>}
       </div>
       <Message m={message} />
+      <Dreaming />
     </>
   );
 }
@@ -139,7 +141,7 @@ function Dreaming() {
   const next = d.last ? new Date(d.last + 24 * 60 * 60_000) : null;
   return (
     <>
-      <Heading title="Dreaming" sub="While you're away, Scout reads your last two days of chats and tidies your memory: it keeps what will still be true in a month, like your stack, style, commands and decisions, and never what you're in the middle of." />
+      <Part title="Dreaming" sub="While you're away, Scout reads your last two days of chats and tidies your memory: it keeps what will still be true in a month, like your stack, style, commands and decisions, and never what you're in the middle of." />
       <SettingRow title="Dream while I'm away" sub="Starts after 20 minutes without using Scout, at most once a day, while no chat is working. Uses ScoutCode's free Dreaming model, and each request counts toward your free requests.">
         <Toggle label="Dream while I'm away" on={on} onChange={(v) => act('setDreaming', { on: v })} />
       </SettingRow>
@@ -163,7 +165,7 @@ function Notifications() {
   const toast = cfg.notifyToast ?? false;
   return (
     <>
-      <Heading title="Notifications" sub="When Scout finishes, or needs an answer, while its window is in the background." />
+      <Part title="Notifications" sub="When Scout finishes, or needs an answer, while its window is in the background." />
       <SettingRow title="Flash the taskbar button" sub="Scout's button blinks until you switch back to it."><Toggle label="Flash the taskbar button" on={flash} onChange={(on) => act('setNotify', { flash: on, toast })} /></SettingRow>
       <SettingRow title="Windows notification" sub="A notification in the corner of the screen says what Scout needs."><Toggle label="Windows notification" on={toast} onChange={(on) => act('setNotify', { flash, toast: on })} /></SettingRow>
       <SettingRow title="Try it" sub="Shows a notification now, whatever is chosen above."><button type="button" className="button" onClick={() => act('testNotification')}>Send a test</button></SettingRow>
@@ -177,7 +179,7 @@ function Discord() {
   const project = cfg.discordProject;
   return (
     <>
-      <Heading title="Discord" sub="Shows on your Discord profile that you're using Scout." />
+      <Part icon="discord" title="Discord" sub="Shows on your Discord profile that you're using Scout." />
       <SettingRow
         title="Scout Discord server"
         sub={
@@ -296,6 +298,7 @@ function Appearance() {
         ))}
       </div>
       <p className="small dim">Shows in the sidebar, on the start screen and on the taskbar.</p>
+      <Extras />
       <HiddenItems />
       <SectionLabel>Setup</SectionLabel>
       <SettingRow title="Run setup again" sub="Walk through the first-run screens again. Your providers and settings stay as they are.">
@@ -342,7 +345,7 @@ function ExplorePage() {
   };
   return (
     <>
-      <Heading title="Explore" sub="Makes paid plans last longer. When a task needs a lot of searching and reading, a read-only explore agent does it on a free model, then hands back its findings and the files that matter, each checked to exist. Your paid model only reads the files it needs." />
+      <Part title="Explore" sub="Makes paid plans last longer. When a task needs a lot of searching and reading, a read-only explore agent does it on a free model, then hands back its findings and the files that matter, each checked to exist. Your paid model only reads the files it needs." />
       <SettingRow title="Explore agents" sub="Scout’s own sub-agents run on explore’s models, and Claude Code and Codex get an explore tool they’re told to use for any task that needs 5 or more files. Explore only reads: it can’t change files or run commands.">
         <Toggle label="Explore agents" on={explore.on} onChange={(on) => setExplore(on, models)} />
       </SettingRow>
@@ -351,24 +354,95 @@ function ExplorePage() {
       </SettingRow>
       <FallbackList value={models} onChange={change} max={3} />
       <Message m={skipped ? [false, skipped] : null} />
-      <SettingRow title="Saved so far" sub={explore.tokens > 0 ? `${explore.tokens.toLocaleString()} tokens of exploring read on free models instead of your plan. New chats show this from ${explore.showFrom.toLocaleString()}.` : 'Nothing yet. New chats show what explore has saved once it passes 100,000 tokens.'} />
     </>
   );
 }
 
-type ImageModel = { id: string; name: string; cost: string };
 
-/** Features still being tried out. Each is off until turned on here. */
-function Experimental() {
+type ImageModel = { id: string; name: string; cost: string };
+const IMAGE_PROVIDERS: [string, string][] = [['openrouter', 'OpenRouter'], ['openai', 'OpenAI']];
+
+/** Image generation, on the user's own key with a provider that makes images. */
+function Images() {
   const cfg = useView('cfg');
   const on = cfg.experimentalImages;
+  const { provider, model, key } = cfg.image;
   const [models, setModels] = useState<ImageModel[] | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
-    if (!on) return;
-    invoke<ImageModel[]>('image_models').then((m) => { setModels(m); setError(''); }, (e) => setError(String(e)));
-  }, [on]);
-  const picked = cfg.imageModel ?? '';
+    setModels(null);
+    invoke<ImageModel[]>('image_models', { provider }).then((m) => { setModels(m); setError(''); }, (e) => setError(String(e)));
+  }, [provider]);
+  const set = (next: { on?: boolean; provider?: string; model?: string | null }) => act('setImages', { on, provider, model, ...next });
+  const picked = model ?? '';
+  const openrouterKey = cfg.openrouterKeys[0];
+  const hasKey = provider === 'openai' ? !!key : !!openrouterKey;
+  return (
+    <>
+      <Heading title="Image generation" sub="Scout can make images, such as icons, illustrations and placeholder art, and save them in your project. They're made on your own key with the provider you pick here, which bills you for each one. Scout asks before making one unless you've allowed edits." />
+      <SettingRow title="Image generation" sub={on && !hasKey ? 'Add a key below before Scout can make images.' : 'Gives Scout a tool for making images. Applies from your next message.'}>
+        <Toggle label="Image generation" on={on} onChange={(v) => set({ on: v })} />
+      </SettingRow>
+      <SettingRow title="Provider" sub="Whose key and image models to use.">
+        <select className="input select" value={provider} onChange={(e) => set({ provider: e.target.value, model: null })}>
+          {IMAGE_PROVIDERS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        </select>
+      </SettingRow>
+      {provider === 'openai' ? (
+        key ? (
+          <SettingRow title="OpenAI key" sub={<span className="mono">{key}</span>}>
+            <button type="button" className="button" onClick={() => act('saveImageKey', { key: null })}>Remove</button>
+          </SettingRow>
+        ) : (
+          <div className="stack">
+            <div className="setting-title">OpenAI key</div>
+            <div className="small dim">Saved on this PC and only used for images. <Link href="https://platform.openai.com/api-keys">Make a key on platform.openai.com</Link></div>
+            <KeyField hint="sk-…" button="Save OpenAI key" onSave={(k) => act('saveImageKey', { key: k })} />
+          </div>
+        )
+      ) : openrouterKey ? (
+        <SettingRow title="OpenRouter key" sub={<>Uses your saved OpenRouter key <span className="mono">{openrouterKey.masked}</span>. Change it in Providers.</>}>
+          <button type="button" className="button" onClick={() => ui.set({ settings: 'providers' })}>Providers</button>
+        </SettingRow>
+      ) : (
+        <div className="stack">
+          <div className="setting-title">OpenRouter key</div>
+          <div className="small dim">Saved on this PC. It also adds OpenRouter's models to the model menu. <Link href="https://openrouter.ai/settings/keys">Make a key on openrouter.ai</Link></div>
+          <KeyField hint="sk-or-…" button="Save OpenRouter key" onSave={(k) => act('addOpenrouterKey', { name: 'OpenRouter', key: k })} />
+        </div>
+      )}
+      <SettingRow title="Image model" sub={error ? `Could not load the image models: ${error}` : 'Which of the provider’s image models makes them.'}>
+        {models === null && !error ? <Spinner /> : (
+          <select className="input select" value={picked} onChange={(e) => set({ model: e.target.value || null })}>
+            <option value="">Default ({provider === 'openai' ? 'GPT Image 1' : 'Gemini 2.5 Flash Image'})</option>
+            {models?.map((m) => <option key={m.id} value={m.id}>{m.name}{m.cost ? ` · ${m.cost}` : ''}</option>)}
+            {picked && models && !models.some((m) => m.id === picked) && <option value={picked}>{picked}</option>}
+          </select>
+        )}
+      </SettingRow>
+    </>
+  );
+}
+
+/** The built-in browser in the side panel, and whether Scout's agent may use it. */
+function BrowserSettings() {
+  const { browserAgent } = useView('cfg');
+  return (
+    <>
+      <Heading title="Browser" sub="Scout has a web browser of its own, in the side panel (the globe in the top bar). You can browse in it yourself, and sign-ins stay between restarts." />
+      <SettingRow title="Let Scout use the browser" sub="Scout can then open sites, click, fill in forms and read pages, such as to test the web app you're building. You watch it in the panel and can take over at any time. Before it submits, buys, sends or deletes something, it asks you, unless the chat has full access. Applies from your next message.">
+        <Toggle label="Let Scout use the browser" on={browserAgent} onChange={(on) => act('setBrowserAgent', { on })} />
+      </SettingRow>
+      <SettingRow title="Open the browser" sub="Shows it in the side panel.">
+        <button type="button" className="button" onClick={() => ui.set({ settings: null, page: 'chat', dockOpen: true, dockTab: 'browser' })}>Open</button>
+      </SettingRow>
+    </>
+  );
+}
+
+/** Games and music: extras for while Scout works, set with how the window looks. */
+function Extras() {
+  const cfg = useView('cfg');
   const games = cfg.games;
   const setGames = (next: Partial<Games>) => {
     // A game that's open where it no longer belongs closes, rather than jumping elsewhere.
@@ -382,40 +456,18 @@ function Experimental() {
   };
   return (
     <>
-      <Heading title="Experimental" sub="Features still being tried out. They may change or go away, and are off until you turn them on." />
-      <SettingRow
-        title="Image generation"
-        sub={'Scout can make images, such as icons, illustrations and placeholder art, and save them in your project. They’re made on the ScoutCode server by an image model on OpenRouter, and each one costs money from your account. Scout asks before making one unless you’ve allowed edits. Needs a ScoutCode account.'}
-      >
-        <Toggle label="Image generation" on={on} onChange={(v) => act('setImages', { on: v, model: cfg.imageModel })} />
-      </SettingRow>
-      {on && (
-        <SettingRow title="Image model" sub={error ? `Could not load the server's image models: ${error}` : models?.length === 0 ? 'The ScoutCode server has no image models yet.' : 'Which of the server’s image models makes them.'}>
-          {models === null && !error ? <Spinner /> : (
-            <select className="input select" value={picked} onChange={(e) => act('setImages', { on, model: e.target.value || null })}>
-              <option value="">Server default{models?.[0] ? ` (${models[0].name})` : ''}</option>
-              {models?.map((m) => <option key={m.id} value={m.id}>{m.name}{m.cost ? ` · ${m.cost}` : ''}</option>)}
-              {picked && models && !models.some((m) => m.id === picked) && <option value={picked}>{picked} (not on the server)</option>}
-            </select>
-          )}
-        </SettingRow>
-      )}
-      <SettingRow title="Games" sub="Something to play while Scout works: 2048, chess against Scout, Flappy Scout, where you flap a little bird through gaps between editor panes, or Scout Dash, an endless three-lane run. Open them with the gamepad at the top of the window and pick one. Every game keeps your progress when it closes.">
+      <SectionLabel>Games and music</SectionLabel>
+      <SettingRow title="Games" sub="Something to play while Scout works: 2048, chess against Scout, Flappy Scout, where you flap a little bird through gaps between editor panes, or Scout Dash, an endless three-lane run. Open them with the gamepad at the top of the window and pick one. A game stays open until you close it, and keeps your progress when you do.">
         <Toggle label="Games" on={games.on} onChange={(on) => setGames({ on })} />
       </SettingRow>
       {games.on && (
-        <>
-          <SettingRow title="Where it shows" sub={games.place === 'panel' ? 'A Games tab in the panel on the right.' : 'A card over the chat. Drag it by its bar to wherever you like, and it stays there.'}>
-            {games.place === 'float' && games.pos && <button type="button" className="button ghost compact" onClick={() => setGames({ pos: null })}>Reset position</button>}
-            <select className="input select" value={games.place} onChange={(e) => setGames({ place: e.target.value as Games['place'] })}>
-              <option value="float">Floating card</option>
-              <option value="panel">Side panel</option>
-            </select>
-          </SettingRow>
-          <SettingRow title="Open when Scout starts working" sub={games.place === 'panel' ? 'Unless the panel is showing another tab.' : 'It doesn’t take the keyboard from the message box until you click it.'}>
-            <Toggle label="Open when Scout starts working" on={games.openOnRun} onChange={(openOnRun) => setGames({ openOnRun })} />
-          </SettingRow>
-        </>
+        <SettingRow title="Where it shows" sub={games.place === 'panel' ? 'A Games tab in the panel on the right.' : 'A card over the chat. Drag it by its bar to wherever you like, and it stays there.'}>
+          {games.place === 'float' && games.pos && <button type="button" className="button ghost compact" onClick={() => setGames({ pos: null })}>Reset position</button>}
+          <select className="input select" value={games.place} onChange={(e) => setGames({ place: e.target.value as Games['place'] })}>
+            <option value="float">Floating card</option>
+            <option value="panel">Side panel</option>
+          </select>
+        </SettingRow>
       )}
       <SettingRow title="Music" sub="Listen to your own MP3s or SoundCloud while Scout works. Open it with the music button at the top of the window. Music keeps playing when you close the card.">
         <Toggle label="Music" on={music.on} onChange={(on) => setMusic({ on })} />
@@ -858,6 +910,11 @@ function Usage() {
   );
 }
 
+/** Usage as a page of its own, off the side rail. */
+export function UsagePage() {
+  return <div className="usage-page"><div className="settings-page"><Usage /></div></div>;
+}
+
 // ---------- account ----------
 
 function Account() {
@@ -916,10 +973,10 @@ function OpenRouterKeys() {
   );
 }
 
-type OwnWhich = 'copilot' | 'devin' | 'kiro' | 'codex' | 'claude';
+type OwnWhich = 'copilot' | 'devin' | 'kiro' | 'antigravity' | 'vibe' | 'codex' | 'claude';
 
 function OwnAccount({ which, title, note, who, planText, planUrl }: { which: OwnWhich; title: string; note: string; who: string | null; planText: string; planUrl: string }) {
-  const rowTitle = which === 'copilot' ? 'GitHub account' : `${title} account`;
+  const rowTitle = which === 'copilot' ? 'GitHub account' : which === 'antigravity' ? 'Google account' : which === 'vibe' ? 'Mistral account' : `${title} account`;
   return (
     <>
       <p className="small dim">{note}</p>
@@ -1074,6 +1131,8 @@ function Providers() {
     },
     own('devin', 'Devin', DEVIN_NOTE, cfg.devin, "See Devin's plans"),
     own('kiro', 'Kiro', KIRO_NOTE, cfg.kiro, "See Kiro's plans"),
+    own('antigravity', 'Antigravity', ANTIGRAVITY_NOTE, cfg.antigravity, 'Open Antigravity'),
+    own('vibe', 'Mistral Vibe', VIBE_NOTE, cfg.vibe, 'Open the Mistral console'),
     ...additionalProviders.map((a): ProviderEntry => {
       const l = cfg.additional.find((x) => x.id === a.id);
       return {
@@ -1332,7 +1391,7 @@ function ScoutMote() {
   const status = !cfg.hasKey ? 'ScoutMote goes through your ScoutCode account, so sign in first.' : sm.status || (sm.on ? 'Connecting…' : 'Off.');
   return (
     <>
-      <Heading title="ScoutMote" sub="Use Scout on this computer from any browser: start chats, watch them work, answer what it asks and stop it. It works while Scout is open here and this PC is online." />
+      <Part title="ScoutMote" sub="Use Scout on this computer from any browser: start chats, watch them work, answer what it asks and stop it. It works while Scout is open here and this PC is online." />
       <SettingRow title="Control this PC from the web" sub={status}>
         <Toggle label="Control this PC from the web" on={sm.on} onChange={(on) => act('setScoutMote', { on })} />
       </SettingRow>
@@ -1355,7 +1414,7 @@ function Privacy() {
   const { usageAnalytics } = useView('cfg');
   return (
     <>
-      <Heading title="Privacy" sub="What Scout sends to ScoutCode about how the app is used." />
+      <Part title="Privacy" sub="What Scout sends to ScoutCode about how the app is used." />
       <SettingRow
         title="Send usage analytics"
         sub="Scout's version, when it opens, and which provider and model each message ran on, so we know what to improve. Never your messages, files, folders or keys."
@@ -1418,52 +1477,91 @@ function Updates() {
   );
 }
 
-/** Settings: a large panel in the middle of the window, sections on the left and the open one on the right. */
-export function Settings() {
+/** The smaller choices about how Scout behaves, on one page. */
+function Preferences() {
+  return (
+    <>
+      <Heading title="Preferences" sub="How Scout lets you know, what it shares, and the helpers that run beside it." />
+      <Notifications />
+      <Discord />
+      <ExplorePage />
+      <ScoutMote />
+      <Privacy />
+    </>
+  );
+}
+
+const GROUPS = ['General', 'Models', 'Tools', 'Scout'];
+
+/** Settings: the whole window, with its sections grouped down the left and the open one on the right. */
+export function Settings({ windowButtons }: { windowButtons?: ReactNode }) {
   const tab = useUi((u) => u.settings);
   const [search, setSearch] = useState('');
+  const close = () => { ui.set({ settings: null }); setSearch(''); };
+  useEffect(() => {
+    if (!tab) return;
+    const key = (e: KeyboardEvent) => {
+      // A dialog opened from here closes first.
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.modal-back')) return;
+      e.preventDefault();
+      close();
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [!!tab]); // eslint-disable-line
   if (!tab) return null;
   const q = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
   // Every word typed has to appear in the section's title or keywords, in any order.
   const shown = TABS.filter((t) => q.every((w) => `${t.title.toLowerCase()} ${t.keywords}`.includes(w)));
-  const close = () => { ui.set({ settings: null }); setSearch(''); };
+  const current = TABS.find((t) => t.id === tab);
   return (
-    <Modal onClose={close} className="settings">
-      <div className="settings-title"><b className="brand grow">Settings</b><IconButton icon="close" tip="Close (Esc)" size={30} onClick={close} /></div>
+    <div className="settings settings-screen" role="dialog" aria-modal aria-label="Settings">
+      <header className="settings-bar" data-tauri-drag-region>
+        <button type="button" className="settings-back" onClick={close} title="Back to Scout (Esc)"><Icon name="back" size={15} />Back</button>
+        <b className="chat-title" data-tauri-drag-region>Settings{current ? ` · ${current.title}` : ''}</b>
+        <span className="grow" data-tauri-drag-region />
+        {windowButtons}
+      </header>
       <div className="settings-body">
         <nav className="settings-nav">
-          <div className="side-search"><Icon name="search" /><input placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
-          <SectionLabel>Preferences</SectionLabel>
-          {shown.map((t) => (
-            <button key={t.id} type="button" className={`settings-link ${t.id === tab ? 'selected' : ''}`} onClick={() => ui.set({ settings: t.id })}>
-              <Icon name={t.icon} />{t.title}
-            </button>
-          ))}
+          <div className="side-search"><Icon name="search" /><input placeholder="Search settings" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
+          {GROUPS.map((g) => {
+            const tabs = shown.filter((t) => t.group === g);
+            if (!tabs.length) return null;
+            return (
+              <div key={g} className="settings-group">
+                <SectionLabel>{g}</SectionLabel>
+                {tabs.map((t) => (
+                  <button key={t.id} type="button" className={`settings-link ${t.id === tab ? 'selected' : ''}`} onClick={() => ui.set({ settings: t.id })}>
+                    <Icon name={t.icon} />{t.title}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
           {shown.length === 0 && <div className="small dim">Nothing matches.</div>}
         </nav>
-        <div className="settings-page" key={tab}>
-          {tab === 'appearance' && <Appearance />}
-          {tab === 'instructions' && <Instructions />}
-          {tab === 'memory' && <Memory />}
-          {tab === 'dreaming' && <Dreaming />}
-          {tab === 'notifications' && <Notifications />}
-          {tab === 'discord' && <Discord />}
-          {tab === 'fallbacks' && <FallbacksPage />}
-          {tab === 'router' && <AgentRouterPage />}
-          {tab === 'explore' && <ExplorePage />}
-          {tab === 'usage' && <Usage />}
-          {tab === 'account' && <Account />}
-          {tab === 'providers' && <Providers />}
-          {tab === 'skills' && <Skills />}
-          {tab === 'mcp' && <Mcp />}
-          {tab === 'chatbots' && <Chatbots />}
-          {tab === 'scoutmote' && <ScoutMote />}
-          {tab === 'experimental' && <Experimental />}
-          {tab === 'privacy' && <Privacy />}
-          {tab === 'updates' && <Updates />}
+        <div className="settings-scroll">
+          <div className="settings-page" key={tab}>
+            <ErrorBoundary what={current ? `The ${current.title} page` : 'This page'}>
+            {tab === 'appearance' && <Appearance />}
+            {tab === 'preferences' && <Preferences />}
+            {tab === 'instructions' && <Instructions />}
+            {tab === 'memory' && <Memory />}
+            {tab === 'providers' && <Providers />}
+            {tab === 'fallbacks' && <FallbacksPage />}
+            {tab === 'router' && <AgentRouterPage />}
+            {tab === 'images' && <Images />}
+            {tab === 'browser' && <BrowserSettings />}
+            {tab === 'skills' && <Skills />}
+            {tab === 'mcp' && <Mcp />}
+            {tab === 'chatbots' && <Chatbots />}
+            {tab === 'account' && <Account />}
+            {tab === 'updates' && <Updates />}
+            </ErrorBoundary>
+          </div>
         </div>
       </div>
-    </Modal>
+    </div>
   );
 }
-

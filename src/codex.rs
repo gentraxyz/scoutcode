@@ -151,12 +151,13 @@ pub fn list_models() -> Result<Vec<(String, String)>, String> {
 }
 
 /// Codex's mode for Scout's: each asks about what Scout's would. Read-only asks before any edit, workspace access edits
-/// the project without asking, auto review only asks about what looks unsafe, and full access never asks.
+/// the project without asking, and full access never asks. Scout's auto mode is workspace access too, not Codex's
+/// "auto review": that runs Codex's own Guardian reviewer, and Scout's reviews the commands it asks about instead
+/// (see `Agent::acp_run`).
 fn mode_for(mode: &str, quiet: bool) -> &'static str {
     match mode {
         _ if quiet => "read-only",
-        "acceptEdits" => "workspace-write",
-        "auto" => "agent",
+        "acceptEdits" | "auto" => "workspace-write",
         "yolo" => "agent-full-access",
         _ => "read-only",
     }
@@ -242,7 +243,7 @@ mod tests {
         assert_eq!(mode_for("default", false), "read-only");
         assert_eq!(mode_for("plan", false), "read-only");
         assert_eq!(mode_for("acceptEdits", false), "workspace-write");
-        assert_eq!(mode_for("auto", false), "agent");
+        assert_eq!(mode_for("auto", false), "workspace-write");
         assert_eq!(mode_for("yolo", false), "agent-full-access");
         assert_eq!(mode_for("yolo", true), "read-only");
     }

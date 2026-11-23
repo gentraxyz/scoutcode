@@ -1,5 +1,5 @@
 //! The Agent Client Protocol, for CLIs that loop over the model and run their own tools: JSON-RPC over stdio. Kiro, Codex,
-//! Claude Code, OpenCode and Grok Build run this way. Scout shows what they do and answers their permission requests, but their edits are outside
+//! Claude Code, OpenCode, Grok Build, Antigravity and Mistral Vibe run this way. Scout shows what they do and answers their permission requests, but their edits are outside
 //! Scout's undo. Each turn is one process, so the conversation always comes from Scout's messages and compaction and
 //! switching provider have nothing to keep in step.
 
@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Downloads a CLI's package into `root`/`version`. The download must match `want`, and the folder only appears once it's
 /// fully unpacked. Older versions are deleted afterwards.
@@ -80,7 +80,11 @@ pub enum Msg {
     ToolStart { id: String, kind: String, title: String, input: Value },
     ToolEnd { id: String, failed: bool, text: String },
     Todos(Vec<Todo>),
-    Permission { id: Value, kind: String, title: String, options: Vec<(String, String)> },
+    /// `command` is the shell command it wants to run, when it says so.
+    Permission { id: Value, kind: String, title: String, command: Option<String>, options: Vec<(String, String)> },
+    /// The CLI's request to its model failed and it's trying again by itself, as Mistral Vibe says with
+    /// `_session/retrying`: why (such as "rate_limited"), and the details (such as "HTTP 429").
+    Retrying { category: String, detail: String },
     /// The prompt is finished, and why.
     Idle(String),
     Failed(String),
@@ -216,12 +220,13 @@ fn request(method: &str, id: Value, p: &Value, conn: &Conn, tx: &Sender<Msg>) {
             title = cmd.to_string();
         }
     }
+    let command = p.pointer("/toolCall/rawInput/command").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
     let tool_call_id = call("toolCallId");
     if !tool_call_id.is_empty() {
         let raw_input = p.pointer("/toolCall/rawInput").cloned().unwrap_or(json!({}));
         let _ = tx.send(Msg::ToolStart { id: tool_call_id, kind: kind.clone(), title: title.clone(), input: raw_input });
     }
-    let _ = tx.send(Msg::Permission { id, kind, title, options });
+    let _ = tx.send(Msg::Permission { id, kind, title, command, options });
 }
 
 /// The newest settings the CLI has sent for a session, as (session, configOptions).
@@ -235,6 +240,8 @@ pub struct Server {
     pub latest: Latest,
     /// It said it takes images in a prompt.
     images: bool,
+    /// Its answer to `initialize`, with the ways it can sign in.
+    pub hello: Value,
 }
 
 impl Server {
@@ -248,6 +255,7 @@ impl Server {
             c.process_group(0);
         }
         let mut child = c.spawn().map_err(|e| format!("Couldn't start {name}: {e}"))?;
+        crate::tools::contain(child.id());
         let (stdin, stdout) = (child.stdin.take().ok_or(format!("{name} has no input."))?, child.stdout.take().ok_or(format!("{name} has no output."))?);
         let conn = Arc::new(Conn { name, stdin: Mutex::new(stdin), next: AtomicU64::new(1), waiting: Default::default() });
         let reader_conn = conn.clone();
@@ -280,18 +288,23 @@ impl Server {
                             let _ = tx.send(msg);
                         }
                     }
+                    (Some(method), None) if method.ends_with("session/retrying") => {
+                        let s = |k: &str| m.pointer(&format!("/params/{k}")).and_then(Value::as_str).unwrap_or("").to_string();
+                        let _ = tx.send(Msg::Retrying { category: s("category"), detail: s("detail") });
+                    }
                     _ => {}
                 }
             }
             // Whoever is still waiting hears it stopped.
             reader_conn.waiting.lock().unwrap().clear();
         });
-        let mut server = Server { name, child, conn, latest, images: false };
+        let mut server = Server { name, child, conn, latest, images: false, hello: Value::Null };
         // No file or terminal calls are offered, so the CLI runs its own tools.
         let hello = json!({"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "scout-desktop", "version": env!("CARGO_PKG_VERSION")}});
         match server.conn.call("initialize", hello, Duration::from_secs(30)) {
             Ok(r) => {
                 server.images = takes_images(&r);
+                server.hello = r;
                 Ok(server)
             }
             Err(e) => {
@@ -329,6 +342,145 @@ impl Server {
         kill_tree(&mut self.child);
         let _ = self.child.wait();
     }
+
+    /// One of the CLI's own extension calls. The protocol puts an underscore before their names, which some CLIs
+    /// don't expect, so it's tried both ways.
+    pub fn ext(&self, method: &str, params: Value, wait: Duration) -> Result<Value, String> {
+        self.conn.call(&format!("_{method}"), params.clone(), wait).or_else(|_| self.conn.call(method, params, wait))
+    }
+
+    /// Signs in with one of the ways `initialize` offered: the CLI opens the browser and keeps what it gets, so Scout
+    /// never sees a token. Waits up to ten minutes, and gives up quietly when `cancel` is set.
+    pub fn authenticate(&self, method: &str, cancel: &AtomicBool) -> Result<Value, String> {
+        let answer = self.conn.ask("authenticate", json!({"methodId": method}));
+        let give_up = Instant::now() + Duration::from_secs(600);
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(String::new());
+            }
+            if Instant::now() > give_up {
+                return Err("The sign-in timed out. Try again.".into());
+            }
+            match answer.recv_timeout(Duration::from_millis(100)) {
+                Ok(r) => return r,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Err(format!("The {} CLI stopped unexpectedly.", self.name)),
+            }
+        }
+    }
+
+    /// Moves a session to `model`, whichever way it listed its models: see `models_of`.
+    pub fn set_model(&self, session: &Value, model: &str, wait: Duration) -> Result<(), String> {
+        let id = session.get("sessionId").cloned().unwrap_or(Value::Null);
+        if options_of(session, "model").iter().any(|o| o.0 == model) {
+            self.conn.call("session/set_config_option", json!({"sessionId": id, "configId": "model", "value": model}), wait)?;
+        } else {
+            self.conn.call("session/set_model", json!({"sessionId": id, "modelId": model}), wait)?;
+        }
+        Ok(())
+    }
+}
+
+/// The ways `initialize` says the CLI can sign in, as (id, name, type). The type is empty for the usual kind, which the
+/// CLI does itself when asked.
+pub fn auth_methods(hello: &Value) -> Vec<(String, String, String)> {
+    let Some(list) = hello.get("authMethods").and_then(Value::as_array) else { return vec![] };
+    let s = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    list.iter().filter(|m| m.get("id").is_some_and(Value::is_string)).map(|m| (s(m, "id"), s(m, "name"), s(m, "type"))).collect()
+}
+
+/// The way to sign in through the browser: the first whose id or name says so, else the first the CLI can do by itself.
+/// Keys, cloud projects and terminal setups are left out, since they'd need more than a click.
+pub fn browser_sign_in(hello: &Value) -> Option<String> {
+    let methods: Vec<_> = auth_methods(hello).into_iter().filter(|m| m.2.is_empty() || m.2 == "agent").collect();
+    let text = |m: &(String, String, String)| format!("{} {}", m.0, m.1).to_lowercase();
+    let unwanted = |m: &(String, String, String)| ["api key", "api-key", "apikey", "api_key", "vertex", "enterprise", "delegated", "gcp", "cloud project"].iter().any(|w| text(m).contains(w));
+    let wanted = |m: &(String, String, String)| ["browser", "google", "oauth", "sign in", "sign-in", "login", "log in", "account"].iter().any(|w| text(m).contains(w));
+    methods.iter().find(|m| wanted(m) && !unwanted(m)).or_else(|| methods.iter().find(|m| !unwanted(m))).map(|m| m.0.clone())
+}
+
+/// The CLI's mode that matches Scout's `mode`, among the ones a session offers: the first name each one is known by.
+/// None leaves the CLI's own default, which asks first. A one-off answer (`quiet`) only ever plans.
+pub fn mode_for(offered: &[String], mode: &str, quiet: bool) -> Option<String> {
+    let wanted: &[&str] = match if quiet { "plan" } else { mode } {
+        "plan" => &["plan"],
+        "yolo" => &["auto-approve", "yolo", "bypassPermissions", "full-access"],
+        "auto" => &["smart-approve", "auto", "accept-edits", "acceptEdits", "auto_edit"],
+        _ => &["accept-edits", "acceptEdits", "auto_edit", "auto-edit"],
+    };
+    wanted.iter().find(|w| offered.iter().any(|o| o == *w)).map(|w| w.to_string())
+}
+
+/// Starts a session on a CLI that signs in by itself and lists its models in the session, such as Antigravity and
+/// Mistral Vibe, and sends `prompt`. Only the settings it offers are set; a model it doesn't offer stops it, rather
+/// than quietly running on another.
+#[allow(clippy::too_many_arguments)]
+pub fn start_with(mut server: Server, tx: Sender<Msg>, rx: Receiver<Msg>, name: &str, model: &str, cwd: &str, mode: &str, effort: &str, prompt: String, images: Vec<(String, String)>, quiet: bool) -> Result<Run, String> {
+    let wait = Duration::from_secs(60);
+    let started = (|| -> Result<Value, String> {
+        let new = server.new_session(cwd)?;
+        let session = new.get("sessionId").cloned().ok_or(format!("{name} didn't start a session."))?;
+        if model != "auto" {
+            if !models_of(&new).iter().any(|o| o.0 == model) {
+                return Err(format!("{name} isn't offering {model} right now, so nothing was sent. Try again, or pick another model."));
+            }
+            server.set_model(&new, model, wait)?;
+        }
+        let modes = modes_of(&new);
+        let mode_options: Vec<String> = options_of(&new, "mode").into_iter().map(|o| o.0).collect();
+        if let Some(m) = mode_for(&modes, mode, quiet) {
+            server.conn.call("session/set_mode", json!({"sessionId": session, "modeId": m}), wait)?;
+        } else if let Some(m) = mode_for(&mode_options, mode, quiet) {
+            server.conn.call("session/set_config_option", json!({"sessionId": session, "configId": "mode", "value": m}), wait)?;
+        }
+        if effort != "none" {
+            for option in ["thinking", "thinking_level", "effort", "effortLevel", "reasoningEffort"] {
+                if options_of(&new, option).iter().any(|o| o.0 == effort) {
+                    server.conn.call("session/set_config_option", json!({"sessionId": session, "configId": option, "value": effort}), wait)?;
+                    break;
+                }
+            }
+        }
+        Ok(session)
+    })();
+    match started {
+        Ok(session) => Ok(Run::begin(server, session, tx, rx, prompt, images)),
+        Err(e) => {
+            server.stop();
+            Err(e)
+        }
+    }
+}
+
+/// The models a CLI offers in a new session in `cwd`, or why they can't be told.
+pub fn list_models_on(mut server: Server, name: &str, cwd: &str) -> Result<Vec<(String, String)>, String> {
+    let session = server.new_session(cwd);
+    if let Ok(s) = &session {
+        if server.conn.call("session/delete", json!({"sessionId": s["sessionId"]}), Duration::from_secs(3)).is_err() {
+            let _ = server.conn.call("_session/delete", json!({"sessionId": s["sessionId"]}), Duration::from_secs(3));
+        }
+    }
+    server.stop();
+    let models = models_of(&session?);
+    if models.is_empty() {
+        return Err(format!("{name} didn't list its models."));
+    }
+    Ok(models)
+}
+
+/// The models a session offers, as (id, name): from its config options, or from the protocol's own model list.
+pub fn models_of(session: &Value) -> Vec<(String, String)> {
+    let listed = options_of(session, "model");
+    if !listed.is_empty() {
+        return listed;
+    }
+    let Some(list) = session.pointer("/models/availableModels").and_then(Value::as_array) else { return vec![] };
+    list.iter()
+        .filter_map(|m| {
+            let id = m.get("modelId")?.as_str()?;
+            Some((id.to_string(), m.get("name").and_then(Value::as_str).unwrap_or(id).to_string()))
+        })
+        .collect()
 }
 
 /// The choices a session offers for a config option, as (value, name).
@@ -395,7 +547,10 @@ impl Run {
     /// Removes the session from the CLI's own history where it can, and stops the process. Returns the session's id, for
     /// a CLI that can only forget it from outside.
     pub fn finish(mut self) -> String {
-        let _ = self.server.conn.call("session/delete", json!({"sessionId": self.session}), Duration::from_secs(3));
+        // Mistral Vibe only has it as its own extension.
+        if self.server.conn.call("session/delete", json!({"sessionId": self.session}), Duration::from_secs(3)).is_err() {
+            let _ = self.server.conn.call("_session/delete", json!({"sessionId": self.session}), Duration::from_secs(3));
+        }
         self.server.stop();
         self.session.as_str().unwrap_or("").to_string()
     }
@@ -421,6 +576,7 @@ pub fn exchange(mut c: Command, name: &str, lines: &[Value], want: impl Fn(&Valu
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     no_window(&mut c);
     let mut child = c.spawn().map_err(|e| format!("Couldn't start {name}: {e}"))?;
+    crate::tools::contain(child.id());
     let stdout = child.stdout.take().ok_or(format!("{name} has no output."))?;
     let (tx, rx) = channel();
     std::thread::spawn(move || {
@@ -498,6 +654,38 @@ mod tests {
         let session = json!({"modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}, {"id": "plan", "name": "Plan"}]}});
         assert_eq!(modes_of(&session), ["default", "plan"]);
         assert!(modes_of(&json!({})).is_empty());
+    }
+
+    /// As Antigravity and Mistral Vibe offer them: a browser sign-in wins over keys, projects and terminals.
+    #[test]
+    fn the_browser_sign_in_is_picked() {
+        let vibe = json!({"authMethods": [{"id": "vibe-setup", "name": "Register your API Key", "type": "terminal"}, {"id": "browser-auth", "name": "Sign in through Mistral AI Studio"}]});
+        assert_eq!(browser_sign_in(&vibe).as_deref(), Some("browser-auth"));
+        let google = json!({"authMethods": [{"id": "gemini-api-key", "name": "Use Gemini API key"}, {"id": "vertex-ai", "name": "Vertex AI"}, {"id": "oauth-personal", "name": "Log in with Google"}]});
+        assert_eq!(browser_sign_in(&google).as_deref(), Some("oauth-personal"));
+        assert_eq!(browser_sign_in(&json!({"authMethods": [{"id": "x", "name": "Something"}]})).as_deref(), Some("x"));
+        assert!(browser_sign_in(&json!({"authMethods": [{"id": "k", "name": "API key"}]})).is_none());
+        assert!(browser_sign_in(&json!({})).is_none());
+    }
+
+    #[test]
+    fn modes_match_scouts() {
+        let vibe: Vec<String> = ["accept-edits", "ask", "smart-approve", "auto-approve", "plan"].map(String::from).to_vec();
+        assert_eq!(mode_for(&vibe, "yolo", false).as_deref(), Some("auto-approve"));
+        assert_eq!(mode_for(&vibe, "auto", false).as_deref(), Some("smart-approve"));
+        assert_eq!(mode_for(&vibe, "acceptEdits", false).as_deref(), Some("accept-edits"));
+        assert_eq!(mode_for(&vibe, "yolo", true).as_deref(), Some("plan"));
+        assert_eq!(mode_for(&["default".to_string()], "yolo", false), None);
+        assert_eq!(mode_for(&[], "plan", false), None);
+    }
+
+    #[test]
+    fn models_come_either_way() {
+        let options = json!({"configOptions": [{"id": "model", "options": [{"value": "devstral", "name": "Devstral"}]}]});
+        assert_eq!(models_of(&options), [("devstral".to_string(), "Devstral".to_string())]);
+        let listed = json!({"models": {"currentModelId": "a", "availableModels": [{"modelId": "a", "name": "Gemini A"}, {"modelId": "b"}]}});
+        assert_eq!(models_of(&listed), [("a".to_string(), "Gemini A".to_string()), ("b".to_string(), "b".to_string())]);
+        assert!(models_of(&json!({})).is_empty());
     }
 
     #[test]

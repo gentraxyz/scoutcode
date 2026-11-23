@@ -11,7 +11,7 @@
 use serde_json::Value;
 
 /// The settings that are secrets. `additionalProviders` is a list of linked providers with their keys.
-pub const FIELDS: [&str; 9] = ["apiKey", "openrouterKeys", "openrouterKey", "nvidiaKey", "kiloKey", "copilotToken", "grokKey", "hermesKey", "additionalProviders"];
+pub const FIELDS: [&str; 10] = ["apiKey", "openrouterKeys", "openrouterKey", "nvidiaKey", "kiloKey", "copilotToken", "grokKey", "hermesKey", "additionalProviders", "imageKey"];
 
 pub fn is_secret(field: &str) -> bool {
     FIELDS.contains(&field)

@@ -1,4 +1,5 @@
-//! What the folder picker shows: the places to start from, and the folders inside one. Only folders, never files.
+//! What the folder picker shows: the places to start from, and the folders inside one. Files too, when it's picking
+//! files to attach.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -31,10 +32,20 @@ pub struct Folder {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    name: String,
+    path: String,
+    hidden: bool,
+    size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Listing {
     path: String,
     parent: Option<String>,
     folders: Vec<Folder>,
+    files: Vec<FileEntry>,
     error: Option<String>,
 }
 
@@ -93,7 +104,7 @@ fn is_hidden(_: &std::fs::DirEntry, name: &str) -> bool {
     name.starts_with('.')
 }
 
-pub fn list(dir: &str) -> Listing {
+pub fn list(dir: &str, with_files: bool) -> Listing {
     let path = PathBuf::from(dir);
     let parent = path.parent().map(|p| p.to_string_lossy().to_string()).filter(|p| !p.is_empty());
     let shown = path.to_string_lossy().to_string();
@@ -102,6 +113,7 @@ pub fn list(dir: &str) -> Listing {
             path: shown,
             parent,
             folders: vec![],
+            files: vec![],
             error: Some(match e.kind() {
                 std::io::ErrorKind::NotFound => "This folder doesn't exist.".into(),
                 std::io::ErrorKind::PermissionDenied => "Scout isn't allowed to open this folder.".into(),
@@ -109,17 +121,21 @@ pub fn list(dir: &str) -> Listing {
             }),
         },
         Ok(rd) => {
-            let mut folders: Vec<Folder> = rd
-                .flatten()
-                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                .map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let p = e.path();
-                    Folder { hidden: is_hidden(&e, &name), repo: p.join(".git").exists(), path: p.to_string_lossy().to_string(), name }
-                })
-                .collect();
+            let mut folders = vec![];
+            let mut files = vec![];
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let p = e.path();
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    folders.push(Folder { hidden: is_hidden(&e, &name), repo: p.join(".git").exists(), path: p.to_string_lossy().to_string(), name });
+                } else if with_files && p.is_file() {
+                    let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                    files.push(FileEntry { hidden: is_hidden(&e, &name), path: p.to_string_lossy().to_string(), name, size });
+                }
+            }
             folders.sort_by_key(|f| f.name.to_lowercase());
-            Listing { path: shown, parent, folders, error: None }
+            files.sort_by_key(|f| f.name.to_lowercase());
+            Listing { path: shown, parent, folders, files, error: None }
         }
     }
 }

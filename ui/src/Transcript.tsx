@@ -15,7 +15,8 @@ export function toolTitle(name: string): string {
   const titles: Record<string, string> = {
     view: 'Read', write_file: 'Write', edit_file: 'Edit', multi_edit: 'Edit', apply_patch: 'Patch', list_dir: 'List', glob: 'Find', grep: 'Search', bash: 'Run',
     shell_output: 'Output', kill_shell: 'Stop', web_fetch: 'Fetch', web_search: 'Web search', todo_write: 'Todos', task: 'Task', present_plan: 'Plan', ask_questions: 'Ask', update_memory: 'Memory', generate_image: 'Image',
-    claude: 'Claude Code', codex: 'Codex', kiro: 'Kiro', opencode: 'OpenCode', grok: 'Grok Build',
+    browser: 'Browser', browser_navigate: 'Open', browser_snapshot: 'Read page', browser_click: 'Click', browser_type: 'Type', browser_select: 'Pick', browser_press: 'Press', browser_scroll: 'Scroll', browser_wait: 'Wait', browser_eval: 'Page script',
+    claude: 'Claude Code', codex: 'Codex', kiro: 'Kiro', antigravity: 'Antigravity', vibe: 'Mistral Vibe', opencode: 'OpenCode', grok: 'Grok Build',
   };
   return titles[name] ?? name.replace(/^mcp__/, '');
 }
@@ -155,7 +156,7 @@ function UserMessage({ item, at, editable, onRetry }: { item: Extract<Item, { ki
   );
 }
 
-function Assistant({ item, at, editable, onRetry }: { item: Extract<Item, { kind: 'assistant' }>; at: number; editable: boolean; onRetry: () => void }) {
+function Assistant({ item, at, editable, showModel, onRetry }: { item: Extract<Item, { kind: 'assistant' }>; at: number; editable: boolean; showModel: boolean; onRetry: () => void }) {
   const [show, setShow] = useState(false);
   const latest = useMemo(() => item.reasoning.trim().split('\n').reverse().find((l) => l.trim())?.trim() ?? '', [item.reasoning]);
   const canRetry = useMemo(() => {
@@ -185,7 +186,7 @@ function Assistant({ item, at, editable, onRetry }: { item: Extract<Item, { kind
       <Markdown text={item.text} />
       {(item.text || item.reasoning) && (
         <div className="assistant-foot">
-          {modelName ? (
+          {showModel && modelName ? (
             <div className="assistant-model tiny dim" title={modelName}>
               {provLogo && <img className="logo" src={provLogo} width={12} height={12} alt="" />}
               <span>{modelName}</span>
@@ -307,7 +308,7 @@ function OutOfCredit({ item }: { item: { id: number; text: string } }) {
             <div className="credit-actions">
               <button type="button" className="button primary" onClick={() => retry()}>Try again</button>
               <ModelPicker label="Choose another model" onPick={retry} />
-              <button type="button" className="button" onClick={() => ui.set({ settings: 'usage' })}>See usage</button>
+              <button type="button" className="button" onClick={() => ui.set({ page: 'usage' })}>See usage</button>
             </div>
             {free.length > 0 && (
               <div className="credit-actions">
@@ -374,14 +375,14 @@ function FallbackSetup({ item }: { item: Extract<Item, { kind: 'fallbackSetup' }
   );
 }
 
-const Row = memo(function Row({ item, at, editable, hit, onRetry }: { item: Item; at: number; editable: boolean; hit: boolean; onRetry: (at: number) => void }) {
+const Row = memo(function Row({ item, at, editable, hit, showModel = false, onRetry }: { item: Item; at: number; editable: boolean; hit: boolean; showModel?: boolean; onRetry: (at: number) => void }) {
   let body: ReactNode;
   switch (item.kind) {
     case 'user':
       body = <UserMessage item={item} at={at} editable={editable} onRetry={() => onRetry(at)} />;
       break;
     case 'assistant':
-      body = <Assistant item={item} at={at} editable={editable} onRetry={() => onRetry(at)} />;
+      body = <Assistant item={item} at={at} editable={editable} showModel={showModel} onRetry={() => onRetry(at)} />;
       break;
     case 'tool':
       body = item.name === 'update_memory' && item.result && !item.result.isError ? <MemoryNote item={item} /> : <ToolRow item={item} />;
@@ -528,24 +529,7 @@ function EmptyState() {
           <span className="splash-caret" />
         </span>
       </div>
-      <ExploreSaved />
     </div>
-  );
-}
-
-function compactTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  return `${Math.round(n / 1000)}K`;
-}
-
-/** What explore has read on free models instead of the user's plan, once that's 100K tokens or more. */
-function ExploreSaved() {
-  const { explore } = useView('cfg');
-  if (!explore || explore.tokens < explore.showFrom) return null;
-  return (
-    <button type="button" className="explore-saved tiny dim" title="Open Explore settings" onClick={() => ui.set({ settings: 'explore' })}>
-      <Icon name="search" size={11} />Explore has saved you {compactTokens(explore.tokens)} tokens of exploring, read on free models instead of your plan
-    </button>
   );
 }
 
@@ -623,6 +607,130 @@ const MessageRail = memo(function MessageRail({ items, scroller }: { items: Item
   );
 });
 
+type AssistantItem = Extract<Item, { kind: 'assistant' }>;
+const modelOf = (it: AssistantItem): ModelRef | null => (it.model ? { key: it.model, provider: it.provider ?? 'scoutcode' } : null);
+
+/** Which replies name their model (the last one of each finished turn), and where the model changed from the reply
+ *  before (the new model, keyed by the index it changed at). */
+function modelMarks(items: Item[], running: boolean) {
+  const modelAt = new Set<number>();
+  const switchAt = new Map<number, ModelRef>();
+  let last: ModelRef | null = null;
+  let lastInTurn = -1;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === 'user') {
+      if (lastInTurn >= 0) modelAt.add(lastInTurn);
+      lastInTurn = -1;
+      continue;
+    }
+    if (it.kind !== 'assistant') continue;
+    const m = modelOf(it);
+    if (!m) continue;
+    if (last && (last.key !== m.key || last.provider !== m.provider)) switchAt.set(i, m);
+    last = m;
+    lastInTurn = i;
+  }
+  // The turn still being written names its model in the working line instead, until it ends.
+  if (lastInTurn >= 0 && !running) modelAt.add(lastInTurn);
+  return { modelAt, switchAt };
+}
+
+/** A line across the chat where a reply came from a different model than the one before it. */
+function ModelSwitch({ to }: { to: ModelRef }) {
+  const name = useModelName(to);
+  const provLogo = to.provider ? logo(to.provider) : '';
+  return (
+    <div className="model-switch tiny dim" role="separator">
+      <span className="model-switch-line" />
+      <span className="model-switch-label">
+        {provLogo && <img className="logo" src={provLogo} width={12} height={12} alt="" />}
+        Switched to {name}
+      </span>
+      <span className="model-switch-line" />
+    </div>
+  );
+}
+
+const WORKING_VERBS = [
+  'Analyzing', 'Reasoning', 'Evaluating', 'Synthesizing', 'Processing', 'Inspecting', 'Computing', 'Resolving',
+  'Assessing', 'Correlating', 'Deliberating', 'Formulating', 'Interpreting', 'Mapping', 'Parsing', 'Structuring',
+  'Validating', 'Calibrating', 'Compiling', 'Indexing', 'Examining', 'Deducing', 'Tracing', 'Weighing',
+];
+const GLITCH_CHARS = '·:-_/';
+const GLITCH_MS = 650;
+const VERB_MS = 3200;
+
+/** Text that scrambles through noise into its new value whenever `text` changes. */
+function GlitchText({ text }: { text: string }) {
+  const [shown, setShown] = useState(text);
+  const [glitching, setGlitching] = useState(false);
+  const from = useRef(text);
+  useEffect(() => {
+    if (from.current === text) return;
+    const start = performance.now();
+    const old = from.current;
+    from.current = text;
+    const len = Math.max(old.length, text.length);
+    let frame = 0;
+    setGlitching(true);
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / GLITCH_MS);
+      // Letters settle left to right; the rest are noise, with the old word showing through at first.
+      const settled = Math.floor(t * len);
+      let out = '';
+      for (let i = 0; i < len; i++) {
+        if (i < settled) out += text[i] ?? '';
+        // Mostly the old letters, with only a few flickering, so the change reads as a soft shimmer.
+        else if (Math.random() < 0.7) out += (t < 0.5 ? old[i] : text[i]) ?? '';
+        else if (i < text.length) out += GLITCH_CHARS[Math.floor(Math.random() * GLITCH_CHARS.length)];
+      }
+      setShown(out);
+      if (t < 1) frame = requestAnimationFrame(tick);
+      else { setShown(text); setGlitching(false); }
+    };
+    frame = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(frame); setShown(text); setGlitching(false); };
+  }, [text]);
+  return <span className={`glitch-text ${glitching ? 'glitching' : ''}`} data-text={shown}>{shown}</span>;
+}
+
+function elapsed(ms: number) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+/** Under the last message while Scout works, so a slow model still shows it's busy: a rotating word that glitches
+ *  into the next, how long the turn has run, and the model it runs on. */
+function WorkingIndicator() {
+  const { status } = useView('run');
+  const permission = useView('permission');
+  const plan = useView('plan');
+  const questions = useView('questions');
+  const model = useView('model');
+  const modelName = useModelName(model.key ? { key: model.key, provider: model.provider } : null);
+  const waiting = !!permission || plan !== null || !!questions;
+  const [since] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  const [verb, setVerb] = useState(() => Math.floor(Math.random() * WORKING_VERBS.length));
+  useEffect(() => {
+    const clock = window.setInterval(() => setNow(Date.now()), 1000);
+    const words = window.setInterval(() => setVerb((v) => (v + 1 + Math.floor(Math.random() * (WORKING_VERBS.length - 1))) % WORKING_VERBS.length), VERB_MS);
+    return () => { clearInterval(clock); clearInterval(words); };
+  }, []);
+  const word = waiting ? 'Awaiting input' : WORKING_VERBS[verb];
+  return (
+    <div className="working-indicator" aria-live="polite">
+      <GlitchText text={`${word}…`} />
+      <span className="working-meta tiny dim ellipsis">
+        {elapsed(now - since)}
+        {modelName && <> · {modelName}</>}
+        {status && !waiting && <> · {status}</>}
+      </span>
+    </div>
+  );
+}
+
 export function Transcript() {
   const items = useCore((s) => s.items);
   const { running } = useView('run');
@@ -674,11 +782,15 @@ export function Transcript() {
     return () => observer.disconnect();
   }, [hasItems]);
 
+  // The model is named once a turn, under its last reply, and a divider marks where the model changed.
+  const { modelAt, switchAt } = useMemo(() => modelMarks(items, running), [items, running]);
   const rows = useMemo(() => {
     const out: ReactNode[] = [];
     for (let i = 0; i < items.length; ) {
       if (items[i].kind !== 'tool') {
-        out.push(<Row key={items[i].id} item={items[i]} at={i} editable={!running} hit={hit === i} onRetry={handleRetry} />);
+        const sw = switchAt.get(i);
+        if (sw) out.push(<ModelSwitch key={`switch-${items[i].id}`} to={sw} />);
+        out.push(<Row key={items[i].id} item={items[i]} at={i} editable={!running} hit={hit === i} showModel={modelAt.has(i)} onRetry={handleRetry} />);
         i += 1;
         continue;
       }
@@ -690,7 +802,7 @@ export function Transcript() {
       else out.push(<ToolGroup key={run[0].id} items={run} first={start} hit={hit} onRetry={handleRetry} />);
     }
     return out;
-  }, [items, running, hit, handleRetry]);
+  }, [items, running, hit, handleRetry, modelAt, switchAt]);
 
   if (items.length === 0) return <div className="transcript"><EmptyState /></div>;
   return (
@@ -700,7 +812,7 @@ export function Transcript() {
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
       }}>
-        <div className="column">{rows}</div>
+        <div className="column">{rows}{running && <WorkingIndicator />}</div>
       </div>
       <MessageRail items={items} scroller={scroller} />
       {retryTarget && (

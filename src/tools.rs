@@ -66,6 +66,9 @@ pub enum Permission {
 
 pub struct Ctx<'a> {
     pub cwd: &'a str,
+    /// The chat the tools run for (its saved id), so the shells it leaves running in the background end with it.
+    /// Empty for work that isn't a chat's.
+    pub chat: &'a str,
     pub cancel: &'a AtomicBool,
     /// Absolute paths read this session, so edits of files the model never looked at are refused.
     pub read_files: &'a mut HashSet<PathBuf>,
@@ -128,9 +131,9 @@ pub fn specs(only: Option<&[&str]>, edit: EditTool) -> Vec<Value> {
         ("shell_output", "Read a background shell's output and whether it is still running. By default returns the output since the last read; lines returns the last N lines of all its output instead. wait_seconds waits up to that long (max 600) for it to finish first, to keep waiting on a command that ran past its time.",
             json!({"type":"object","properties":{"id":{"type":"string"},"lines":{"type":"number","description":"Show the last N lines of all output"},"wait_seconds":{"type":"number","description":"Wait up to this long for it to finish before reading"}},"required":["id"]})),
         ("kill_shell", "Stop a background shell.", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
-        ("web_fetch", "Fetch a URL (http/https) and return its text. HTML is converted to plain text. Use for docs, issues and API references.",
+        ("web_fetch", "Fetch a URL (http/https) and return its text. HTML is converted to plain text. Use for docs, issues and API references. It also reads scout:// pages, which web_search makes on this computer from library docs and GitHub READMEs: they aren't real websites, only exist for this run of Scout, and reading one sends nothing over the network.",
             json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})),
-        ("web_search", "Search the web. Returns titles, URLs, dates and the sentences that best match the query; read a page with web_fetch. Use it for current information, docs you don't have a URL for, and error messages.",
+        ("web_search", "Search the web. Returns titles, URLs, dates and the sentences that best match the query; read a page with web_fetch. Also looks the query up in Context7's library docs and in GitHub repositories, and lists those as scout:// pages (scout://search/<n>/docs/<i>, scout://search/<n>/readme/<i>, and scout://search/<n> for everything) with a short excerpt each. Read their full text with web_fetch. Use it for current information, docs you don't have a URL for, library and API usage, and error messages. Name the library in the query for the best docs.",
             json!({"type":"object","properties":{"query":{"type":"string","description":"What to search for, in plain words"},"num_results":{"type":"integer","description":"1-10, default 5"},"include_domains":{"type":"array","items":{"type":"string"},"description":"Only these sites, e.g. [\"docs.rs\"]"},"exclude_domains":{"type":"array","items":{"type":"string"}},"start_published_date":{"type":"string","description":"Only pages published after this ISO date"},"category":{"type":"string","enum":["news","research paper","github","pdf","company","personal site"]}},"required":["query"]})),
         ("todo_write", "Keep a todo list for multi-step work. Send the whole list each time. Exactly one item should be in_progress while working. Use it for tasks with 3+ steps; skip it for simple ones.",
             json!({"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"]}}},"required":["todos"]})),
@@ -283,7 +286,7 @@ fn infer_from_value(v: &Value, reasoning: &str, allowed: &HashSet<&str>) -> Opti
         "bash"
     } else if has_str("id") && (map.contains_key("lines") || map.contains_key("wait_seconds")) && only_keys(&["id", "lines", "wait_seconds"]) {
         "shell_output"
-    } else if map.get("url").and_then(Value::as_str).is_some_and(|u| u.starts_with("http://") || u.starts_with("https://")) && only_keys(&["url"]) {
+    } else if map.get("url").and_then(Value::as_str).is_some_and(|u| u.starts_with("http://") || u.starts_with("https://") || crate::scout_pages::is_scout_url(u)) && only_keys(&["url"]) {
         "web_fetch"
     } else if has_str("query")
         && only_keys(&["query", "num_results", "include_domains", "exclude_domains", "start_published_date", "category"])
@@ -407,10 +410,10 @@ pub fn recover_calls(content: &str, reasoning: &str, tools: &[Value]) -> Option<
 }
 
 pub fn known(name: &str) -> bool {
-    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "web_search" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory" | "generate_image")
+    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "web_search" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory" | "generate_image") || crate::browser::is_tool(name)
 }
 
-/// Experimental, only offered when Settings > Experimental turns it on: makes an image on the ScoutCode server.
+/// Only offered when Settings > Image generation turns it on: makes an image on the user's own key.
 pub fn image_spec() -> Value {
     json!({"type":"function","function":{"name":"generate_image","description":"Make an image from a text description and save it in the project, e.g. an icon, illustration, mockup or placeholder art. Describe the subject, style, colors and composition in detail. Each call makes one image and costs money, so make what's asked for, not variations nobody requested. It can't edit an existing image or write exact text reliably.",
         "parameters":{"type":"object","properties":{
@@ -423,7 +426,8 @@ pub fn image_spec() -> Value {
 pub fn permission(name: &str) -> Permission {
     match name {
         "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "update_memory" | "generate_image" => Permission::Edit,
-        "bash" => Permission::Exec,
+        // Runs any script in whatever site is open. The browser's other tools ask only for risky actions (agent.rs).
+        "bash" | "browser_eval" => Permission::Exec,
         // Anything could be behind one, so it's asked about like a command.
         n if is_mcp(n) => Permission::Exec,
         _ => Permission::Read,
@@ -480,7 +484,7 @@ pub fn label(name: &str, a: &Value) -> String {
                 n => format!("{first} (+{} more)", n - 1),
             }
         }
-        "claude" | "codex" | "kiro" | "opencode" | "grok" => {
+        "claude" | "codex" | "kiro" | "antigravity" | "vibe" | "opencode" | "grok" => {
             if let Some(cmd) = a.get("command").and_then(Value::as_str).filter(|s| !s.is_empty()) {
                 cmd.into()
             } else if let Some(path) = a.get("file_path").or_else(|| a.get("path")).and_then(Value::as_str).filter(|s| !s.is_empty()) {
@@ -490,6 +494,7 @@ pub fn label(name: &str, a: &Value) -> String {
             }
         }
         n if is_mcp(n) => a.to_string().chars().take(160).collect(),
+        n if crate::browser::is_tool(n) => crate::browser::label(n, a),
         _ => String::new(),
     }
 }
@@ -1154,6 +1159,47 @@ pub fn shell_name() -> &'static str {
     if shell().powershell { "powershell" } else { "bash" }
 }
 
+/// Puts a child process, and whatever it starts after this, in a job Windows ends when Scout ends, however it ends.
+/// Without it a crash or a force-close leaves every shell, agent CLI and server Scout started running unseen.
+/// Scout itself stays out of the job: what it opens for the user (a browser, Explorer, its own restart after an update)
+/// must outlive it. A child that asks to leave the job may (breakaway is allowed), so nothing fails to start for it.
+pub fn contain(pid: u32) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+        // Never closed: the handle closing as Scout's process ends is what ends the job.
+        struct Job(HANDLE);
+        unsafe impl Send for Job {}
+        unsafe impl Sync for Job {}
+        static JOB: OnceLock<Option<Job>> = OnceLock::new();
+        let job = JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(None, windows::core::PCWSTR::null()).ok()?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+            if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const std::ffi::c_void, size).is_err() {
+                let _ = CloseHandle(job);
+                return None;
+            }
+            Some(Job(job))
+        });
+        let Some(job) = job else { return };
+        unsafe {
+            if let Ok(p) = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) {
+                let _ = AssignProcessToJobObject(job.0, p);
+                let _ = CloseHandle(p);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
 /// Keeps child processes from flashing a console window, since the app has none.
 pub fn no_window(c: &mut Command) {
     #[cfg(windows)]
@@ -1188,7 +1234,9 @@ fn start(command: &str, cwd: &str) -> std::io::Result<Child> {
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
-    c.spawn()
+    let child = c.spawn()?;
+    contain(child.id());
+    Ok(child)
 }
 
 pub fn kill_tree(child: &mut Child) {
@@ -1254,6 +1302,8 @@ fn truncate(s: &str) -> String {
 
 struct Background {
     command: String,
+    /// The chat that started it (see `Ctx::chat`).
+    chat: String,
     child: Child,
     output: Arc<Mutex<String>>,
     read: usize,
@@ -1298,6 +1348,58 @@ fn background() -> &'static Mutex<HashMap<String, Background>> {
     BG.get_or_init(Default::default)
 }
 
+/// The agent's background shells, for the panel's tabs: id, command, whether it still runs, its exit code, and the
+/// last `lines` lines of output (0 for none).
+pub fn background_shells(lines: usize) -> Vec<Value> {
+    let mut bg = background().lock().unwrap();
+    let mut out: Vec<Value> = bg
+        .iter_mut()
+        .map(|(id, b)| {
+            if b.exit.is_none() {
+                if let Ok(Some(st)) = b.child.try_wait() {
+                    b.exit = Some(st.code().unwrap_or(-1));
+                }
+            }
+            let tail = if lines == 0 {
+                String::new()
+            } else {
+                let g = b.output.lock().unwrap();
+                let all: Vec<&str> = g.lines().collect();
+                strip_ansi(&all[all.len().saturating_sub(lines)..].join("\n"))
+            };
+            json!({"id": id, "command": b.command, "running": b.exit.is_none(), "exit": b.exit, "output": tail})
+        })
+        .collect();
+    out.sort_by_key(|v| v["id"].as_str().and_then(|s| s.trim_start_matches("sh").parse::<u64>().ok()).unwrap_or(0));
+    out
+}
+
+/// Stops one background shell from the panel. The model hears it ended the next time it reads that shell.
+pub fn stop_background_shell(id: &str) {
+    if let Some(b) = background().lock().unwrap().get_mut(id) {
+        if b.exit.is_none() {
+            kill_tree(&mut b.child);
+        }
+    }
+}
+
+/// Stops the background shells a chat started, once nothing can read them any more: the chat was left while idle, or
+/// deleted. Otherwise a dev server or watcher an agent started would keep running unseen until Scout closes.
+pub fn kill_chat_shells(chat: &str) {
+    if chat.is_empty() {
+        return;
+    }
+    let mut bg = background().lock().unwrap();
+    for b in bg.values_mut().filter(|b| b.chat == chat) {
+        if b.exit.is_none() {
+            kill_tree(&mut b.child);
+            let _ = b.child.wait();
+        }
+    }
+    // Their panel tabs go with them: the chat they'd be read from is gone.
+    bg.retain(|_, b| b.chat != chat);
+}
+
 pub fn kill_background_shells() {
     for b in background().lock().unwrap().values_mut() {
         if b.exit.is_none() {
@@ -1317,7 +1419,7 @@ fn bash(a: &Value, ctx: &mut Ctx) -> R {
     if a.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
         let id = next_shell_id();
         let pid = child.id();
-        background().lock().unwrap().insert(id.clone(), Background { command, child, output: out, read: 0, exit: None, told: false });
+        background().lock().unwrap().insert(id.clone(), Background { command, chat: ctx.chat.to_string(), child, output: out, read: 0, exit: None, told: false });
         return Ok(ToolResult::ok(
             format!("Started in the background as {id} (pid {pid}). Read its output with shell_output, stop it with kill_shell."),
             format!("background {id}"),
@@ -1342,7 +1444,7 @@ fn bash(a: &Value, ctx: &mut Ctx) -> R {
             let id = next_shell_id();
             let tail = last_lines(&strip_ansi(&out.lock().unwrap()), 50);
             let read = out.lock().unwrap().len();
-            background().lock().unwrap().insert(id.clone(), Background { command, child, output: out, read, exit: None, told: false });
+            background().lock().unwrap().insert(id.clone(), Background { command, chat: ctx.chat.to_string(), child, output: out, read, exit: None, told: false });
             return Ok(ToolResult {
                 output: format!(
                     "{}\n\n[still running after {}s, so it moved to the background as {id}. Above are its last 50 lines. Decide what to do: keep waiting with shell_output id={id} wait_seconds=N, read more with shell_output lines=N, stop it with kill_shell to change something, or work on something else and check it later.]",
@@ -1491,9 +1593,18 @@ fn html_to_text(html: &str) -> String {
 }
 
 fn web_fetch(a: &Value, _ctx: &mut Ctx) -> R {
-    let url = s(a, "url");
+    let url = s(a, "url").trim();
+    // Pages web_search made on this computer: read from memory, never from the network.
+    if crate::scout_pages::is_scout_url(url) {
+        let (title, mut text) = crate::scout_pages::read(url)?;
+        if text.len() > 60_000 {
+            text = text.chars().take(60_000).collect::<String>() + "\n\n[truncated]";
+        }
+        let kb = text.len() / 1024;
+        return Ok(ToolResult { output: format!("[{url}: {title}. Made by Scout from web_search; not a real website]\n\n{text}"), is_error: false, summary: Some(format!("Scout page, {kb} KB")), display: None });
+    }
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("Only http and https URLs are supported.".into());
+        return Err("Only http, https and scout:// (pages from web_search) URLs are supported.".into());
     }
     let res = crate::api::http()
         .get(url)
@@ -1520,12 +1631,42 @@ fn web_fetch(a: &Value, _ctx: &mut Ctx) -> R {
 }
 
 /// Searches the web through ScoutCode's /search, which needs the ScoutCode settings, so the agent runs it rather than
-/// `run`. Only the result list comes from the server; reading a page is web_fetch's job, on this computer.
+/// `run`. Only the result list comes from the server. Context7 docs and GitHub READMEs are fetched on this computer at
+/// the same time and kept as scout:// pages (see scout_pages); reading any page is web_fetch's job, on this computer.
 pub fn web_search(cfg: &crate::config::Config, a: &Value) -> R {
     let query = s(a, "query").trim();
     if query.is_empty() {
         return Err("query is required.".into());
     }
+    // A search kept to some sites, dates or kinds is about the web only.
+    let narrowed = ["include_domains", "start_published_date", "category"].iter().any(|k| a.get(*k).is_some_and(|v| !v.is_null()));
+    let (web, extras) = std::thread::scope(|sc| {
+        let docs = (!narrowed).then(|| sc.spawn(|| crate::scout_pages::context7(query, 2)));
+        let repos = (!narrowed).then(|| sc.spawn(|| crate::scout_pages::github(query, 2)));
+        let web = server_search(cfg, a, query);
+        let mut extras = docs.and_then(|j| j.join().ok()).unwrap_or_default();
+        extras.extend(repos.and_then(|j| j.join().ok()).unwrap_or_default());
+        (web, extras)
+    });
+    let (web_text, web_n) = match web {
+        Ok(v) => v,
+        Err(e) if extras.is_empty() => return Err(e),
+        Err(e) => (format!("The web search itself failed ({e}), but Scout found these on this computer.\n"), 0),
+    };
+    let n_extra = extras.len();
+    let pages = crate::scout_pages::publish(query, &web_text, extras);
+    if web_n == 0 && n_extra == 0 {
+        return Ok(ToolResult::ok(format!("No results for \"{query}\"."), "no results"));
+    }
+    let summary = match (web_n, n_extra) {
+        (w, 0) => format!("{w} result{}", if w == 1 { "" } else { "s" }),
+        (w, x) => format!("{w} result{}, {x} doc{}", if w == 1 { "" } else { "s" }, if x == 1 { "" } else { "s" }),
+    };
+    Ok(ToolResult::ok(web_text + &pages, summary))
+}
+
+/// The server's result list, written out, and how many results it had.
+fn server_search(cfg: &crate::config::Config, a: &Value, query: &str) -> Result<(String, usize), String> {
     let mut body = json!({"query": query, "num_results": a.get("num_results").and_then(Value::as_u64).unwrap_or(5).clamp(1, 10), "highlights": true});
     for k in ["include_domains", "exclude_domains", "start_published_date", "category"] {
         if let Some(v) = a.get(k).filter(|v| !v.is_null()) {
@@ -1538,7 +1679,7 @@ pub fn web_search(cfg: &crate::config::Config, a: &Value) -> R {
     })?;
     let results = res.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
     if results.is_empty() {
-        return Ok(ToolResult::ok(format!("No results for \"{query}\"."), "no results"));
+        return Ok((format!("No web results for \"{query}\".\n"), 0));
     }
     let mut out = format!("Results for \"{query}\". Use web_fetch to read a page.\n");
     for (i, r) in results.iter().enumerate() {
@@ -1551,11 +1692,49 @@ pub fn web_search(cfg: &crate::config::Config, a: &Value) -> R {
             out += &format!("   > {}\n", h.split_whitespace().collect::<Vec<_>>().join(" "));
         }
     }
-    let n = results.len();
-    Ok(ToolResult::ok(out, format!("{n} result{}", if n == 1 { "" } else { "s" })))
+    Ok((out, results.len()))
 }
 
-/// Makes an image through ScoutCode's /images/generations and saves it at `path`, which must be a new file: undo can
+/// Asks the user's image provider for one image, on their own key, and returns its bytes with anything the model said.
+fn request_image(cfg: &crate::config::Config, prompt: &str, aspect: Option<&str>) -> Result<(Vec<u8>, Option<String>), String> {
+    use base64::Engine;
+    let decode = |b64: &str| base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| format!("The provider sent an unreadable image: {e}"));
+    let failed = |e: crate::api::ApiError| format!("Image generation failed: {e}");
+    if cfg.image_provider == "openai" {
+        let key = cfg.image_key.as_deref().ok_or("Image generation needs an OpenAI key. The user can add one in Settings > Image generation.")?;
+        // Its sizes are fixed: square, wide or tall.
+        let size = match aspect.and_then(|r| r.split_once(':')).and_then(|(w, h)| Some((w.trim().parse::<f64>().ok()?, h.trim().parse::<f64>().ok()?))) {
+            Some((w, h)) if w > h => "1536x1024",
+            Some((w, h)) if h > w => "1024x1536",
+            _ => "1024x1024",
+        };
+        let body = json!({"model": cfg.image_model.as_deref().unwrap_or("gpt-image-1"), "prompt": prompt, "n": 1, "size": size});
+        let res = crate::api::image_request(&format!("{}/images/generations", crate::api::OPENAI_URL), key, &body).map_err(failed)?;
+        if let Some(b64) = res.pointer("/data/0/b64_json").and_then(Value::as_str) {
+            return Ok((decode(b64)?, None));
+        }
+        let url = res.pointer("/data/0/url").and_then(Value::as_str).ok_or("OpenAI sent no image.")?;
+        return Ok((crate::api::image_bytes(url).map_err(failed)?, None));
+    }
+    let key = cfg.openrouter_keys.first().map(|k| k.key.as_str()).ok_or("Image generation needs an OpenRouter key. The user can add one in Settings > Image generation.")?;
+    let mut body = json!({
+        "model": cfg.image_model.as_deref().unwrap_or("google/gemini-2.5-flash-image"),
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"],
+    });
+    if let Some(r) = aspect {
+        body["image_config"] = json!({"aspect_ratio": r});
+    }
+    let res = crate::api::image_request(&format!("{}/chat/completions", crate::config::OPENROUTER_URL), key, &body).map_err(failed)?;
+    let said = res.pointer("/choices/0/message/content").and_then(Value::as_str).map(String::from);
+    let url = res.pointer("/choices/0/message/images/0/image_url/url").and_then(Value::as_str).ok_or("OpenRouter sent no image. The model picked in Settings > Image generation may not make images.")?;
+    match url.split_once("base64,") {
+        Some((_, b64)) => Ok((decode(b64)?, said)),
+        None => Ok((crate::api::image_bytes(url).map_err(failed)?, said)),
+    }
+}
+
+/// Makes an image on the user's own key (see `request_image`) and saves it at `path`, which must be a new file: undo can
 /// only put back text, so an image never replaces one. Like web_search, the agent runs it, since it needs the settings.
 pub fn generate_image(cfg: &crate::config::Config, a: &Value, cwd: &str) -> R {
     use base64::Engine;
@@ -1574,22 +1753,8 @@ pub fn generate_image(cfg: &crate::config::Config, a: &Value, cwd: &str) -> R {
         "webp" => image::ImageFormat::WebP,
         _ => return Err("path must end in .png, .jpg or .webp.".into()),
     };
-    let mut body = json!({"prompt": prompt, "n": 1});
-    if let Some(r) = a.get("aspect_ratio").and_then(Value::as_str).filter(|r| !r.is_empty()) {
-        body["aspect_ratio"] = json!(r);
-    }
-    if let Some(m) = &cfg.image_model {
-        body["model"] = json!(m);
-    }
-    let res = crate::api::generate_image(cfg, &body).map_err(|e| match e.status {
-        404 if e.message.contains("image model") => format!("{e} Pick another in Settings > Experimental."),
-        404 => format!("Image generation isn't available: the ScoutCode server at {} doesn't have it yet.", cfg.base_url),
-        503 => "Image generation isn't set up on the ScoutCode server yet (it has no image models).".into(),
-        _ => format!("Image generation failed: {e}"),
-    })?;
-    let b64 = res.pointer("/data/0/b64_json").and_then(Value::as_str).ok_or("The server sent no image.")?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("The server sent an unreadable image: {e}"))?;
-    let img = image::load_from_memory(&bytes).map_err(|e| format!("The server sent an unreadable image: {e}"))?;
+    let (bytes, said) = request_image(cfg, prompt, a.get("aspect_ratio").and_then(Value::as_str).filter(|r| !r.is_empty()))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| format!("The provider sent an unreadable image: {e}"))?;
     // Saved in the format the path asks for. JPEG has no transparency, so it goes on white.
     let mut out = std::io::Cursor::new(Vec::new());
     let saved = if format == image::ImageFormat::Jpeg { image::DynamicImage::ImageRgb8(img.to_rgb8()) } else { img.clone() };
@@ -1603,7 +1768,7 @@ pub fn generate_image(cfg: &crate::config::Config, a: &Value, cwd: &str) -> R {
     let preview = format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(thumb.into_inner()));
     let path = rel(cwd, &file);
     let (w, h) = (img.width(), img.height());
-    let said = res.get("text").and_then(Value::as_str).filter(|t| !t.trim().is_empty()).map(|t| format!("\nThe image model said: {}", t.trim())).unwrap_or_default();
+    let said = said.filter(|t| !t.trim().is_empty()).map(|t| format!("\nThe image model said: {}", t.trim())).unwrap_or_default();
     Ok(ToolResult {
         output: format!("Saved a {w}x{h} image to {path}.{said}"),
         is_error: false,
@@ -1686,7 +1851,7 @@ mod tests {
         let cwd = dir.to_string_lossy().to_string();
         let (cancel, mut read) = (AtomicBool::new(false), HashSet::new());
         let mut noop = |_: &str| {};
-        let mut ctx = Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
+        let mut ctx = Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
         let (name, a) = canonical("search", json!({"query": "fn main("}));
         let out = run(&name, &a, &mut ctx).unwrap().output;
         assert!(out.contains("a.rs") && out.contains("fn Main()"), "{out}");
@@ -1702,7 +1867,7 @@ mod tests {
         let cwd = dir.to_string_lossy().to_string();
         let (cancel, mut read) = (AtomicBool::new(false), HashSet::new());
         let mut noop = |_: &str| {};
-        let mut ctx = Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
+        let mut ctx = Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
         let r = run("view", &json!({"paths": ["a.txt", "b.txt", "missing.txt"]}), &mut ctx).unwrap();
         assert!(r.output.contains("==> a.txt <==\n1\talpha") && r.output.contains("==> b.txt <==\n1\tbeta"), "{}", r.output);
         assert!(r.output.contains("==> missing.txt <==\nError: No file"), "{}", r.output);
@@ -1716,7 +1881,7 @@ mod tests {
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let (cancel, mut read) = (AtomicBool::new(false), HashSet::new());
         let mut noop = |_: &str| {};
-        let mut ctx = Ctx { cwd: &cwd, cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
+        let mut ctx = Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
         let command = if shell().powershell {
             "1..80 | % { \"line $_\" }; Start-Sleep -Seconds 3; 'done'"
         } else {
@@ -1772,5 +1937,44 @@ mod tests {
         assert!(might_be_tool_call("search\n{"));
         assert!(!might_be_tool_call("Here is what I found"));
         assert!(!might_be_tool_call("```rust\nfn main()"));
+    }
+    #[test]
+    fn a_chats_background_shells_end_with_it() {
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let stamp = crate::session::now_ms();
+        let (mine, other) = (format!("chat-a-{stamp}"), format!("chat-b-{stamp}"));
+        let start = |chat: &str| -> (String, u32) {
+            let (cancel, mut read) = (AtomicBool::new(false), HashSet::new());
+            let mut noop = |_: &str| {};
+            let mut ctx = Ctx { cwd: &cwd, chat, cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
+            let out = run("bash", &json!({"command": "sleep 60", "run_in_background": true}), &mut ctx).unwrap().output;
+            let id = out.split("background as ").nth(1).unwrap().split(' ').next().unwrap().to_string();
+            let pid = out.split("(pid ").nth(1).unwrap().split(')').next().unwrap().parse().unwrap();
+            (id, pid)
+        };
+        let ((a, a_pid), (b, _)) = (start(&mine), start(&other));
+        #[cfg(windows)]
+        unsafe {
+            // Started in Scout's job, so Windows ends it with Scout even after a crash.
+            use windows::Win32::System::JobObjects::IsProcessInJob;
+            use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, a_pid).unwrap();
+            let mut inside = windows::core::BOOL(0);
+            IsProcessInJob(h, None, &mut inside).unwrap();
+            let _ = windows::Win32::Foundation::CloseHandle(h);
+            assert!(inside.as_bool(), "the shell isn't in a job");
+        }
+        let _ = a_pid;
+        let ids = |list: Vec<Value>| list.iter().filter(|s| s["running"] == true).map(|s| s["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let running = ids(background_shells(0));
+        assert!(running.contains(&a) && running.contains(&b), "{running:?}");
+        kill_chat_shells(&mine);
+        let all = ids(background_shells(0));
+        assert!(!all.contains(&a), "the chat's shell still runs: {all:?}");
+        assert!(all.contains(&b), "another chat's shell was stopped: {all:?}");
+        kill_chat_shells(&other);
+        assert!(!ids(background_shells(0)).contains(&b));
+        // Work that isn't a chat's is never swept up by this.
+        kill_chat_shells("");
     }
 }

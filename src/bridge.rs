@@ -21,7 +21,9 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         send,
         unqueue,
         restart_to_update,
-        pick_attachments,
+        window_ready,
+        background_shells,
+        stop_background_shell,
         paste_image,
         display_path,
         add_project,
@@ -80,7 +82,34 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         music_soundcloud_add,
         local_add_file,
         local_hf_files,
+        browser_bounds,
+        browser_go,
+        browser_take_over,
+        browser_status,
     ]
+}
+
+// The built-in browser (browser.rs). Async, so they run off the main thread: making its webview waits on the main thread.
+
+#[tauri::command]
+async fn browser_bounds(x: f64, y: f64, width: f64, height: f64, shown: bool) {
+    crate::browser::set_bounds(x, y, width, height, shown);
+}
+
+/// An address, or "back", "forward" or "reload".
+#[tauri::command]
+async fn browser_go(to: String) -> Result<(), String> {
+    crate::browser::user_go(&to)
+}
+
+#[tauri::command]
+async fn browser_take_over(on: bool) {
+    crate::browser::set_user(on);
+}
+
+#[tauri::command]
+async fn browser_status() -> Value {
+    crate::browser::status()
 }
 
 #[tauri::command]
@@ -118,6 +147,7 @@ enum Action {
     ToggleStar { id: String },
     SetEffort { effort: String },
     SetMode { mode: String },
+    SetWorktree { on: bool },
     CycleMode,
     BrowserLogin,
     SaveApiKey { key: String },
@@ -132,6 +162,8 @@ enum Action {
     SaveKilo { enabled: bool, key: Option<String> },
     RemoveKiloKey,
     CheckKilo,
+    /// Loads every provider's model list again, as when a sign-in changes.
+    ReloadModels,
     LinkAdditional { id: String, key: Option<String> },
     UnlinkAdditional { id: String },
     SignIn { which: String },
@@ -140,7 +172,9 @@ enum Action {
     SetNotify { flash: bool, toast: bool },
     TestNotification,
     SetDiscord { presence: bool, project: bool },
-    SetImages { on: bool, model: Option<String> },
+    SetImages { on: bool, provider: Option<String>, model: Option<String> },
+    SetBrowserAgent { on: bool },
+    SaveImageKey { key: Option<String> },
     SetExplore { on: bool, models: Vec<ModelRef> },
     /// Code Review in the chat's side panel: `task` is what to review and how, `label` its name in the list.
     ReviewStart { label: String, task: String, models: Vec<ModelRef> },
@@ -204,7 +238,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
     if let Some(t) = c.team() {
         let own = match &action {
             Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SetGuest { on: true } | Action::LocalInstall { .. } | Action::LocalDownload { .. } | Action::LocalDownloadHf { .. } | Action::LocalSetup { .. } => true,
-            Action::SaveNvidiaKey { key } | Action::SaveGrokKey { key } | Action::SaveHermesKey { key } => key.is_some(),
+            Action::SaveNvidiaKey { key } | Action::SaveGrokKey { key } | Action::SaveHermesKey { key } | Action::SaveImageKey { key } => key.is_some(),
             Action::SetOpencode { on, .. } => *on && !t.acp.iter().any(|a| a == "opencode"),
             Action::SignIn { which } => !t.acp.iter().any(|a| a == which),
             _ => false,
@@ -242,6 +276,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::ToggleStar { id } => c.toggle_star(id),
         Action::SetEffort { effort } => c.set_effort(&effort),
         Action::SetMode { mode } => c.set_mode(&mode),
+        Action::SetWorktree { on } => c.set_worktree(on),
         Action::CycleMode => c.cycle_mode(),
         Action::BrowserLogin => c.browser_login(),
         Action::SaveApiKey { key } => c.save_api_key(key),
@@ -256,12 +291,14 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::SaveKilo { enabled, key } => c.save_kilo(enabled, key),
         Action::RemoveKiloKey => c.remove_kilo_key(),
         Action::CheckKilo => c.check_kilo(),
+        Action::ReloadModels => c.fetch_models(),
         Action::LinkAdditional { id, key } => c.link_additional(&id, key),
         Action::UnlinkAdditional { id } => c.unlink_additional(&id),
         Action::SignIn { which } => match which.as_str() {
             "copilot" => c.copilot_sign_in(),
             "devin" => c.devin_sign_in(),
             "kiro" => c.kiro_sign_in(),
+            "antigravity" | "vibe" => c.acp_sign_in(&which),
             "codex" | "claude" => c.agent_sign_in(&which),
             "opencode" => c.opencode_sign_in(),
             "grok" => c.grok_sign_in(),
@@ -273,6 +310,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
             "copilot" => c.copilot_sign_out(uninstall),
             "devin" => c.devin_sign_out(uninstall),
             "kiro" => c.kiro_sign_out(uninstall),
+            "antigravity" | "vibe" => c.acp_sign_out(&which, uninstall),
             "codex" | "claude" => c.agent_sign_out(&which, uninstall),
             "opencode" => c.opencode_sign_out(),
             "grok" => c.grok_sign_out(uninstall),
@@ -281,7 +319,9 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         },
         Action::SetNotify { flash, toast } => c.set_notify(flash, toast),
         Action::SetDiscord { presence, project } => c.set_discord(presence, project),
-        Action::SetImages { on, model } => c.set_images(on, model),
+        Action::SetImages { on, provider, model } => c.set_images(on, provider, model),
+        Action::SetBrowserAgent { on } => c.set_browser_agent(on),
+        Action::SaveImageKey { key } => c.save_image_key(key),
         Action::SetExplore { on, models } => c.set_explore(on, models),
         Action::ReviewStart { label, task, models } => c.review_start(label, task, models)?,
         Action::ReviewStop => crate::review::stop(&c.review_chat()),
@@ -399,9 +439,39 @@ fn restart_to_update<R: Runtime>(app: AppHandle<R>, core: Shared) {
     }
 }
 
+/// The agent's background shells, for their tabs in the panel. `lines` of output from each (0 for just the list).
 #[tauri::command(async)]
-fn pick_attachments(cwd: String) -> Vec<String> {
-    rfd::FileDialog::new().set_directory(&cwd).pick_files().unwrap_or_default().iter().map(|f| attach::display_path(&cwd, f)).collect()
+fn background_shells(lines: usize) -> Vec<Value> {
+    crate::tools::background_shells(lines.min(2000))
+}
+
+#[tauri::command(async)]
+fn stop_background_shell(id: String) {
+    crate::tools::stop_background_shell(&id);
+}
+
+/// The UI has drawn its first frame: shows the window, which starts hidden so it never appears empty.
+#[tauri::command]
+fn window_ready<R: Runtime>(window: tauri::WebviewWindow<R>) {
+    if !window.is_visible().unwrap_or(false) {
+        reveal_window(&window);
+    }
+}
+
+/// Shows the main window and brings it to the front. After an update the user has usually looked away while it
+/// installed, so the new copy takes the foreground (the old one allowed it, see update::Updater::restart) to say it's back.
+pub fn reveal_window<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    if std::env::var_os(crate::single_instance::RESTART_ENV).is_some() {
+        // Windows only lets a window jump to the front this way; set_focus alone may just flash the taskbar.
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_focus();
+        let _ = window.set_always_on_top(false);
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    } else {
+        let _ = window.set_focus();
+    }
 }
 
 /// Saves an image pasted into the box (base64, as the browser has it) to a temp file, to attach. Returns its path.
@@ -440,8 +510,8 @@ fn folder_places() -> crate::folders::Places {
 }
 
 #[tauri::command(async)]
-fn folder_list(dir: String) -> crate::folders::Listing {
-    crate::folders::list(&dir)
+fn folder_list(dir: String, files: Option<bool>) -> crate::folders::Listing {
+    crate::folders::list(&dir, files.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -758,11 +828,10 @@ fn usage_log() -> Value {
     })
 }
 
-/// The ScoutCode server's image models, for Settings > Experimental.
+/// A provider's image models, for Settings > Image generation.
 #[tauri::command(async)]
-fn image_models(core: Shared<'_>) -> Result<Value, String> {
-    let cfg = core.lock().unwrap().scout_cfg();
-    let models = crate::api::image_models(&cfg).map_err(|e| e.to_string())?;
+fn image_models(provider: String) -> Result<Value, String> {
+    let models = crate::api::image_models(&provider).map_err(|e| e.to_string())?;
     Ok(Value::Array(models.into_iter().map(|(id, name, cost)| json!({ "id": id, "name": name, "cost": cost })).collect()))
 }
 

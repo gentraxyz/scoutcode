@@ -400,7 +400,7 @@ fn run(cfg: &Config, chat: &str, id: u64, cwd: &str, task: &str, models: &[Explo
                     (format!("Error: {p} is outside the project. You can only read the project's files."), true)
                 } else {
                     let mut noop = |_: &str| {};
-                    let mut ctx = Ctx { cwd, cancel, read_files: &mut read_files, on_progress: &mut noop };
+                    let mut ctx = Ctx { cwd, chat: "", cancel, read_files: &mut read_files, on_progress: &mut noop };
                     match tools::run(&name, &args, &mut ctx) {
                         Ok(r) => (crate::redact::redact_owned(crate::agent::cap_output(r.output)), r.is_error),
                         Err(e) => (format!("Error: {e}"), true),

@@ -359,6 +359,10 @@ pub fn record_codex(v: &Value) {
     let mut meters = vec![];
     for s in snapshots {
         let id = s.get("limitId").and_then(Value::as_str).unwrap_or("codex");
+        // Codex's own Guardian reviewer never runs here (see `codex::mode_for`), so its limit isn't one to show.
+        if [Some(id), s.get("limitName").and_then(Value::as_str)].into_iter().flatten().any(|n| n.to_lowercase().contains("guardian")) {
+            continue;
+        }
         // The plan's own limit is "codex"; others, such as a model's, say whose they are.
         let prefix = if id == "codex" { String::new() } else { format!("{} ", s.get("limitName").and_then(Value::as_str).unwrap_or(id)) };
         for w in ["primary", "secondary"].iter().filter_map(|k| s.get(*k)).filter(|w| w.is_object()) {

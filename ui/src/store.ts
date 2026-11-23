@@ -33,13 +33,14 @@ export function createStore<T>(initial: T, morph?: (prev: T, patch: Partial<T>) 
 export type CoreState = { view: View; models: Model[]; items: Item[]; statics: Statics };
 export const core = createStore<CoreState>(null as unknown as CoreState);
 
-export type DockTab = 'terminal' | 'changes' | 'files' | 'games' | 'review';
-export type SettingsTab = 'appearance' | 'instructions' | 'memory' | 'dreaming' | 'notifications' | 'discord' | 'fallbacks' | 'router' | 'explore' | 'usage' | 'account' | 'providers' | 'skills' | 'mcp' | 'chatbots' | 'scoutmote' | 'experimental' | 'privacy' | 'updates';
+/** A tab in the panel: one of its pages, the New Tab page, a sub-agent's work (by its tool item's id) or a background shell. */
+export type DockTab = 'terminal' | `terminal:${number}` | 'changes' | 'files' | 'games' | 'review' | 'browser' | 'new' | `new:${number}` | `task:${number}` | `shell:${string}`;
+export type SettingsTab = 'appearance' | 'preferences' | 'instructions' | 'memory' | 'providers' | 'fallbacks' | 'router' | 'images' | 'browser' | 'skills' | 'mcp' | 'chatbots' | 'account' | 'updates';
 
 export const ui = createStore({
   sidebar: true,
   /** The chat, or ScoutCode Delta (the issue tracker) in its place. */
-  page: 'chat' as 'chat' | 'delta' | 'inbox' | 'epsilon',
+  page: 'chat' as 'chat' | 'delta' | 'inbox' | 'epsilon' | 'usage',
   /** The Epsilon computer open on the 'epsilon' page. */
   vm: 'persistent' as 'persistent' | 'temporary',
   /** A cloud (Epsilon) chat is on screen instead of the local one: a new one in a repository, or a task. */
@@ -49,7 +50,13 @@ export const ui = createStore({
   /** The first-run setup is showing: on first run, or reopened from Settings. */
   onboarding: false,
   dockOpen: false,
-  dockTab: 'terminal' as DockTab,
+  dockTab: 'new' as DockTab,
+  /** The panel's open tabs, in the strip's order. */
+  dockTabs: [] as DockTab[],
+  /** The folder each terminal tab's shell is in, for its title. */
+  termFolders: {} as Record<string, string>,
+  /** Restart to update was pressed: the window shows that it's installing until it closes. */
+  restarting: false,
   /** A file the Files tab should open, from a double click in Changes or a file link in a reply. */
   openFile: null as string | null,
   /** The line to show in it, from a link like src/main.rs:42. */
@@ -62,6 +69,8 @@ export const ui = createStore({
   renaming: null as string | null,
   /** The folder picker is up, to add a project. */
   pickingFolder: false,
+  /** The same picker is up, to attach files to the message. */
+  pickingFiles: false,
   input: '',
   attachments: [] as string[],
   focusEpoch: 0,
@@ -76,7 +85,7 @@ export const ui = createStore({
   // Opening and closing count; moving between tabs inside an open panel doesn't (Settings animates its own pages).
   const flips = (k: 'settings' | 'deleting' | 'cloud') => k in patch && !prev[k] !== !patch[k];
   return ('page' in patch && patch.page !== prev.page) || ('sidebar' in patch && patch.sidebar !== prev.sidebar)
-    || ('dockOpen' in patch && patch.dockOpen !== prev.dockOpen) || ('pickingFolder' in patch && patch.pickingFolder !== prev.pickingFolder)
+    || ('dockOpen' in patch && patch.dockOpen !== prev.dockOpen) || ('pickingFolder' in patch && patch.pickingFolder !== prev.pickingFolder) || ('pickingFiles' in patch && patch.pickingFiles !== prev.pickingFiles)
     || flips('settings') || flips('deleting') || flips('cloud');
 });
 

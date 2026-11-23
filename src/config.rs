@@ -3,9 +3,15 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub const MODES: [&str; 5] = ["default", "acceptEdits", "auto", "plan", "yolo"];
+/// The permission modes, from the most caution to the most freedom. "default" (ask before every edit) was dropped: a
+/// saved "default" now opens as Code ("acceptEdits").
+pub const MODES: [&str; 4] = ["plan", "acceptEdits", "auto", "yolo"];
+/// The mode a new install, or a config holding a mode that's gone, starts in.
+pub const DEFAULT_MODE: &str = "acceptEdits";
 pub const EFFORTS: [&str; 4] = ["none", "low", "medium", "high"];
 pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
+/// Where generate_image can run, on the user's own key.
+pub const IMAGE_PROVIDERS: [&str; 2] = ["openrouter", "openai"];
 pub const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1";
 pub const HERMES_URL: &str = "https://inference-api.nousresearch.com/v1";
 pub const KILO_URL: &str = "https://ai-gateway.kilo.ai/api/v1";
@@ -146,22 +152,20 @@ pub fn kilo_url() -> String {
 
 pub fn mode_label(mode: &str) -> &'static str {
     match mode {
-        "acceptEdits" => "Accept edits",
+        "plan" => "Chat",
         "auto" => "Auto",
-        "plan" => "Read Only",
         "yolo" => "Accept All",
-        _ => "Ask first",
+        _ => "Code",
     }
 }
 
 /// A few words on what a mode lets Scout do without asking, shown under its label on one line. It follows `Agent::permit`.
 pub fn mode_about(mode: &str) -> &'static str {
     match mode {
-        "plan" => "Looks, never changes anything",
-        "acceptEdits" => "Edits freely, asks before commands",
+        "plan" => "Talks and reads, never changes anything",
         "auto" => "Asks only about risky actions",
         "yolo" => "Never asks",
-        _ => "Asks before every edit and command",
+        _ => "Edits freely, asks before commands",
     }
 }
 
@@ -188,6 +192,10 @@ pub struct Config {
     pub devin_enabled: bool,
     /// The user has signed in to Kiro here. Its CLI keeps the token; Scout never sees it.
     pub kiro_enabled: bool,
+    /// The user has signed in to Antigravity here. Google's CLI keeps the login; Scout never sees it.
+    pub antigravity_enabled: bool,
+    /// The user has signed in to Mistral Vibe here. Its CLI keeps the key; Scout never sees it.
+    pub vibe_enabled: bool,
     /// The user has signed in to Codex here. Its CLI keeps the token; Scout never sees it.
     pub codex_enabled: bool,
     /// The user has signed in to Claude Code here. Its CLI keeps the token; Scout never sees it.
@@ -206,7 +214,7 @@ pub struct Config {
     pub hermes_key: Option<String>,
     /// The additional providers the user has linked, in the order they linked them.
     pub additional: Vec<LinkedProvider>,
-    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id. The model is that provider's id for it.
+    /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "antigravity", "vibe", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id. The model is that provider's id for it.
     pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
     pub username: Option<String>,
@@ -245,10 +253,16 @@ pub struct Config {
     /// Desktop app only: the user's Agent Routers, each an ordered route across providers with optional Jev
     /// difficulty routing. One is chosen like a model: provider "router", model its id.
     pub agent_routers: Vec<AgentRouter>,
-    /// Experimental: the agent gets a generate_image tool, which makes images on the ScoutCode server. Off until turned on.
+    /// The agent gets a generate_image tool, which makes images on the user's own key. Off until turned on.
     pub experimental_images: bool,
-    /// The server's image model generate_image uses. None for the server's default.
+    /// The agent gets the `browser` tool, which turns on the built-in browser and its browser_* tools. Off until turned on.
+    pub browser_agent: bool,
+    /// Whose key and API generate_image uses: "openrouter" (the saved OpenRouter key) or "openai" (`image_key`).
+    pub image_provider: String,
+    /// That provider's image model. None for its default.
     pub image_model: Option<String>,
+    /// The OpenAI key for image generation.
+    pub image_key: Option<String>,
     /// Explore: read-only research on a free model, for Scout's sub-agents and as a tool in Claude Code and Codex. Off
     /// until turned on.
     pub explore: crate::explore::Settings,
@@ -584,6 +598,8 @@ pub fn load_config() -> Config {
         copilot_user: s.get("copilotUser").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         devin_enabled: s.get("devinEnabled").and_then(Value::as_bool).unwrap_or(false),
         kiro_enabled: s.get("kiroEnabled").and_then(Value::as_bool).unwrap_or(false),
+        antigravity_enabled: s.get("antigravityEnabled").and_then(Value::as_bool).unwrap_or(false),
+        vibe_enabled: s.get("vibeEnabled").and_then(Value::as_bool).unwrap_or(false),
         codex_enabled: s.get("codexEnabled").and_then(Value::as_bool).unwrap_or(false),
         claude_enabled: s.get("claudeEnabled").and_then(Value::as_bool).unwrap_or(false),
         opencode_enabled: s.get("opencodeEnabled").and_then(Value::as_bool).unwrap_or(false),
@@ -603,7 +619,7 @@ pub fn load_config() -> Config {
         username: s.get("username").and_then(Value::as_str).filter(|u| !u.is_empty()).map(String::from),
         base_url: str_("baseUrl", "https://scoutcode.dev/v1"),
         model: str_("model", "auto"),
-        mode: str_("mode", "default"),
+        mode: str_("mode", DEFAULT_MODE),
         // A file from before "default" was removed falls back to low.
         effort: Some(str_("effort", "low")).filter(|e| EFFORTS.contains(&e.as_str())).unwrap_or_else(|| "low".into()),
         allow,
@@ -624,7 +640,10 @@ pub fn load_config() -> Config {
         fallbacks: s.get("modelFallbacks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         agent_routers: saved_agent_routers(&s),
         experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
+        browser_agent: s.get("browserAgent").and_then(Value::as_bool).unwrap_or(false),
+        image_provider: Some(str_("imageProvider", "openrouter")).filter(|p| IMAGE_PROVIDERS.contains(&p.as_str())).unwrap_or_else(|| "openrouter".into()),
         image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
+        image_key: s.get("imageKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         explore: s.get("explore").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         games: s.get("games").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         music: s.get("music").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
@@ -690,7 +709,7 @@ impl Config {
 
     /// Whether Kilo is the only provider there's a way to use.
     pub fn only_kilo(&self) -> bool {
-        self.team.is_none() && self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty() && self.local.models.is_empty()
+        self.team.is_none() && self.kilo_on() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.antigravity_enabled && !self.vibe_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty() && self.local.models.is_empty()
     }
 
     /// Whether requests to ScoutCode go without an account.
@@ -759,6 +778,8 @@ impl Config {
         self.copilot_user = other.copilot_user.clone();
         self.devin_enabled = other.devin_enabled;
         self.kiro_enabled = other.kiro_enabled;
+        self.antigravity_enabled = other.antigravity_enabled;
+        self.vibe_enabled = other.vibe_enabled;
         self.codex_enabled = other.codex_enabled;
         self.claude_enabled = other.claude_enabled;
         self.opencode_enabled = other.opencode_enabled;
@@ -770,7 +791,10 @@ impl Config {
         self.additional = other.additional.clone();
         self.agent_routers = other.agent_routers.clone();
         self.experimental_images = other.experimental_images;
+        self.browser_agent = other.browser_agent;
+        self.image_provider = other.image_provider.clone();
         self.image_model = other.image_model.clone();
+        self.image_key = other.image_key.clone();
         self.explore = other.explore.clone();
         self.games = other.games.clone();
         self.music = other.music.clone();
@@ -780,7 +804,7 @@ impl Config {
 
     /// Whether there's no provider at all to run models on, so the window asks the user to set one up.
     pub fn nothing_to_run_on(&self) -> bool {
-        self.team.is_none() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && !self.kilo_on() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty() && !self.local_on()
+        self.team.is_none() && self.api_key.is_none() && !self.guest && self.openrouter_keys.is_empty() && self.nvidia_key.is_none() && !self.kilo_on() && self.copilot_token.is_none() && !self.devin_enabled && !self.kiro_enabled && !self.antigravity_enabled && !self.vibe_enabled && !self.codex_enabled && !self.claude_enabled && !self.opencode_enabled && !self.grok_on() && !self.hermes_on() && self.additional.is_empty() && !self.local_on()
     }
 
     /// Whether the user has local models to run.

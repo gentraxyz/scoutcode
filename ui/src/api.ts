@@ -25,7 +25,7 @@ export type Item =
 /** A model in the picker: its list key and where it runs. */
 export type ModelRef = { key: string; provider: string };
 /** Explore: read-only research on free models. `models` empty is its default (Qwen 3.8 27B, then free models). */
-export type Explore = { on: boolean; models: (ModelRef & { model: string })[]; tokens: number; showFrom: number };
+export type Explore = { on: boolean; models: (ModelRef & { model: string })[] };
 /** Code Review's agent, per chat: its reviews, newest first. */
 export type ReviewFinding = { id: number; severity: 'critical' | 'high' | 'medium' | 'low'; file: string; line: number | null; title: string; detail: string; fix: string; status: 'open' | 'sent' | 'dismissed' };
 export type Review = { id: number; finished: number | null; state: 'running' | 'done' | 'failed' | 'stopped'; label: string; model: string; steps: { tool: string; label: string; done: boolean; failed: boolean }[]; findings: ReviewFinding[]; verdict: string; error: string | null; tokens: number };
@@ -42,7 +42,7 @@ export type AgentRouter = { id: string; name: string; useJev: boolean; steps: Ag
 export type Model = {
   id: string; label: string; description: string | null; context: number | null; tools: boolean | null; vision: boolean | null; cost: string | null;
   providers: string[]; routesTo: string[]; available: boolean | null; openrouterId: string | null; nvidiaId: string | null; opencodeId: string | null; kiloId: string | null; kiloFree: boolean;
-  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; codexId: string | null; claudeId: string | null; grokId: string | null; hermesId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
+  kiloTier: number | null; copilotId: string | null; devinId: string | null; kiroId: string | null; antigravityId: string | null; vibeId: string | null; codexId: string | null; claudeId: string | null; grokId: string | null; hermesId: string | null; additional: [string, string] | null; hosted: boolean; free: boolean;
   tier: number | null; openrouterTier: number | null;
   /** Free on OpenRouter, for a model ScoutCode serves too; `free` is ScoutCode's own price then. */
   openrouterFree: boolean;
@@ -168,8 +168,8 @@ export type Team = { name: string; role: string; providers: string[]; acp: strin
 export type View = {
   cfg: {
     loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
-    nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; imageModel: string | null; explore: Explore; games: Games; music: Music; local: LocalSettings;
+    nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; antigravity: boolean; vibe: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
+    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; browserAgent: boolean; image: { provider: string; model: string | null; key: string | null }; explore: Explore; games: Games; music: Music; local: LocalSettings;
   };
   local: LocalView;
   review: ReviewView;
@@ -181,6 +181,8 @@ export type View = {
   modelsLoading: number;
   additionalErrors: string[];
   kiroModelsError: string | null;
+  antigravityModelsError: string | null;
+  vibeModelsError: string | null;
   codexModelsError: string | null;
   claudeModelsError: string | null;
   opencodeModelsError: string | null;
@@ -196,12 +198,12 @@ export type View = {
   steering: string[];
   sessions: { id: string; cwd: string; title: string; ago: string; updated?: number; running: boolean; waiting: boolean; unread: boolean; errored: boolean; done?: boolean }[];
   projects: { name: string; path: string }[];
-  chat: { id: string | null; cwd: string; project: string; title: string; epoch: number };
+  chat: { id: string | null; cwd: string; project: string; title: string; epoch: number; git?: boolean; inWorktree?: boolean; worktree?: boolean };
   filesEpoch: number;
   focusEpoch: number;
   login: {
     busy: boolean; url: string | null; error: string | null; kiloCheck: { ok: boolean; message: string } | null;
-    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null; codex: SignIn | null; codexError: string | null; claude: SignIn | null; claudeError: string | null; opencode: SignIn | null; opencodeError: string | null; grok: SignIn | null; grokError: string | null; hermes: SignIn | null; hermesError: string | null;
+    copilot: SignIn | null; copilotError: string | null; devin: SignIn | null; devinError: string | null; kiro: SignIn | null; kiroError: string | null; antigravity: SignIn | null; antigravityError: string | null; vibe: SignIn | null; vibeError: string | null; codex: SignIn | null; codexError: string | null; claude: SignIn | null; claudeError: string | null; opencode: SignIn | null; opencodeError: string | null; grok: SignIn | null; grokError: string | null; hermes: SignIn | null; hermesError: string | null;
   };
   skills: { name: string; about: string; source: string | null; dir: string }[];
   link: {
@@ -224,7 +226,7 @@ export type Statics = {
   efforts: string[];
   additionalProviders: { id: string; name: string; needsKey: boolean; note: string; keyUrl: string; keyLink: string; keyHint: string }[];
   kiloWarning: string;
-  plans: { copilot: string; devin: string; kiro: string; codex: string; claude: string; opencode: string; grok: string; hermes: string };
+  plans: { copilot: string; devin: string; kiro: string; antigravity: string; vibe: string; codex: string; claude: string; opencode: string; grok: string; hermes: string };
   languages: [string, string][];
   exe: string;
 };
@@ -273,4 +275,11 @@ export function shortDate(day: string): string {
   const [, m, d] = day.split('-').map(Number);
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return m && d ? `${months[m - 1]} ${d}` : day;
+}
+
+/** The folder a chat in `dir` is listed under: the repository for one of Scout's worktrees
+ *  (`<repo>/.scout/worktrees/<name>`), else `dir` itself. */
+export function projectDir(dir: string): string {
+  const m = /^(.*?)[\/]\.scout[\/]worktrees[\/][^\/]+[\/]*$/i.exec(dir);
+  return m ? m[1] : dir;
 }

@@ -18,6 +18,9 @@ const PATHS: Record<string, string> = {
   sidebar: 'M2.5 3.5h11v9h-11zM6 3.5v9',
   panel: 'M2.5 3.5h11v9h-11zM10 3.5v9',
   folder: 'M2 4.5h4l1.5 1.5H14v6.5H2z',
+  folderOpen: 'M2 12.5V4h3.800l1.500 1.500h5.200v2M2 12.500l1.900-5h10.600l-1.900 5z',
+  hammer: 'M3 13l6.300-6.300M7.200 4.600l2-2 4.200 4.200-2 2z',
+  pin: 'M5.500 2.500h5M6.300 2.500v4.200L4.300 9.500h7.400L9.700 6.700V2.500M8 9.500v4',
   folderPlus: 'M2 4.5h4l1.5 1.5H14v6.5H2zM8 7.600v3.300M6.350 9.250h3.300',
   home: 'M2.500 7.500L8 3l5.500 4.500M4 6.500V13h3V9.500h2V13h3V6.500',
   desktop: 'M2.500 3h11v7.500h-11zM6 13.500h4M8 10.500v3',
@@ -29,9 +32,13 @@ const PATHS: Record<string, string> = {
   memory: 'M4.500 2.500h7v11L8 11l-3.500 2.500z',
   terminal: 'M2.5 3.5h11v9h-11zM5 6.5L7 8l-2 1.5M8.5 10H11',
   changes: 'M4 5.400a1.700 1.700 0 1 0 0-3.400 1.700 1.700 0 0 0 0 3.400zM12 14a1.700 1.700 0 1 0 0-3.400 1.700 1.700 0 0 0 0 3.400zM12 10.600V6a2 2 0 0 0-2-2H7.500M9.300 2.200L7.500 4l1.800 1.800M4 5.400V10a2 2 0 0 0 2 2h2.500M6.700 10.200L8.500 12l-1.800 1.800',
-  route: 'M2.5 4.5h4l3 7h4M11.5 9.5l2 2-2 2M2.5 11.5h4l1-2.3M11.5 2.5l2 2-2 2M9.5 4.5h4',
+  // A branch: a trunk with one limb splitting off it, for Agent Router.
+  route: 'M5 5.200v5.600M5 13.800a1.500 1.500 0 1 0 0-3 1.500 1.500 0 0 0 0 3zM5 5.200a1.500 1.500 0 1 0 0-3 1.500 1.500 0 0 0 0 3zM11 6.200a1.500 1.500 0 1 0 0-3 1.500 1.500 0 0 0 0 3zM11 6.200c0 2.800-6 2-6 4.600',
+  // A soft house: a rounded roof and walls with an arched door, for the rail's way back to the chats.
+  house: 'M2.800 7.300L7.200 3.500a1.200 1.200 0 0 1 1.600 0l4.400 3.800V12a1.500 1.500 0 0 1-1.500 1.500h-7.400A1.500 1.500 0 0 1 2.800 12zM6.500 13.500v-2.800a1.500 1.500 0 0 1 3 0v2.800',
+  code: 'M5.500 4.500L2 8l3.500 3.500M10.500 4.500L14 8l-3.500 3.500',
   files: 'M3 2.5h6l3 3v8H3zM9 2.5v3h3M5.5 9h4M5.5 11h4',
-  gear: 'M8 10.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4zM8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6L5 5M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4',
+  gear: 'M6.78 3.46L7.01 1.78L8.99 1.78L9.22 3.46L10.35 3.93L11.70 2.90L13.10 4.30L12.07 5.65L12.54 6.78L14.22 7.01L14.22 8.99L12.54 9.22L12.07 10.35L13.10 11.70L11.70 13.10L10.35 12.07L9.22 12.54L8.99 14.22L7.01 14.22L6.78 12.54L5.65 12.07L4.30 13.10L2.90 11.70L3.93 10.35L3.46 9.22L1.78 8.99L1.78 7.01L3.46 6.78L3.93 5.65L2.90 4.30L4.30 2.90L5.65 3.93zM8 10.1a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2z',
   chart: 'M3 13V8M8 13V3M13 13V6',
   palette: 'M8 2a6 6 0 0 0 0 12c1 0 1.500-.700 1.200-1.500-.400-1 .300-2 1.300-2H12a2 2 0 0 0 2-2C14 4.700 11.300 2 8 2zM5 7.500h.01M6.500 5h.01M9.500 5h.01M11 7.500h.01',
   download: 'M8 2.5v7.5M4.8 7L8 10.2 11.2 7M3 13.5h10',
@@ -77,7 +84,15 @@ const PATHS: Record<string, string> = {
   trash: 'M2.800 4.300h10.400M6.300 4.300V2.800h3.400v1.500M4.200 4.300l.6 8.900h6.400l.6-8.900M6.700 6.800v4M9.300 6.800v4',
 };
 
+/** Marks drawn filled, in their own boxes: Epsilon's notched square and Discord's logo. */
+const MARKS: Record<string, [string, string]> = {
+  epsilon: ['-3 -3 42 42', 'M10 0h14v12h12v14a10 10 0 0 1-10 10H10A10 10 0 0 1 0 26V10A10 10 0 0 1 10 0z'],
+  discord: ['0 0 24 24', 'M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z'],
+};
+
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
+  const mark = MARKS[name];
+  if (mark) return <svg className="icon" width={size} height={size} viewBox={mark[0]} fill="currentColor" aria-hidden><path d={mark[1]} /></svg>;
   return (
     <svg className="icon" width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.400" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d={PATHS[name]} />
@@ -198,7 +213,7 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
     const down = (e: MouseEvent) => {
       const t = e.target as Node;
       const at = openPopovers.indexOf(entry);
-      const inside = openPopovers.slice(at >= 0 ? at : 0).some((o) => o.panel()?.contains(t) || o.anchor()?.contains(t));
+      const inside = openPopovers.slice(at >= 0 ? at : 0).some((o) => o.panel()?.contains(t) || o.anchor()?.contains(t)) || !!(t as Element).closest?.('[data-popover-part]');
       if (!inside) close();
     };
     const key = (e: KeyboardEvent) => {

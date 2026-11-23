@@ -4,16 +4,12 @@ import { MenuItem } from './widgets';
 
 /** Every part that can be hidden, in the order Settings lists them. */
 export const HIDEABLE = [
-  ['top.files', 'Files button', 'Top bar'],
-  ['top.review', 'Code Review button', 'Top bar'],
-  ['top.changes', 'Changes button', 'Top bar'],
-  ['top.terminal', 'Terminal button', 'Top bar'],
-  ['top.game', 'Game button', 'Top bar'],
-  ['top.music', 'Music button', 'Top bar'],
+  ['top.panel', 'Panel button', 'Top bar'],
   ['top.project', 'Project folder', 'Top bar'],
   ['rail.inbox', 'Inbox', 'Side rail'],
   ['rail.issues', 'Issues', 'Side rail'],
   ['rail.epsilon', 'Epsilon', 'Side rail'],
+  ['rail.usage', 'Usage', 'Side rail'],
   ['side.search', 'Search chats', 'Sidebar'],
   ['side.newChat', 'New chat button', 'Sidebar'],
 ] as const;

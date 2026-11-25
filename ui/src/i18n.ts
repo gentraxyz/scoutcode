@@ -2,35 +2,6 @@
 // Supports 30 full translations with instant reactive switching.
 import { useSyncExternalStore } from 'react';
 import { en, type TranslationKey, type Translations } from './i18n/en';
-import { es } from './i18n/es';
-import { fr } from './i18n/fr';
-import { de } from './i18n/de';
-import { it } from './i18n/it';
-import { pt } from './i18n/pt';
-import { ru } from './i18n/ru';
-import { uk } from './i18n/uk';
-import { pl } from './i18n/pl';
-import { tr } from './i18n/tr';
-import { nl } from './i18n/nl';
-import { zh } from './i18n/zh';
-import { ja } from './i18n/ja';
-import { ko } from './i18n/ko';
-import { ar } from './i18n/ar';
-import { hi } from './i18n/hi';
-import { vi } from './i18n/vi';
-import { sv } from './i18n/sv';
-import { da } from './i18n/da';
-import { no } from './i18n/no';
-import { fi } from './i18n/fi';
-import { cs } from './i18n/cs';
-import { el } from './i18n/el';
-import { hu } from './i18n/hu';
-import { ro } from './i18n/ro';
-import { id } from './i18n/id';
-import { th } from './i18n/th';
-import { he } from './i18n/he';
-import { bn } from './i18n/bn';
-import { fil } from './i18n/fil';
 
 export type { TranslationKey, Translations };
 
@@ -70,38 +41,54 @@ export const SUPPORTED_LANGUAGES: [string, string][] = [
   ['Filipino', 'Filipino'],
 ];
 
-const DICTIONARIES: Record<string, Translations> = {
-  English: en,
-  Spanish: es,
-  French: fr,
-  German: de,
-  Italian: it,
-  Portuguese: pt,
-  Russian: ru,
-  Ukrainian: uk,
-  Polish: pl,
-  Turkish: tr,
-  Dutch: nl,
-  Chinese: zh,
-  Japanese: ja,
-  Korean: ko,
-  Arabic: ar,
-  Hindi: hi,
-  Vietnamese: vi,
-  Swedish: sv,
-  Danish: da,
-  Norwegian: no,
-  Finnish: fi,
-  Czech: cs,
-  Greek: el,
-  Hungarian: hu,
-  Romanian: ro,
-  Indonesian: id,
-  Thai: th,
-  Hebrew: he,
-  Bengali: bn,
-  Filipino: fil,
+/** Each translation is its own chunk, read when it is picked: only one is ever in use. */
+const LOADERS: Record<string, () => Promise<Translations>> = {
+  Spanish: () => import('./i18n/es').then((d) => d.es),
+  French: () => import('./i18n/fr').then((d) => d.fr),
+  German: () => import('./i18n/de').then((d) => d.de),
+  Italian: () => import('./i18n/it').then((d) => d.it),
+  Portuguese: () => import('./i18n/pt').then((d) => d.pt),
+  Russian: () => import('./i18n/ru').then((d) => d.ru),
+  Ukrainian: () => import('./i18n/uk').then((d) => d.uk),
+  Polish: () => import('./i18n/pl').then((d) => d.pl),
+  Turkish: () => import('./i18n/tr').then((d) => d.tr),
+  Dutch: () => import('./i18n/nl').then((d) => d.nl),
+  Chinese: () => import('./i18n/zh').then((d) => d.zh),
+  Japanese: () => import('./i18n/ja').then((d) => d.ja),
+  Korean: () => import('./i18n/ko').then((d) => d.ko),
+  Arabic: () => import('./i18n/ar').then((d) => d.ar),
+  Hindi: () => import('./i18n/hi').then((d) => d.hi),
+  Vietnamese: () => import('./i18n/vi').then((d) => d.vi),
+  Swedish: () => import('./i18n/sv').then((d) => d.sv),
+  Danish: () => import('./i18n/da').then((d) => d.da),
+  Norwegian: () => import('./i18n/no').then((d) => d.no),
+  Finnish: () => import('./i18n/fi').then((d) => d.fi),
+  Czech: () => import('./i18n/cs').then((d) => d.cs),
+  Greek: () => import('./i18n/el').then((d) => d.el),
+  Hungarian: () => import('./i18n/hu').then((d) => d.hu),
+  Romanian: () => import('./i18n/ro').then((d) => d.ro),
+  Indonesian: () => import('./i18n/id').then((d) => d.id),
+  Thai: () => import('./i18n/th').then((d) => d.th),
+  Hebrew: () => import('./i18n/he').then((d) => d.he),
+  Bengali: () => import('./i18n/bn').then((d) => d.bn),
+  Filipino: () => import('./i18n/fil').then((d) => d.fil),
 };
+
+const DICTIONARIES: Record<string, Translations> = { English: en };
+/** Bumped when a translation arrives, so the window draws itself again in it. */
+let loaded = 0;
+const pending = new Set<string>();
+
+function ensure(id: string) {
+  if (DICTIONARIES[id] || !LOADERS[id] || pending.has(id)) return;
+  pending.add(id);
+  LOADERS[id]().then((d) => {
+    pending.delete(id);
+    DICTIONARIES[id] = d;
+    loaded++;
+    subs.forEach((f) => f());
+  }, (e) => { pending.delete(id); console.error('translation', id, e); });
+}
 
 /** Languages the interface is fully translated into. All 30 supported languages now have full translations. */
 export const FULL = new Set(SUPPORTED_LANGUAGES.map(([id]) => id));
@@ -150,6 +137,7 @@ function load(): string {
 }
 
 let language = load();
+ensure(language);
 
 function apply() {
   if (typeof document === 'undefined') return;
@@ -164,6 +152,7 @@ export const getUiLanguage = () => language;
 
 export function setUiLanguage(id: string) {
   language = id;
+  ensure(id);
   try { localStorage.setItem(KEY, id); } catch { /* still applies for this run */ }
   apply();
   subs.forEach((f) => f());
@@ -205,6 +194,8 @@ export function t(key: TranslationKey, params?: Record<string, string | number>)
 /** React hook that subscribes to language changes and returns a reactive `t` function. */
 export function useTranslation() {
   const currentLang = useUiLanguage();
+  // Draws again once the picked translation has loaded.
+  useSyncExternalStore(subscribe, () => loaded);
   return {
     lang: currentLang,
     t: (key: TranslationKey, params?: Record<string, string | number>) =>

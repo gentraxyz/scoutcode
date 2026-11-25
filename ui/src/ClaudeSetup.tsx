@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
 import { act } from './api';
 import { useView } from './store';
-import { CopyButton, Spinner } from './widgets';
+import { CopyButton, Select, Spinner } from './widgets';
 
 /** Where the chatbot connector setup is. See claude_setup.rs. */
 export type SetupStatus = {
@@ -113,10 +113,10 @@ export function ClaudeSetup({ address, disabled, bare, bot = 'claude' }: { addre
       {browsers.length > 0 && (
         <label className="row tiny dim">
           <span>Browser</span>
-          <select className="input select compact" value={chosen} disabled={active} onChange={(e) => pick(e.target.value)}>
+          <Select className="input select compact" value={chosen} disabled={active} onChange={(e) => pick(e.target.value)}>
             <option value="">{fallback ? `Default (${fallback.name})` : 'Default browser'}</option>
             {others.map((b) => <option key={b.path} value={b.path}>{b.name}</option>)}
-          </select>
+          </Select>
         </label>
       )}
       {s.state === 'waiting' && !noExtension && <div className="row tiny dim"><Spinner />Couldn't find the browser in front, so Scout is waiting for the Scout extension on {site}…</div>}

@@ -4,7 +4,7 @@ import { logo } from './Accounts';
 import { ModelPicker, useModelName } from './ModelMenu';
 import { useCore, useView } from './store';
 import { fileTarget, openFileAt } from './Transcript';
-import { Icon, IconButton, SectionLabel, Spinner, Toggle } from './widgets';
+import { Icon, IconButton, SectionLabel, Select, Spinner, Toggle } from './widgets';
 
 type Scope = 'uncommitted' | 'branch' | 'lastCommit' | 'paths';
 type Strictness = 'serious' | 'balanced' | 'thorough';
@@ -318,9 +318,9 @@ export function ReviewTab() {
           <>
             {reviews.length > 1 && (
               <div className="row tight review-history">
-                <select className="input select grow" value={shown.id} onChange={(e) => setPicked(Number(e.target.value))}>
+                <Select className="input select grow" value={shown.id} onChange={(e) => setPicked(Number(e.target.value))}>
                   {reviews.map((r) => <option key={r.id} value={r.id}>{new Date(r.id).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.label} · {r.findings.length} found</option>)}
-                </select>
+                </Select>
                 <button type="button" className="button ghost compact" disabled={view?.running} onClick={() => act('reviewRemove', {})}>Clear all</button>
               </div>
             )}

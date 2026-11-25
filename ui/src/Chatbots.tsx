@@ -4,7 +4,7 @@ import { CLAUDE_NOTE, CODEX_NOTE, GROK_NOTE, GrokEntry, SignInEntry } from './Ac
 import { ClaudeSetup } from './ClaudeSetup';
 import { WEB_BOTS, type WebBot } from './webbots';
 import { ui, useCore, useView } from './store';
-import { CopyButton, Spinner } from './widgets';
+import { CopyButton, Select, Spinner } from './widgets';
 
 /** A chatbot that reached ScoutCode this recently is counted as connected. */
 const ACTIVE_MS = 5 * 60_000;
@@ -186,9 +186,9 @@ export function ChatbotsPanel({ close, botId, hideSetup = false }: { close: () =
         <summary className="tiny dim">More options</summary>
         <div className="stat-row">
           <span className="small dim">May do without asking</span>
-          <select className="input select" value={link.mode ?? 'default'} disabled={!!blocker} onChange={(e) => setMode(e.target.value)}>
+          <Select className="input select" value={link.mode ?? 'default'} disabled={!!blocker} onChange={(e) => setMode(e.target.value)}>
             {modes.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
+          </Select>
         </div>
         {link.mode === 'yolo' && <div className="tiny red">Yolo lets a chatbot run any command here without asking.</div>}
         <div className="tiny dim">Anything else waits for your OK in Scout, with a notification.</div>

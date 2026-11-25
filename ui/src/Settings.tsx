@@ -1,10 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { act, invoke, money, openExternal, parseUsd, setExplore, shortDate, usd, DISCORD_INVITE_URL, type Fallbacks, type Games, type McpServer, type ModelRef, type Music, type UsageInfo } from './api';
+import { accountLabel, act, invoke, money, restartBlocker, num, openExternal, parseUsd, setExplore, shortDate, usd, DISCORD_INVITE_URL, type AccountProvider, type Games, type McpServer, type ModelRef, type Music, type UsageInfo } from './api';
 import { closeGame } from './Games';
 import { closeMusic } from './Music';
-import { AgentRouterPanel, FallbackList, ModelPicker, useModelName } from './ModelMenu';
+import { AgentRouterPanel, ModelList } from './ModelMenu';
 import { ProviderQuotas } from './Quota';
-import { AdditionalKey, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, ANTIGRAVITY_NOTE, VIBE_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { AdditionalKey, CUSTOM_NEW, CUSTOM_NOTE, CustomProviderDetails, CustomProviderForm, BrowserEntry, CLAUDE_NOTE, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GROK_NOTE, GUEST_NOTE, GrokEntry, GuestEntry, GrokKeyEntry, HERMES_NOTE, HermesEntry, HermesKeyEntry, KIRO_NOTE, ANTIGRAVITY_NOTE, VIBE_NOTE, KeyField, NvidiaEntry, logo, OPENCODE_NOTE, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
@@ -12,18 +12,17 @@ import { ClaudeSetup } from './ClaudeSetup';
 import { LocalSetup, localStatus } from './Local';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
-import { CodeBlock, CopyButton, Icon, IconButton, Link, SectionLabel, Spinner, Toggle } from './widgets';
+import { CodeBlock, CopyButton, Icon, Link, SectionLabel, Select, Spinner, Toggle } from './widgets';
 import { DreamEntry, DreamingNow } from './Dreams';
 import { ErrorBoundary } from './ErrorBoundary';
 
 const TABS: { id: SettingsTab; title: string; icon: string; group: string; keywords: string }[] = [
   { id: 'appearance', title: 'Appearance', icon: 'palette', group: 'General', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style language interface translation logo material glass mica hidden games game 2048 chess flappy bird scout dash runner play fun waiting music mp3 soundcloud audio song player' },
-  { id: 'preferences', title: 'Preferences', icon: 'sliders', group: 'General', keywords: 'preferences notifications alerts taskbar flash toast windows attention discord rich presence profile status share activity explore explorer sub-agent subagent search research free qwen save plan tokens limits cheaper scoutmote remote control browser web phone away online computer pc privacy analytics telemetry usage data tracking posthog statistics opt out' },
+  { id: 'preferences', title: 'Preferences', icon: 'sliders', group: 'General', keywords: 'preferences notifications alerts taskbar flash toast windows attention discord rich presence profile status share activity explore explorer sub-agent subagent search research free qwen save plan tokens limits cheaper scoutmote remote control browser web phone away online computer pc privacy analytics telemetry usage data tracking posthog statistics opt out close closing quit exit confirm ask' },
   { id: 'instructions', title: 'Instructions', icon: 'chat', group: 'General', keywords: 'instructions project global rules preferences language russian english responses' },
   { id: 'memory', title: 'Memory', icon: 'memory', group: 'General', keywords: 'memory remember project user profile facts context dreaming dream dreams idle away sleep tidy learn recent chats free model log undo' },
   { id: 'providers', title: 'Providers', icon: 'layers', group: 'Models', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro antigravity google gemini mistral vibe devstral kilo models local llama llama.cpp gguf gpu offload offline ollama tools small model' },
-  { id: 'fallbacks', title: 'Fallbacks', icon: 'refresh', group: 'Models', keywords: 'fallbacks fallback models provider fails failed error retry backup' },
-  { id: 'router', title: 'Agent Router', icon: 'route', group: 'Models', keywords: 'agent router routing route fallback fallbacks jev rate limit 429 retry provider models intelligence tier' },
+  { id: 'router', title: 'Custom agents', icon: 'route', group: 'Models', keywords: 'custom agents agent router routing route fallback fallbacks backup fails failed error retry jev rate limit 429 provider models intelligence tier' },
   { id: 'images', title: 'Image generation', icon: 'sparkle', group: 'Models', keywords: 'image images generation generate generator pictures art icons illustrations openrouter openai key byok gpt image gemini' },
   { id: 'browser', title: 'Browser', icon: 'globe', group: 'Tools', keywords: 'browser built-in web browse website page click forms localhost test agent computer use webview automation' },
   { id: 'skills', title: 'Skills', icon: 'file', group: 'Tools', keywords: 'skills upload directory skills.sh install instructions @ mention' },
@@ -31,6 +30,7 @@ const TABS: { id: SettingsTab; title: string; icon: string; group: string; keywo
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', group: 'Tools', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
   { id: 'account', title: 'Account', icon: 'user', group: 'Scout', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
   { id: 'updates', title: 'Updates', icon: 'download', group: 'Scout', keywords: 'updates version upgrade download restart release notes about' },
+  { id: 'logs', title: 'Logs', icon: 'files', group: 'Scout', keywords: 'logs log crash crashed crashes error errors bug report debug diagnostics support copy save session' },
 ];
 
 function Heading({ title, sub }: { title: string; sub: string }) {
@@ -73,9 +73,9 @@ function Instructions() {
     <>
       <Heading title="Instructions" sub="Save preferences across chats. Scout includes these rules in its context again after a long conversation is summarized." />
       <SettingRow title="AI replies in" sub="Auto follows the conversation. Choose a language to keep replies and progress updates in that language, separately from the interface language.">
-        <select className="input select" value={draft.language} onChange={(e) => setDraft({ ...draft, language: e.target.value })}>
+        <Select className="input select" value={draft.language} onChange={(e) => setDraft({ ...draft, language: e.target.value })}>
           {languages.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-        </select>
+        </Select>
       </SettingRow>
       <SectionLabel>All projects</SectionLabel>
       <p className="small dim">General preferences for every desktop chat on this computer.</p>
@@ -153,7 +153,7 @@ function Dreaming() {
       <DreamingNow />
       {d.message && <Message m={[d.message.ok, d.message.text]} />}
       <SectionLabel>Dream Log</SectionLabel>
-      {d.log.length === 0 && <p className="small dim">What each dream changed shows up here, and in the Inbox, with an Undo.</p>}
+      {d.log.length === 0 && <p className="small dim">What each dream changed shows up here, with an Undo.</p>}
       <div className="stack">{d.log.map((x) => <DreamEntry key={x.id} d={x} />)}</div>
     </>
   );
@@ -231,7 +231,7 @@ function Appearance() {
     <>
       <Heading title={t('settings_appearance')} sub={t('settings_appearance_sub')} />
       <SettingRow title={t('settings_interface_lang')} sub={isFull(uiLanguage) ? t('settings_interface_lang_full') : t('settings_interface_lang_partial')}>
-        <select
+        <Select
           className="input select"
           value={uiLanguage}
           // Only the interface: the language Scout replies in is its own setting, under Instructions.
@@ -245,7 +245,7 @@ function Appearance() {
               {languages.filter(([id]) => !isFull(id)).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </optgroup>
           )}
-        </select>
+        </Select>
       </SettingRow>
       <SectionLabel>Background</SectionLabel>
       <div className="swatches" role="radiogroup" aria-label="Background">
@@ -302,7 +302,7 @@ function Appearance() {
       <HiddenItems />
       <SectionLabel>Setup</SectionLabel>
       <SettingRow title="Run setup again" sub="Walk through the first-run screens again. Your providers and settings stay as they are.">
-        <button type="button" className="button" onClick={() => ui.set({ settings: null, onboarding: true })}>Start</button>
+        <button type="button" className="button" onClick={() => ui.set({ settings: null, onboarding: true, onboardingMode: 'full' })}>Start</button>
       </SettingRow>
       <div className="row"><button type="button" className="button ghost compact" onClick={() => setTheme({ background: 'graphite', elements: 'gray', material: 'solid', logo: 'classic' })}>Reset to default</button></div>
     </>
@@ -315,7 +315,7 @@ function HiddenItems() {
   return (
     <>
       <SectionLabel>Hidden items</SectionLabel>
-      {hidden.length === 0 ? <p className="small dim">Right-click a button in the top bar, or New chat, Delta or Search chats in the sidebar, to hide it.</p> : (
+      {hidden.length === 0 ? <p className="small dim">Right-click a button in the top bar, or New chat or Search chats in the sidebar, to hide it.</p> : (
         <>
           {HIDEABLE.filter(([id]) => hidden.includes(id)).map(([id, name, where]) => (
             <SettingRow key={id} title={name} sub={where}><button type="button" className="button" onClick={() => showUi(id)}>Show</button></SettingRow>
@@ -352,7 +352,7 @@ function ExplorePage() {
       <SettingRow title="Models" sub={models.length ? 'Tried in this order: when one fails or hits a limit, the next carries the work on.' : 'Qwen 3.8 27B first, then ScoutCode’s other free models when it’s busy. Add your own to use them instead.'}>
         {models.length > 0 && <button type="button" className="button ghost compact" onClick={() => change([])}>Use the default</button>}
       </SettingRow>
-      <FallbackList value={models} onChange={change} max={3} />
+      <ModelList value={models} onChange={change} max={3} />
       <Message m={skipped ? [false, skipped] : null} />
     </>
   );
@@ -384,9 +384,9 @@ function Images() {
         <Toggle label="Image generation" on={on} onChange={(v) => set({ on: v })} />
       </SettingRow>
       <SettingRow title="Provider" sub="Whose key and image models to use.">
-        <select className="input select" value={provider} onChange={(e) => set({ provider: e.target.value, model: null })}>
+        <Select className="input select" value={provider} onChange={(e) => set({ provider: e.target.value, model: null })}>
           {IMAGE_PROVIDERS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-        </select>
+        </Select>
       </SettingRow>
       {provider === 'openai' ? (
         key ? (
@@ -413,11 +413,11 @@ function Images() {
       )}
       <SettingRow title="Image model" sub={error ? `Could not load the image models: ${error}` : 'Which of the provider’s image models makes them.'}>
         {models === null && !error ? <Spinner /> : (
-          <select className="input select" value={picked} onChange={(e) => set({ model: e.target.value || null })}>
+          <Select className="input select" value={picked} onChange={(e) => set({ model: e.target.value || null })}>
             <option value="">Default ({provider === 'openai' ? 'GPT Image 1' : 'Gemini 2.5 Flash Image'})</option>
             {models?.map((m) => <option key={m.id} value={m.id}>{m.name}{m.cost ? ` · ${m.cost}` : ''}</option>)}
             {picked && models && !models.some((m) => m.id === picked) && <option value={picked}>{picked}</option>}
-          </select>
+          </Select>
         )}
       </SettingRow>
     </>
@@ -463,10 +463,10 @@ function Extras() {
       {games.on && (
         <SettingRow title="Where it shows" sub={games.place === 'panel' ? 'A Games tab in the panel on the right.' : 'A card over the chat. Drag it by its bar to wherever you like, and it stays there.'}>
           {games.place === 'float' && games.pos && <button type="button" className="button ghost compact" onClick={() => setGames({ pos: null })}>Reset position</button>}
-          <select className="input select" value={games.place} onChange={(e) => setGames({ place: e.target.value as Games['place'] })}>
+          <Select className="input select" value={games.place} onChange={(e) => setGames({ place: e.target.value as Games['place'] })}>
             <option value="float">Floating card</option>
             <option value="panel">Side panel</option>
-          </select>
+          </Select>
         </SettingRow>
       )}
       <SettingRow title="Music" sub="Listen to your own MP3s or SoundCloud while Scout works. Open it with the music button at the top of the window. Music keeps playing when you close the card.">
@@ -476,48 +476,12 @@ function Extras() {
   );
 }
 
-function SingleModelFallbacks({ m, list, onChange, onRemove }: { m: ModelRef; list: ModelRef[]; onChange: (l: ModelRef[]) => void; onRemove: () => void }) {
-  const name = useModelName(m);
-  return (
-    <div className="stack">
-      <div className="row"><b className="strong grow ellipsis">{name}</b><IconButton icon="close" tip={`Remove ${name}'s own list`} size={24} onClick={onRemove} /></div>
-      <FallbackList value={list} onChange={onChange} />
-      {list.length === 0 && <div className="small dim">No fallbacks: this model just shows its errors.</div>}
-    </div>
-  );
-}
-
-function FallbacksPage() {
-  const { fallbacks: f } = useView('cfg');
-  const save = (next: Partial<Fallbacks>) => act('setFallbacks', { fallbacks: { ...f, ...next } });
-  const same = (a: ModelRef, b: ModelRef) => a.key === b.key && a.provider === b.provider;
-  return (
-    <>
-      <Heading title="Fallbacks" sub="When a model fails, Scout carries the turn on with the next model in its list, then goes back to the model you chose for your next message." />
-      <SettingRow title="Ask when a model fails" sub="The next time a model with no fallbacks fails, Scout offers to set some up. Off, it just shows the error.">
-        <Toggle label="Ask when a model fails" on={!f.chosen} onChange={(on) => save({ chosen: !on })} />
-      </SettingRow>
-      <SectionLabel>Every model</SectionLabel>
-      <p className="small dim">Tried for any model without a list of its own below.</p>
-      <FallbackList value={f.all} onChange={(all) => save({ all })} />
-      <SectionLabel>Single models</SectionLabel>
-      <p className="small dim">A model here uses its own list instead.</p>
-      {f.models.map(([m, list], i) => (
-        <SingleModelFallbacks key={`${m.provider}:${m.key}`} m={m} list={list}
-          onChange={(l) => save({ models: f.models.map((x, j) => (j === i ? [m, l] : x)) })}
-          onRemove={() => save({ models: f.models.filter((_, j) => j !== i) })} />
-      ))}
-      <div><ModelPicker label="Add a model" onPick={(key, provider) => { const m = { key, provider }; if (!f.models.some(([x]) => same(x, m))) save({ models: [...f.models, [m, []]] }); }} /></div>
-    </>
-  );
-}
-
 function AgentRouterPage() {
   return (
     <>
       <Heading
-        title="Agent Router"
-        sub="Make as many routers as you like, each its own route of providers and models (for example Opus 4.6 → Haiku 4.5 → DeepSeek), and pick one like a model. Each routes step-by-step as rate limits kick in, or with Jev on, rates each prompt's difficulty and picks the matching intelligence tier."
+        title="Custom agents"
+        sub="Make as many custom agents as you like, each its own route of providers and models (for example Opus 4.6 → Haiku 4.5 → DeepSeek), and pick one like a model. When a model fails or hits a rate limit, the next one carries the turn on. With Jev on, it rates each prompt's difficulty and picks the matching intelligence tier."
       />
       <AgentRouterPanel />
     </>
@@ -530,7 +494,12 @@ function Tile({ label, value, sub }: { label: string; value: string; sub: string
   return <div className="tile"><div className="tiny dim">{label}</div><div className="tile-value">{value}</div><div className="tiny dim">{sub}</div></div>;
 }
 
-const shortTokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+const shortTokens = (v: number) => {
+  const n = num(v);
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+};
+/** "Nov 5" for an ISO time, or "soon" when the server didn't send one. */
+const isoDay = (iso: unknown) => (typeof iso === 'string' && iso.length >= 10 ? shortDate(iso.slice(0, 10)) : 'soon');
 /** "14:30", local time, for when a 5-hour window resets. */
 const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const validDays = (s: string) => { const d = Number(s.trim()); return Number.isInteger(d) && d >= 1 && d <= 3650 ? d : null; };
@@ -643,6 +612,7 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
   const [code, setCode] = useState('');
   const dr = info.dailyReward;
   const ref = info.referrals;
+  const referred = Array.isArray(ref?.referred) ? ref.referred : [];
   const dl = info.discordLink;
   if (!dr && !ref && !dl) return null;
   const site = baseUrl.replace(/\/v1\/?$/, '');
@@ -679,17 +649,17 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
       {ref && (
         <>
           <SettingRow
-            title={`${ref.partner ? 'Partner Program' : 'Referrals'} (${ref.referred.length} referred${ref.earned > 0 ? ` · ${usd(ref.earned)} earned` : ''})`}
+            title={`${ref.partner ? 'Partner Program' : 'Referrals'} (${referred.length} referred${num(ref.earned) > 0 ? ` · ${usd(ref.earned)} earned` : ''})`}
             sub={`Your referral code is "${ref.code}". Refer as many friends as you like: they get ${usd(ref.credit)} in ScoutCode credit that expires in ${ref.expiryDays} days, and you get ${usd(ref.bonus)} in balance once they sign in to Scout and send their first prompt.`}
           >
             <CopyButton text={ref.code} label="Copy code" />
             <CopyButton text={`${site}/signup?ref=${encodeURIComponent(ref.code)}`} label="Copy link" />
           </SettingRow>
-          {ref.referred.map((r) => (
+          {referred.map((r) => (
             <SettingRow
               key={r.username}
               title={`Referred ${r.username}`}
-              sub={`${shortDate(r.createdAt.slice(0, 10))} · ${r.rewardedAt ? `+${usd(r.payout)} added to your balance` : 'Waiting for their first prompt in Scout'}`}
+              sub={`${isoDay(r.createdAt)} · ${r.rewardedAt ? `+${usd(r.payout)} added to your balance` : 'Waiting for their first prompt in Scout'}`}
             />
           ))}
           {ref.referredBy ? (
@@ -840,7 +810,9 @@ function UsageLimits() {
   const { hasKey } = useView('cfg');
   const { info, busy, message } = useView('usage');
   if (!hasKey) return <p className="muted">Sign in to ScoutCode to see your credit and limits.</p>;
-  const plan = (p: { limit: number; left: number } | null): [string, string] => (p ? [usd(p.left), `left of ${usd(p.limit)}`] : ['Unlimited', 'Requests are free']);
+  const plan = (p: { limit: number; left: number } | null | undefined): [string, string] => (p ? [usd(p.left), `left of ${usd(p.limit)}`] : ['Unlimited', 'Requests are free']);
+  const bankedMoney = Array.isArray(info?.bankedMoney) ? info.bankedMoney : [];
+  const bankedResets = Array.isArray(info?.bankedResets) ? info.bankedResets : [];
   return (
     <div className="stack">
       {info ? (
@@ -857,15 +829,15 @@ function UsageLimits() {
             <Tile label="Money (API keys)" value={plan(info.money)[0]} sub={plan(info.money)[1]} />
           </div>
           <div className="tiles three">
-            <Tile label="Banked" value={usd(info.bankedMoney.reduce((n, b) => n + b.amount, 0))} sub="Spent next, runs out" />
+            <Tile label="Banked" value={usd(bankedMoney.reduce((n, b) => n + num(b.amount), 0))} sub="Spent next, runs out" />
             <Tile label="Balance" value={usd(info.balance)} sub="Spent last, doesn't reset" />
           </div>
           <div className="tiny dim">
-            {info.cliResetsAt && `Desktop credit resets ${shortDate(info.cliResetsAt.slice(0, 10))} UTC. `}Money resets {shortDate(info.resetsAt.slice(0, 10))} UTC.
+            {info.cliResetsAt && `Desktop credit resets ${isoDay(info.cliResetsAt)} UTC. `}{info.resetsAt && <>Money resets {isoDay(info.resetsAt)} UTC.</>}
           </div>
-          {info.bankedMoney.map((b, i) => <SettingRow key={i} title={`${usd(b.amount)} banked`} sub={`Expires ${shortDate(b.expiresAt.slice(0, 10))} UTC`} />)}
-          {info.bankedResets.map((r, i) => (
-            <SettingRow key={i} title="Banked reset" sub={`Clears your spending this month. Expires ${shortDate(r.expiresAt.slice(0, 10))} UTC.`}>
+          {bankedMoney.map((b, i) => <SettingRow key={i} title={`${usd(b.amount)} banked`} sub={`Expires ${isoDay(b.expiresAt)} UTC`} />)}
+          {bankedResets.map((r, i) => (
+            <SettingRow key={i} title="Banked reset" sub={`Clears your spending this month. Expires ${isoDay(r.expiresAt)} UTC.`}>
               {/* The one that runs out soonest goes first, so only the first row has the button. */}
               {i === 0 && <button type="button" className="button primary" disabled={busy} onClick={() => act('usageChange', { body: { action: 'use-banked-reset' }, said: 'Your usage this month is back to zero.' })}>Use</button>}
             </SettingRow>
@@ -893,11 +865,11 @@ function Usage() {
       {log && (
         <div className="stack usage-log">
           <div className="tiles three">
-            {([['Today', log.today], ['Last 7 days', log.week], ['Last 30 days', log.month]] as const).map(([label, [t, c]]) => <Tile key={label} label={label} value={`${shortTokens(t)} tokens`} sub={`$${c.toFixed(2)}`} />)}
+            {([['Today', log.today], ['Last 7 days', log.week], ['Last 30 days', log.month]] as const).map(([label, [t, c]]) => <Tile key={label} label={label} value={`${shortTokens(t)} tokens`} sub={usd(c)} />)}
           </div>
           <div className="usage-chart">
             {log.days.map((d) => (
-              <div key={d.day} className="usage-bar" title={`${shortDate(d.day)}\n${d.tokens.toLocaleString()} tokens\n$${d.cost.toFixed(2)}\n${d.requests} requests`}>
+              <div key={d.day} className="usage-bar" title={`${shortDate(d.day)}\n${num(d.tokens).toLocaleString()} tokens\n${usd(d.cost)}\n${d.requests} requests`}>
                 <span style={{ height: `${d.tokens ? Math.max(2, (d.tokens / max) * 100) : 0}%` }} />
               </div>
             ))}
@@ -957,7 +929,7 @@ function OpenRouterKeys() {
   const [name, setName] = useState('');
   return (
     <>
-      <p className="small dim">Tried from the top. If one fails, the next one is used. Saved on this PC. Models on OpenRouter bill your OpenRouter account.</p>
+      <p className="small dim">Tried from the top. If one fails, the next one is used. Saved on this PC. Models on OpenRouter bill your OpenRouter account, and can only be used in a custom agent: add them to a route under Custom agents.</p>
       {keys.map((k, i) => (
         <SettingRow key={i} title={`${i + 1}. ${k.name}`} sub={k.masked}>
           {i > 0 && <button type="button" className="button" onClick={() => act('editOpenrouterKey', { at: i, op: 'up' })}>Up</button>}
@@ -986,7 +958,31 @@ function OwnAccount({ which, title, note, who, planText, planUrl }: { which: Own
           <button type="button" className="button" onClick={() => act('signOutOf', { which, uninstall: true })}>Sign out and uninstall</button>
         </SettingRow>
       ) : <div className="field-420"><SignInEntry which={which} /></div>}
+      {who && (which === 'codex' || which === 'claude' || which === 'copilot') && <AgentAccountList which={which} />}
       <Link href={planUrl} className="small">{planText}</Link>
+    </>
+  );
+}
+
+/** Codex's or Claude Code's accounts on this PC: which one runs, and adding another. */
+function AgentAccountList({ which }: { which: AccountProvider }) {
+  const p = useView('cfg').agentAccounts[which];
+  const busy = !!useView('login')[which];
+  return (
+    <>
+      {p.list.length >= 2 && p.list.map((a, i) => (
+        <SettingRow key={a.id} title={accountLabel(a, i)} sub={a.id === p.active ? 'In use' : 'Saved on this PC'}>
+          {a.id !== p.active && <button type="button" className="button" disabled={busy} onClick={() => act('switchAccount', { which, id: a.id })}>Switch</button>}
+          <button type="button" className="button" disabled={busy} onClick={() => act('removeAccount', { which, id: a.id })}>{a.id === p.active ? 'Sign out' : 'Remove'}</button>
+        </SettingRow>
+      ))}
+      {busy
+        ? <div className="field-420"><SignInEntry which={which} /></div>
+        : (
+          <SettingRow title="Add another account" sub={p.list.length >= 2 ? 'Pick which account runs from the model menu, or here.' : 'Sign in to a second account, then switch between them from the model menu.'}>
+            <button type="button" className="button" onClick={() => act('addAccount', { which })}>Add</button>
+          </SettingRow>
+        )}
     </>
   );
 }
@@ -1022,6 +1018,13 @@ function Providers() {
     id: which, name, linked: on, status: login[which] ? 'Signing in…' : on ? who : providerStatus(which),
     body: <OwnAccount which={which} title={name} note={note} who={on ? who : null} planText={planText} planUrl={plans[which]} />,
   });
+  // The account in use, by its email once known, with how many there are.
+  const activeAccount = (w: AccountProvider) => {
+    const p = cfg.agentAccounts[w];
+    const at = p.list.findIndex((a) => a.id === p.active);
+    const name = p.list[at]?.name ?? 'Signed in';
+    return p.list.length >= 2 ? `${name} (${at + 1} of ${p.list.length} accounts)` : name;
+  };
   const keyRow = (title: string, masked: string, onRemove: () => void) => <SettingRow title={title} sub={masked}><button type="button" className="button" onClick={onRemove}>Unlink</button></SettingRow>;
   const all: ProviderEntry[] = [
     {
@@ -1045,9 +1048,9 @@ function Providers() {
         </>
       ),
     },
-    own('claude', 'Claude Code', CLAUDE_NOTE, cfg.claude, "See Claude's plans"),
-    own('codex', 'Codex', CODEX_NOTE, cfg.codex, "See Codex in ChatGPT's plans"),
-    own('copilot', 'GitHub Copilot', COPILOT_NOTE, cfg.copilot, 'No Copilot plan yet? Turn on the free one', cfg.copilotUser ?? 'Signed in'),
+    own('claude', 'Claude Code', CLAUDE_NOTE, cfg.claude, "See Claude's plans", activeAccount('claude')),
+    own('codex', 'Codex', CODEX_NOTE, cfg.codex, "See Codex in ChatGPT's plans", activeAccount('codex')),
+    own('copilot', 'GitHub Copilot', COPILOT_NOTE, cfg.copilot, 'No Copilot plan yet? Turn on the free one', activeAccount('copilot')),
     {
       id: 'openrouter', name: 'OpenRouter', linked: cfg.openrouterKeys.length > 0,
       status: cfg.openrouterKeys.length ? `${cfg.openrouterKeys.length} key${cfg.openrouterKeys.length === 1 ? '' : 's'}` : providerStatus('openrouter'),
@@ -1070,12 +1073,13 @@ function Providers() {
           <p className="small dim">{OPENCODE_NOTE}</p>
           {cfg.opencode ? (
             <>
-              <SettingRow title="OpenCode account" sub={cfg.opencodeSignedIn ? 'Signed in' : 'Not signed in: free models only'}>
+              <SettingRow title="OpenCode account" sub={cfg.opencodeSignedIn ? activeAccount('opencode') : 'Not signed in: free models only'}>
                 {cfg.opencodeSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'opencode', uninstall: false })}>Sign out</button>}
                 <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: false })}>Turn off</button>
                 <button type="button" className="button" onClick={() => act('setOpencode', { on: false, uninstall: true })}>Turn off and uninstall</button>
               </SettingRow>
               {!cfg.opencodeSignedIn && <div className="field-420"><SignInEntry which="opencode" /></div>}
+              {cfg.opencodeSignedIn && <AgentAccountList which="opencode" />}
             </>
           ) : <div className="field-420"><OpencodeEntry /></div>}
           <Link href={plans.opencode} className="small">Open the OpenCode console</Link>
@@ -1090,11 +1094,12 @@ function Providers() {
           <p className="small dim">{GROK_NOTE}</p>
           {cfg.grokSignedIn || cfg.grokKey ? (
             <>
-              <SettingRow title="Grok account" sub={cfg.grokSignedIn ? 'Signed in' : 'Not signed in'}>
+              <SettingRow title="Grok account" sub={cfg.grokSignedIn ? activeAccount('grok') : 'Not signed in'}>
                 {cfg.grokSignedIn && <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: false })}>Sign out</button>}
                 <button type="button" className="button" onClick={() => act('signOutOf', { which: 'grok', uninstall: true })}>Remove and uninstall</button>
               </SettingRow>
               {!cfg.grokSignedIn && <div className="field-420"><SignInEntry which="grok" /></div>}
+              {cfg.grokSignedIn && <AgentAccountList which="grok" />}
               {cfg.grokKey
                 ? keyRow('xAI key', cfg.grokSignedIn ? `${cfg.grokKey}: used when signed out` : cfg.grokKey, () => act('saveGrokKey', { key: null }))
                 : !login.grok && <div className="field-420"><GrokKeyEntry /></div>}
@@ -1135,6 +1140,9 @@ function Providers() {
     own('vibe', 'Mistral Vibe', VIBE_NOTE, cfg.vibe, 'Open the Mistral console'),
     ...additionalProviders.map((a): ProviderEntry => {
       const l = cfg.additional.find((x) => x.id === a.id);
+      if (a.custom) {
+        return { id: a.id, name: a.name, linked: true, status: a.note, body: <CustomProviderDetails p={a.custom} masked={l?.masked ?? null} /> };
+      }
       return {
         id: a.id, name: a.name, linked: !!l, status: l ? l.masked ?? 'Free, no key' : providerStatus(a.id),
         body: (
@@ -1187,7 +1195,10 @@ function Providers() {
       </>
     );
   }
-  const rest = all.filter((p) => !p.linked);
+  const rest = [
+    ...all.filter((p) => !p.linked),
+    { id: CUSTOM_NEW, name: 'Your own provider', linked: false, status: '', body: <><p className="small dim">{CUSTOM_NOTE}</p><div className="field-420"><CustomProviderForm onDone={() => setOpen(null)} /></div></> },
+  ];
   return (
     <>
       <Heading title="Providers" sub="Link your own accounts and keys to add their models to the model menu. Unlinking one takes its models out of the menu; your chats stay." />
@@ -1270,6 +1281,7 @@ const EMPTY_MCP: McpFormState = { editing: null, name: '', remote: false, comman
 function McpStateLine(s: McpServer): string {
   switch (s.state) {
     case 'off': return 'Off';
+    case 'approval': return 'Waiting for your OK before it connects';
     case 'connecting': return 'Connecting…';
     case 'ready': return `Connected${s.signedIn ? ' · signed in' : ''} · ${s.tools.length} tool${s.tools.length === 1 ? '' : 's'}`;
     case 'signIn': return 'Needs you to sign in';
@@ -1296,6 +1308,7 @@ function Mcp() {
       {servers.map((s) => (
         <div key={s.name} className="stack">
           <SettingRow title={s.name} sub={`${s.summary}\n${McpStateLine(s)}`}>
+            {s.state === 'approval' && <button type="button" className="button primary" onClick={() => act('mcpAllow', { name: s.name })}>Allow</button>}
             {s.state === 'signIn' && <button type="button" className="button primary" onClick={() => act('mcpSignIn', { name: s.name })}>Sign in</button>}
             {s.state === 'signingIn' && <button type="button" className="button" onClick={() => act('mcpCancelSignIn')}>Cancel sign-in</button>}
             {s.state === 'failed' && s.form.remote && !/^authorization\s*:/im.test(s.form.headers) && <button type="button" className="button" onClick={() => act('mcpSignIn', { name: s.name })}>Sign in</button>}
@@ -1361,9 +1374,9 @@ function Chatbots() {
       <SectionLabel>Web chatbots, like claude.ai and ChatGPT</SectionLabel>
       <SettingRow title="Folder" sub={link.cwd || 'Open a project first.'} />
       <SettingRow title="What it may do without asking" sub="The rest waits for your OK here. Turn the link off and on to change this. The link is on unless you turn it off, comes back on when Scout starts, and follows the project you have open.">
-        <select className="input select" disabled={link.on} value={mode} onChange={(e) => setMode(e.target.value)}>
+        <Select className="input select" disabled={link.on} value={mode} onChange={(e) => setMode(e.target.value)}>
           {modes.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-        </select>
+        </Select>
       </SettingRow>
       <SettingRow title="Link" sub={status}><button type="button" className="button" disabled={!link.on && !canLink} onClick={() => act('toggleLink', { mode })}>{link.on ? 'Turn off' : 'Turn on'}</button></SettingRow>
       {mode === 'yolo' && <p className="small red">Yolo lets the chatbot run any command on this computer without asking.</p>}
@@ -1403,12 +1416,6 @@ function ScoutMote() {
 }
 
 // ---------- updates ----------
-
-export function restartBlocker(running: boolean, dirty: boolean): string | null {
-  if (running) return 'Scout is working. You can restart when it finishes.';
-  if (dirty) return 'Save the file open in the editor first.';
-  return null;
-}
 
 function Privacy() {
   const { usageAnalytics } = useView('cfg');
@@ -1477,12 +1484,81 @@ function Updates() {
   );
 }
 
+type LogEntry = { name: string; modified: number; bytes: number; current: boolean; closed: boolean };
+
+function sizeLabel(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** One session's log: copy it, or save it as a file. */
+function LogRow({ entry, n }: { entry: LogEntry; n: number }) {
+  const [copied, setCopied] = useState<'idle' | 'busy' | 'done'>('idle');
+  const [error, setError] = useState('');
+  const when = new Date(entry.modified).toLocaleString();
+  const title = entry.current ? 'This session' : n === 1 ? 'Last session' : `${n} sessions ago`;
+  const state = entry.current ? `Running now · ${sizeLabel(entry.bytes)}` : `${entry.closed ? 'Closed normally' : "Didn't close normally (crashed, froze or was ended)"} · last written ${when} · ${sizeLabel(entry.bytes)}`;
+  const copy = async () => {
+    setCopied('busy');
+    setError('');
+    try {
+      await navigator.clipboard.writeText(await invoke<string>('logs_read', { name: entry.name }));
+      setCopied('done');
+      setTimeout(() => setCopied('idle'), 1500);
+    } catch (e) {
+      setError(String(e));
+      setCopied('idle');
+    }
+  };
+  const save = () => { setError(''); invoke('logs_save', { name: entry.name }).catch((e) => setError(String(e))); };
+  return (
+    <SettingRow title={title} sub={<>{state}{error && <><br /><span className="red">{error}</span></>}</>}>
+      <button type="button" className="button" onClick={copy} disabled={copied === 'busy'}><Icon name="copy" />{copied === 'done' ? 'Copied' : 'Copy'}</button>
+      <button type="button" className="button" onClick={save}><Icon name="download" />Save…</button>
+    </SettingRow>
+  );
+}
+
+function Logs() {
+  const [logs, setLogs] = useState<LogEntry[] | null>(null);
+  const load = () => { invoke<LogEntry[]>('logs_list').then(setLogs, () => setLogs([])); };
+  useEffect(load, []);
+  const crashed = logs?.some((l) => !l.current && !l.closed);
+  return (
+    <>
+      <Heading title="Logs" sub="Scout keeps a log of each of its last three sessions: what it did, what failed, and any crash. Keys and tokens are taken out. Copy or save one to send it to us on Discord when something went wrong." />
+      {crashed && <p className="small">A recent session didn't close normally. Its log ends just before it stopped, which is what we need to see.</p>}
+      {logs === null && <Spinner size={16} />}
+      {logs?.length === 0 && <p className="small dim">No logs yet.</p>}
+      {logs?.map((l, i) => <LogRow key={l.name} entry={l} n={logs[0]?.current ? i : i + 1} />)}
+      <div className="row">
+        <button type="button" className="button ghost" onClick={load}><Icon name="refresh" />Refresh</button>
+        <button type="button" className="button ghost" onClick={() => invoke('logs_open_folder')}><Icon name="folderOpen" />Show in folder</button>
+      </div>
+    </>
+  );
+}
+
 /** The smaller choices about how Scout behaves, on one page. */
+function Closing() {
+  const { confirmClose } = useView('cfg');
+  return (
+    <>
+      <Part title="Closing" sub="What happens when you close Scout's window." />
+      <SettingRow title="Ask before closing" sub="Closing the window asks first, and says if a chat is still running.">
+        <Toggle label="Ask before closing" on={confirmClose} onChange={(on) => act('setConfirmClose', { on })} />
+      </SettingRow>
+    </>
+  );
+}
+
 function Preferences() {
   return (
     <>
       <Heading title="Preferences" sub="How Scout lets you know, what it shares, and the helpers that run beside it." />
       <Notifications />
+      <Closing />
       <Discord />
       <ExplorePage />
       <ScoutMote />
@@ -1549,7 +1625,6 @@ export function Settings({ windowButtons }: { windowButtons?: ReactNode }) {
             {tab === 'instructions' && <Instructions />}
             {tab === 'memory' && <Memory />}
             {tab === 'providers' && <Providers />}
-            {tab === 'fallbacks' && <FallbacksPage />}
             {tab === 'router' && <AgentRouterPage />}
             {tab === 'images' && <Images />}
             {tab === 'browser' && <BrowserSettings />}
@@ -1558,6 +1633,7 @@ export function Settings({ windowButtons }: { windowButtons?: ReactNode }) {
             {tab === 'chatbots' && <Chatbots />}
             {tab === 'account' && <Account />}
             {tab === 'updates' && <Updates />}
+            {tab === 'logs' && <Logs />}
             </ErrorBoundary>
           </div>
         </div>

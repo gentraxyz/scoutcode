@@ -1,30 +1,47 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ComponentProps, type ComponentType } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { act, invoke, openExternal } from './api';
+import { act, invoke, openExternal, restartBlocker } from './api';
 import { AsciiBackdrop } from './AsciiBackdrop';
 import { Composer, PermissionBody } from './Composer';
-import { Dock } from './Dock';
 import { handleDockKeys, isTermTab, newDockTab, openDockTab, useAutoTaskTabs, useTasks } from './DockTabs';
 import { FloatingGame } from './Games';
 import { FloatingMusic } from './Music';
-import { Onboarding } from './Onboarding';
-import { Settings, UsagePage, restartBlocker } from './Settings';
-import { addProject, Sidebar } from './Sidebar';
+// First-run setup is big (its own scene and every provider's steps) and most launches never show it.
+const Onboarding = lazy(() => import('./Onboarding').then((m) => ({ default: m.Onboarding })));
+// Pages and the panel load the first time they're opened, so a launch only parses and holds the chat.
+// Once loaded (or preloaded), one draws straight away, without a frame of its fallback.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function named<K extends string, M extends Record<K, ComponentType<any>>>(load: () => Promise<M>, name: K) {
+  let loaded: M[K] | null = null;
+  const fetch = () => load().then((m) => { loaded = m[name]; return m; });
+  const Lazy = lazy(() => fetch().then((m) => ({ default: m[name] })));
+  const C = (props: ComponentProps<M[K]>) => {
+    // Picked once per mount: switching from the lazy wrapper to the loaded component would remount it.
+    const [Got] = useState(() => loaded ?? Lazy);
+    return <Got {...props} />;
+  };
+  C.preload = () => { if (!loaded) fetch().catch(() => {}); };
+  return C;
+}
+const Dock = named(() => import('./Dock'), 'Dock');
+const Settings = named(() => import('./Settings'), 'Settings');
+const UsagePage = named(() => import('./Settings'), 'UsagePage');
+const MissionControl = named(() => import('./MissionControl'), 'MissionControl');
+const SocialPage = named(() => import('./Social'), 'SocialPage');
+// Agent is the home page, so it's in the first bundle.
+import { AgentPage, AgentSidebar } from './agent/Agent';
+import { useAgentSync } from './agent/store';
+import { CodeSetupPrompt } from './CodeSetupPrompt';
 import { Hideable, HideMenu } from './Hideable';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Markdown, Transcript } from './Transcript';
-import { DeltaPage } from './DeltaPage';
-import { Inbox } from './Inbox';
-import { NavRail } from './NavRail';
-import { DeltaTabsBar } from './delta/DeltaTabsBar';
-import { deltaTabs } from './delta/tabs';
+import { AccountMenu } from './AccountMenu';
+import { ErrorBoundary } from './ErrorBoundary';
 import { FolderPicker } from './FolderPicker';
 import { UsageAlert } from './UsageAlert';
 import { Icon, IconButton, Modal, Spinner } from './widgets';
 import { useActivityPing } from './Dreams';
-import { CloudChat, CloudDoneButton, CloudTitle, EpsilonSidebar, NewProjectDialog, VmBar, VmPage } from './Cloud';
-import { cloud, LIVE, newCloudChat, stopTask, useEpsilonSync } from './epsilon';
 
 const appWindow = getCurrentWindow();
 
@@ -42,6 +59,76 @@ function WindowButtons() {
       <button type="button" aria-label={maximized ? 'Restore' : 'Maximize'} onClick={() => appWindow.toggleMaximize()}><Icon name={maximized ? 'restore' : 'maximize'} size={14} /></button>
       <button type="button" className="close" aria-label="Close" onClick={() => appWindow.close()}><Icon name="close" size={14} /></button>
     </div>
+  );
+}
+
+/** Closing the window (the X, Alt+F4, the taskbar) asks first, unless the user ticked "Don't ask again". */
+function useCloseGuard() {
+  useEffect(() => {
+    const off = appWindow.onCloseRequested((e) => {
+      if (core.get().view.cfg.confirmClose === false) return;
+      e.preventDefault();
+      ui.set({ confirmingClose: true });
+    });
+    return () => { off.then((f) => f()); };
+  }, []);
+}
+
+function CloseDialog() {
+  const open = useUi((u) => u.confirmingClose);
+  const { anyRunning } = useView('run');
+  const dirty = useUi((u) => u.editorDirty);
+  const [dontAsk, setDontAsk] = useState(false);
+  const [closing, setClosing] = useState(false);
+  useEffect(() => { if (open) { setDontAsk(false); setClosing(false); } }, [open]);
+  const cancel = () => ui.set({ confirmingClose: false });
+  const confirm = async () => {
+    if (closing) return;
+    setClosing(true);
+    // Saved before the window goes, so the next close doesn't ask.
+    if (dontAsk) await invoke('act', { action: { type: 'setConfirmClose', on: false } }).catch(() => {});
+    await appWindow.destroy();
+  };
+  // Enter closes, wherever focus is, except on a button (Enter on Cancel still cancels).
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.defaultPrevented || e.isComposing) return;
+      if ((e.target as Element | null)?.closest?.('button')) return;
+      e.preventDefault();
+      confirm();
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  });
+  if (!open) return null;
+  const warn = anyRunning || dirty;
+  return (
+    <Modal onClose={cancel} className="close-dialog">
+      <div className="stack close-copy">
+        <b className="strong">Close Scout?</b>
+        {!warn && <span className="small dim">Your chats are saved and will be here when you're back.</span>}
+        {warn && <span className="small dim">Some work won't survive closing.</span>}
+      </div>
+      {warn && (
+        <ul className="close-warnings small">
+          {anyRunning && <li>A chat is still running, and closing stops it.</li>}
+          {dirty && <li>The file open in the panel has unsaved edits.</li>}
+        </ul>
+      )}
+      <div className="close-foot">
+        <label className="close-check small" title="You can turn this back on in Settings > Preferences">
+          <input type="checkbox" checked={dontAsk} onChange={(e) => setDontAsk(e.target.checked)} />
+          <span className="close-box"><Icon name="check" size={11} /></span>
+          <span>Don't ask again</span>
+        </label>
+        <button type="button" className="button ghost" onClick={cancel}>Cancel</button>
+        <button type="button" className={`button ${warn ? 'danger' : 'primary'} close-go`} autoFocus disabled={closing} onClick={confirm}>
+          Close Scout
+          <kbd className="enter-kbd" aria-label="Enter"><Icon name="enter" size={12} /></kbd>
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -192,63 +279,51 @@ function DoneButton() {
 }
 
 function TopBar() {
-  const sidebar = useUi((u) => u.sidebar);
   const chat = useView('chat');
   const page = useUi((u) => u.page);
-  const inCloud = useUi((u) => !!u.cloud);
-  if (page === 'epsilon') {
+  if (page === 'agent') {
     return (
       <header className="top-bar" data-tauri-drag-region>
-        {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
-        <VmBar />
+        <span className="grow" data-tauri-drag-region />
+        <AccountMenu />
         <UpdatePill />
         <WindowButtons />
       </header>
     );
   }
-  if (page === 'chat' && inCloud) {
+  // Usage and Social have no chats sidebar (the rail gets you back), so no button to show it either.
+  if (page === 'usage' || page === 'social') {
     return (
       <header className="top-bar" data-tauri-drag-region>
-        {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
-        <CloudTitle />
+        <Icon name={page === 'social' ? 'social' : 'chart'} size={15} />
+        <b className="chat-title inbox-title" data-tauri-drag-region>{page === 'social' ? 'Social' : 'Usage'}</b>
         <span className="grow" data-tauri-drag-region />
-        <CloudDoneButton />
+        <AccountMenu />
         <UpdatePill />
         <WindowButtons />
       </header>
     );
   }
-  // Issues and Inbox have no chats sidebar (the rail gets you back), so no button to show it either.
-  if (page === 'inbox' || page === 'usage') {
+  if (page === 'mission') {
     return (
       <header className="top-bar" data-tauri-drag-region>
-        <Icon name={page === 'inbox' ? 'inbox' : 'chart'} size={15} />
-        <b className="chat-title inbox-title" data-tauri-drag-region>{page === 'inbox' ? 'Inbox' : 'Usage'}</b>
+        <Icon name="mission" size={15} />
+        <b className="chat-title inbox-title" data-tauri-drag-region>IDE</b>
+        <span className="tiny dim ellipsis" data-tauri-drag-region>{chat.project}</span>
         <span className="grow" data-tauri-drag-region />
+        <AccountMenu />
         <UpdatePill />
-        <WindowButtons />
-      </header>
-    );
-  }
-  if (page === 'delta') {
-    return (
-      <header className="top-bar delta-top-bar" data-tauri-drag-region>
-        <DeltaTabsBar />
-        <span className="grow" data-tauri-drag-region />
-        <UpdatePill />
-        <IconButton icon="chat" tip="Back to the chat" onClick={() => ui.set({ page: 'chat' })} />
+        <button type="button" className="button compact" onClick={() => ui.set({ page: 'agent' })}>Back to Agents</button>
         <WindowButtons />
       </header>
     );
   }
   return (
     <header className="top-bar" data-tauri-drag-region>
-      {!sidebar && <IconButton icon="sidebar" tip="Show sidebar" onClick={() => ui.set({ sidebar: true })} />}
       <b className="chat-title ellipsis" data-tauri-drag-region>{chat.title}</b>
       <span className="grow" data-tauri-drag-region />
-      {/* The sidebar shows the folder; without it, the bar does. */}
+      <AccountMenu />
       <DoneButton />
-      {!sidebar && <Hideable id="top.project"><button type="button" className="chip" title={`${chat.cwd}\nClick to add another project folder`} onClick={addProject}><Icon name="folder" size={14} />{chat.project}</button></Hideable>}
       <UpdatePill />
       <Hideable id="top.panel"><PanelButton /></Hideable>
       <WindowButtons />
@@ -375,56 +450,52 @@ function LinkPermission() {
   );
 }
 
+/** An MCP server from mcp.json that hasn't been OK'd yet. Nothing starts until the user says yes. "Not now" hides it for this run. */
+function McpApproval() {
+  const { servers } = useView('mcp');
+  const [hidden, setHidden] = useState<string[]>([]);
+  const s = servers.find((x) => x.state === 'approval' && !hidden.includes(x.name));
+  if (!s) return null;
+  const what = s.form.remote ? `It connects to ${s.summary}.` : `It runs ${s.summary} on this computer, with your access to it.`;
+  return (
+    <Modal onClose={() => setHidden([...hidden, s.name])}>
+      <b className="strong big">Connect MCP server "{s.name}"?</b>
+      <div className="muted">Scout found this server in mcp.json and hasn't connected to it yet. {what} Only allow servers you trust.</div>
+      <div className="row end">
+        <button type="button" className="button" onClick={() => setHidden([...hidden, s.name])}>Not now</button>
+        <button type="button" className="button primary" onClick={() => act('mcpAllow', { name: s.name })}>Allow</button>
+      </div>
+    </Modal>
+  );
+}
+
 function Login({ onDone }: { onDone: () => void }) {
   // No header over the steps: the welcome says hello, and each step has its own title.
   return (
     <div className="login-screen">
       <header className="login-bar" data-tauri-drag-region><WindowButtons /></header>
       <div className="login-body">
-        <Onboarding onDone={onDone} />
+        <Suspense fallback={<div className="login-loading"><Spinner size={18} /></div>}><Onboarding onDone={onDone} /></Suspense>
       </div>
       <FolderPicker />
     </div>
   );
 }
 
+function PageLoading() {
+  return <div className="page-loading"><Spinner size={18} /></div>;
+}
+
+const PAGE_NAMES: Record<string, string> = { agent: 'Agent', chat: 'Code', usage: 'The Usage page', mission: 'IDE', social: 'Social' };
+
 /** The window's own shortcuts. The terminal and the editor want most keys for themselves. */
 function useShortcuts() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      // Delta has its own keys; Ctrl+N still makes a chat.
-      if (ui.get().page === 'delta') {
-        if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
-          e.preventDefault();
-          ui.set({ page: 'chat' });
-          act('newChat');
-          return;
-        }
-        if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 't') {
-          e.preventDefault();
-          deltaTabs.addTab();
-          return;
-        }
-        if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'w') {
-          e.preventDefault();
-          deltaTabs.closeActiveTab();
-          return;
-        }
-        if (e.ctrlKey && e.key === 'Tab') {
-          e.preventDefault();
-          if (e.shiftKey) deltaTabs.prevTab();
-          else deltaTabs.nextTab();
-          return;
-        }
-        if (e.ctrlKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
-          e.preventDefault();
-          deltaTabs.switchToIndex(parseInt(e.key, 10) - 1);
-          return;
-        }
-        return;
-      }
-      // The Inbox and Usage have no chat on screen: only Ctrl+N, which makes one.
-      if (ui.get().page === 'inbox' || ui.get().page === 'usage') {
+      // Mission Control has its own keys (see MissionControl.tsx).
+      if (ui.get().page === 'mission') return;
+      // Usage has no chat on screen: only Ctrl+N, which makes one.
+      if (ui.get().page === 'usage' || ui.get().page === 'agent') {
         if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
           e.preventDefault();
           ui.set({ page: 'chat' });
@@ -445,9 +516,7 @@ function useShortcuts() {
       }
       if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        // In a cloud chat, a new one goes to the same repository.
-        if (ui.get().cloud && ui.get().page === 'chat') return newCloudChat();
-        ui.set({ page: 'chat', cloud: null });
+        ui.set({ page: 'chat' });
         return act('newChat');
       }
       // Only from the chat box: everywhere else Shift+Tab moves focus back, as usual.
@@ -456,12 +525,8 @@ function useShortcuts() {
         return act('cycleMode');
       }
       // Esc closes whatever is open on top before it stops Scout.
-      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().pickingFiles && !ui.get().newProject) {
-        const at = ui.get().cloud;
-        if (!at) return act('stop');
-        // In a cloud chat, Esc stops Epsilon, as it stops Scout in a local one.
-        const t = cloud.get().task;
-        if (at.taskId && t?.id === at.taskId && LIVE.has(t.status)) void stopTask(t.id);
+      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().pickingFiles) {
+        return act('stop');
       }
     };
     window.addEventListener('keydown', key);
@@ -471,19 +536,33 @@ function useShortcuts() {
 
 export function App() {
   const { loginNeeded, team } = useView('cfg');
-  const sidebar = useUi((u) => u.sidebar);
   const page = useUi((u) => u.page);
   const dropping = useUi((u) => u.dropping);
   // With no chat open yet, the box sits in the middle under the greeting; it moves down once there's a transcript.
   const fresh = useCore((s) => s.items.length === 0);
-  const inCloud = useUi((u) => !!u.cloud);
   useShortcuts();
-  useEpsilonSync();
+  const [missionUsed, setMissionUsed] = useState(false);
+  useEffect(() => { if (page === 'mission') setMissionUsed(true); }, [page]);
+  // The panel and Settings mount the first time they open, then stay (the panel keeps its terminals and edits).
+  // Read during the render that opens them, so they're in the frame the opening transition animates to.
+  const dockOpen = useUi((u) => u.dockOpen);
+  const [dockUsed, setDockUsed] = useState(false);
+  useEffect(() => { if (dockOpen) setDockUsed(true); }, [dockOpen]);
+  const settingsOpen = useUi((u) => !!u.settings);
+  const [settingsUsed, setSettingsUsed] = useState(false);
+  useEffect(() => { if (settingsOpen) setSettingsUsed(true); }, [settingsOpen]);
+  // Their code is fetched once the window is idle, so the first open slides in at once. Nothing is mounted until then:
+  // no terminal, editor or shell is started for a panel that's never opened.
+  useEffect(() => {
+    const ric = (window as unknown as { requestIdleCallback?: (f: () => void, o: { timeout: number }) => number }).requestIdleCallback;
+    const go = () => { Dock.preload(); Settings.preload(); };
+    const t = window.setTimeout(() => (ric ? ric(go, { timeout: 4000 }) : go()), 2500);
+    return () => clearTimeout(t);
+  }, []);
+  useAgentSync();
   useAutoTaskTabs();
-  // Opening or starting a chat on this PC (from anywhere: the Inbox, a notification) puts it back on screen.
-  const chatEpoch = useView('chat').epoch;
-  useEffect(() => { ui.set({ cloud: null }); }, [chatEpoch]);
   useActivityPing();
+  useCloseGuard();
   useEffect(() => {
     const offs = [
       listen<string[]>('dropped', async (e) => {
@@ -523,36 +602,43 @@ export function App() {
   useEffect(() => {
     if (team) ui.set({ onboarding: false });
   }, [!!team]);
-  if (!team && (loginNeeded || onboarding)) return <Login onDone={() => ui.set({ onboarding: false })} />;
+  if (!team && (loginNeeded || onboarding)) return <><Login onDone={() => ui.set({ onboarding: false, onboardingMode: 'full' })} /><CloseDialog /></>;
   return (
     <div className="app">
-      <NavRail />
-      {sidebar && page === 'chat' && <Sidebar />}
-      {sidebar && page === 'epsilon' && <EpsilonSidebar />}
+      {(page === 'chat' || page === 'agent') && <ErrorBoundary what="The chats list"><AgentSidebar /></ErrorBoundary>}
       <div className="main">
         <TopBar />
-        {page === 'delta' ? <DeltaPage /> : page === 'inbox' ? <Inbox /> : page === 'usage' ? <UsagePage /> : page === 'epsilon' ? <VmPage /> : inCloud ? (
-          <div className="main-body"><CloudChat /></div>
-        ) : (
-          <div className="main-body">
-            <div className={`chat ${fresh ? 'fresh' : ''}`}>
-              {fresh && <AsciiBackdrop />}
-              <Transcript />
-              <Composer />
+        {/* Kept mounted once opened, so its tabs' shells and edits survive a trip back to the agents. */}
+        {(missionUsed || page === 'mission') && <div className="main-body" style={{ display: page === 'mission' ? undefined : 'none' }}><ErrorBoundary what="Mission Control"><Suspense fallback={<PageLoading />}><MissionControl /></Suspense></ErrorBoundary></div>}
+        {/* Each page has its own boundary (keyed by page), so one that breaks shows its error and the rest of the
+            window keeps working: the rail still gets you to another page. */}
+        <ErrorBoundary key={page} what={PAGE_NAMES[page] ?? 'This page'}>
+          <Suspense fallback={<PageLoading />}>
+          {page === 'mission' ? null : page === 'usage' ? <UsagePage /> : page === 'social' ? <SocialPage /> : page === 'agent' ? <AgentPage /> : (
+            <div className="main-body">
+              <div className={`chat ${fresh ? 'fresh' : ''}`}>
+                {fresh && <AsciiBackdrop />}
+                <CodeSetupPrompt />
+                <ErrorBoundary what="The chat"><Transcript /></ErrorBoundary>
+                <ErrorBoundary what="The message box"><Composer /></ErrorBoundary>
+                <button type="button" className="switch-ide" onClick={() => ui.set({ page: 'mission' })}>Switch to IDE</button>
+              </div>
+              {(dockUsed || dockOpen) && <ErrorBoundary what="The panel"><Suspense fallback={null}><Dock /></Suspense></ErrorBoundary>}
             </div>
-            <Dock />
-          </div>
-        )}
+          )}
+          </Suspense>
+        </ErrorBoundary>
       </div>
-      <FloatingGame />
-      <FloatingMusic />
-      <Settings windowButtons={<WindowButtons />} />
+      <ErrorBoundary what="The game"><FloatingGame /></ErrorBoundary>
+      <ErrorBoundary what="The music player"><FloatingMusic /></ErrorBoundary>
+      {(settingsUsed || settingsOpen) && <Suspense fallback={null}><Settings windowButtons={<WindowButtons />} /></Suspense>}
       <DeleteDialog />
+      <CloseDialog />
       <UncensoredDialog />
       <HideMenu />
       <FolderPicker />
-      <NewProjectDialog />
       <LinkPermission />
+      <McpApproval />
       <WhatsNew />
       <UpdateCard />
       <UsageAlert />

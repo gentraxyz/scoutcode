@@ -1,6 +1,6 @@
 [package]
 name = "scout-desktop"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 description = "Scout: a desktop coding agent for ScoutCode (scoutcode.dev)"
 license = "MIT"
@@ -46,6 +46,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 brotli-decompressor = "5"
 
 [target.'cfg(windows)'.dependencies]
+# The webview's memory target, lowered while the window is minimized (idle_memory.rs). The same version wry uses.
+webview2-com = "0.39"
 # For toast notifications and dynamic taskbar icon. UI Automation, input and process names: the Claude connector setup
 # working the browser itself (claude_native.rs). The PC's memory: how much of it llama.cpp may keep prompts in (local.rs).
 # The registry also says how much memory the GPU has: which local model fits (local.rs).

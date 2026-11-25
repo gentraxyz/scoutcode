@@ -4,6 +4,16 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.3.0
+A home for your agents: they persist, share memory, and ask before they start coding tasks.
+
+- Agent home: a page of persistent agents, each with its own avatar. The coding agent moves to Code.
+- Agents share one memory in the cloud, so what one learns is there for the others. Messages send instantly, with live updates.
+- Agents use ScoutCode's models by default, and another model only when you name it.
+- Before an agent starts a coding task, it asks you for the repository and the model, and you approve each start.
+- Mission Control, Delta (the issue tracker and docs) and an Agent computer for each agent.
+- Code agent access is always on, so there's no switch for it.
+
 ## 0.2.2
 A built-in browser beside your chats, worktrees for new chats, and Google Antigravity and Mistral Vibe as providers.
 

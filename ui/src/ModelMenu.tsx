@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { act, tokens, type AgentRouteStep, type AgentRouter, type Model, type ModelRef } from './api';
-import { AdditionalOptions, BrowserEntry, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, ANTIGRAVITY_NOTE, VIBE_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
+import { accountLabel, act, tokens, type AgentRouteStep, type AgentRouter, type Model, type ModelRef } from './api';
+import { AdditionalOptions, AGENT_ONLY_NOTE, BrowserEntry, CODEX_NOTE, COPILOT_NOTE, DEVIN_NOTE, GUEST_NOTE, GuestEntry, HERMES_NOTE, HERMES_WARNING, HermesEntry, KIRO_NOTE, ANTIGRAVITY_NOTE, VIBE_NOTE, KeyField, logo, NvidiaEntry, OPENCODE_NOTE, OPENCODE_WARNING, OpencodeEntry, providerStatus, ScoutKeyEntry, SignInEntry } from './Accounts';
 import { ChatbotPage, CHATBOT_ONLY_PAGES, isBotPage } from './Chatbots';
 import { LocalSetup } from './Local';
 import { setRail, TABS, tabName, useRail, type Tab } from './rail';
 import { SortableRail } from './SortableRail';
 import { core, ui, useCore, useView } from './store';
-import { Icon, IconButton, Link, Popover, Switch } from './widgets';
+import { Icon, IconButton, Link, Popover, Select, Switch } from './widgets';
 import scoutLogo from '../../assets/icon.png';
 
 /** One row per model and place it runs. A model both serve is listed under each, under the id that provider knows it by. */
@@ -282,6 +282,41 @@ function ModelCard({ hover, pinned, picking, onEnter, onLeave }: { hover: Hover;
   );
 }
 
+/** Which of several saved accounts (or keys) a provider's models run on. Shown once there are two or more. */
+function AccountSwitch({ label, options, at, onPick }: { label: string; options: string[]; at: number; onPick: (at: number) => void }) {
+  return (
+    <label className="row account-switch">
+      <span className="tiny dim">{label}</span>
+      <Select className="input select compact grow" aria-label={label} value={Math.max(at, 0)} onChange={(e) => onPick(Number(e.target.value))}>
+        {options.map((o, i) => <option key={i} value={i}>{o}</option>)}
+      </Select>
+    </label>
+  );
+}
+
+/** Pages whose models (API-key-only ones) can only be used as steps in a custom agent, not picked on their own. */
+const AGENT_ONLY_TABS: Tab[] = ['openrouter', 'additional'];
+
+/** Whether a provider's models only run inside a custom agent: OpenRouter's and each additional provider's. */
+export function isAgentOnly(provider: string, additionalProviders: { id: string }[]): boolean {
+  return provider === 'openrouter' || additionalProviders.some((a) => a.id === provider);
+}
+
+/** What a linked OpenRouter or additional provider page shows instead of its models: they go in a custom agent. */
+function AgentOnlyNote({ tab, onOpen }: { tab: Tab; onOpen?: () => void }) {
+  const name = tab === 'additional' ? 'these providers' : tabName(tab);
+  return (
+    <div className="card-note stack">
+      <div className="small"><b className="strong">Use {name} in a custom agent.</b></div>
+      <div className="small dim">
+        {tab === 'additional' ? 'Models from additional providers' : `${tabName(tab)}'s models`} run on your own API key, so they can only be used as a step in a
+        custom agent. Open Custom agents, make or edit one, and pick {tab === 'additional' ? 'the provider' : tabName(tab)} under <b>+ Add to route</b>.
+      </div>
+      {onOpen && <div><button type="button" className="button compact primary" onClick={onOpen}>Open Custom agents</button></div>}
+    </div>
+  );
+}
+
 function SignedOut({ tab }: { tab: Tab }) {
   if (tab === 'additional') return <AdditionalOptions />;
   if (tab === 'local') return <LocalSetup mode="menu" />;
@@ -305,6 +340,7 @@ function SignedOut({ tab }: { tab: Tab }) {
       {tab === 'openrouter' && (
         <>
           <div className="small dim">Saved on this PC. Models on OpenRouter bill your OpenRouter account.</div>
+          <div className="small dim">{AGENT_ONLY_NOTE}</div>
           <Link href="https://openrouter.ai/settings/keys" className="small">Make a key on openrouter.ai</Link>
           <KeyField hint="sk-or-…" button="Save OpenRouter key" onSave={(key) => act('addOpenrouterKey', { name: 'OpenRouter', key })} />
         </>
@@ -407,8 +443,10 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
     const pos = (r: ModelRow) => { const i = starred.indexOf(r.star); return i < 0 ? Infinity : i; };
     let list: ModelRow[];
     const offRow = (r: ModelRow) => additionalProviders.some((a) => a.id === r.provider) ? !rail.includes('additional') : !rail.includes(r.provider as Tab);
-    if (q) list = all.filter((r) => !offRow(r) && [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q)));
-    else if (tab === 'additional') list = all.filter((r) => additionalProviders.some((a) => a.id === r.provider));
+    // OpenRouter's and the additional providers' models only run inside a custom agent, so they're never listed to pick.
+    const agentOnly = (r: ModelRow) => isAgentOnly(r.provider, additionalProviders);
+    if (q) list = all.filter((r) => !offRow(r) && !agentOnly(r) && [r.key, r.name, r.star].some((s) => s.toLowerCase().includes(q)));
+    else if (AGENT_ONLY_TABS.includes(tab)) list = [];
     else list = all.filter((r) => r.provider === tab && (tab !== 'scoutcode' || signedIn('scoutcode') || r.model.free));
     if (freeOnly) list = list.filter((r) => r.key === 'auto' || rowFree(r));
     // Starred first, in the order they were starred; then the sort picked. Ties keep their order.
@@ -422,7 +460,8 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
   const chatbotOnly = !q && !bare && CHATBOT_ONLY_PAGES.includes(tab);
   const routerTab = !q && !bare && tab === 'router';
   // Whether the model list shows: not for the sign-in, the router, or a chatbot-only page.
-  const listed = !bare && !routerTab && !signIn && !chatbotOnly && !(botPage && !signedIn(tab));
+  const agentOnlyTab = !q && !bare && !signIn && AGENT_ONLY_TABS.includes(tab);
+  const listed = !bare && !routerTab && !signIn && !chatbotOnly && !agentOnlyTab && !(botPage && !signedIn(tab));
   const empty = loading > 0 ? 'Loading models…' : q ? 'No models match.' : 'No models here yet.';
   const openTab = (t: Tab) => { setTab(t); setSearch(''); setAdding(false); };
   const menuItem = (t: Tab) => (t === 'opencode' ? 'Set up OpenCode' : t === 'local' ? 'Set up local models' : t === 'additional' ? 'Add a provider' : t === 'chatbots' ? 'Connect a chatbot' : `Sign in to ${tabName(t)}`);
@@ -511,9 +550,9 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
         )}
         {listed && (
           <div className="model-sort">
-            <select className="input select compact" aria-label="Sort models" title="Sort models" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+            <Select className="input select compact" aria-label="Sort models" title="Sort models" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               {SORTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-            </select>
+            </Select>
             <button type="button" className={`chip ${freeOnly ? 'on' : ''}`} aria-pressed={freeOnly} title="Show only models that cost nothing here" onClick={() => setFreeOnly(!freeOnly)}>Free only</button>
           </div>
         )}
@@ -556,14 +595,26 @@ function Menu({ close, startTab, onPick, preview = false, tab: shownAs, onTab }:
               <b className="strong grow">Additional Providers</b>
               {!team && cfg.additional.length > 0 && (adding
                 ? <button type="button" className="button" onClick={() => setAdding(false)}>Back</button>
-                : cfg.additional.length < additionalProviders.length && <button type="button" className="button" title="Add another provider" onClick={() => setAdding(true)}>+</button>)}
+                : <button type="button" className="button" title="Add another provider" onClick={() => setAdding(true)}>+</button>)}
             </div>
             {additionalErrors.map((e) => <div key={e} className="tiny red">{e}</div>)}
           </>
         )}
+        {!q && (tab === 'codex' || tab === 'claude' || tab === 'grok' || tab === 'opencode' || tab === 'copilot') && signedIn(tab) && cfg.agentAccounts[tab].list.length >= 2 && (
+          <AccountSwitch
+            label="Account"
+            options={cfg.agentAccounts[tab].list.map(accountLabel)}
+            at={cfg.agentAccounts[tab].list.findIndex((a) => a.id === cfg.agentAccounts[tab].active)}
+            onPick={(at) => act('switchAccount', { which: tab, id: cfg.agentAccounts[tab].list[at].id })}
+          />
+        )}
+        {!q && tab === 'openrouter' && !team && cfg.openrouterKeys.length >= 2 && (
+          <AccountSwitch label="Key" options={cfg.openrouterKeys.map((k) => k.name)} at={0} onPick={(at) => act('editOpenrouterKey', { at, op: 'first' })} />
+        )}
         <div key={q ? "search" : tab} className="model-list" onMouseLeave={() => hoverSoon(null, 240)}>
           {bare && <div className="rail-empty small dim"><Icon name="plus" size={18} />Add a provider from the list to see it here.</div>}
           {botPage && <ChatbotPage key={tab} tab={tab} close={close} />}
+          {agentOnlyTab && <AgentOnlyNote tab={tab} onOpen={shownTab('router') ? () => openTab('router') : undefined} />}
           {routerTab ? <AgentRouterPanel compact close={close} onRowHover={(router, el) => hoverSoon({ router, ...hoverAt(el) }, hover ? 160 : 60)} /> : signIn ? <SignedOut tab={tab} /> : rows.map((r) => {
             const m = r.model;
             // NIM's list has no prices, and what another provider charges says nothing about it.
@@ -628,7 +679,7 @@ function routeSummary(r: AgentRouter): string {
 
 /**
  * The Agent Routers: a list to pick from like models, each with an edit button, and a button to make another.
- * Shared by the Model Menu tab and Settings > Agent Router.
+ * Shared by the Model Menu tab and Settings > Custom agents.
  */
 export function AgentRouterPanel({ compact = false, close, onRowHover }: { compact?: boolean; close?: () => void; onRowHover?: (r: AgentRouter, el: HTMLElement) => void }) {
   const cfg = useView('cfg');
@@ -642,8 +693,8 @@ export function AgentRouterPanel({ compact = false, close, onRowHover }: { compa
   const create = () => {
     const used = new Set(routers.map((r) => r.name));
     let n = routers.length + 1;
-    while (used.has(`Router ${n}`)) n++;
-    const r: AgentRouter = { id: newRouterId(), name: `Router ${n}`, useJev: false, steps: [], lastProvider: null };
+    while (used.has(`Agent ${n}`)) n++;
+    const r: AgentRouter = { id: newRouterId(), name: `Agent ${n}`, useJev: false, steps: [], lastProvider: null };
     saveAll([...routers, r]);
     setEditing(r.id);
   };
@@ -670,12 +721,12 @@ export function AgentRouterPanel({ compact = false, close, onRowHover }: { compa
   return (
     <div className={`router-panel stack ${compact ? 'compact' : ''}`}>
       <div className="row">
-        <span className="tiny dim strong grow">AGENT ROUTERS</span>
-        <button type="button" className="button compact" title="Make a new Agent Router" onClick={create}>+ New router</button>
+        <span className="tiny dim strong grow">CUSTOM AGENTS</span>
+        <button type="button" className="button compact" title="Make a new custom agent" onClick={create}>+ New agent</button>
       </div>
       {routers.length === 0 ? (
         <div className="small dim pad router-empty">
-          No Agent Routers yet. Click <b>+ New router</b> to build a route of providers and models (for example Opus 4.6 → Haiku 4.5 → DeepSeek).
+          No custom agents yet. Click <b>+ New agent</b> to build a route of providers and models (for example Opus 4.6 → Haiku 4.5 → DeepSeek).
         </div>
       ) : (
         <div className="stack" style={{ gap: 2 }}>
@@ -821,11 +872,11 @@ function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, o
   return (
     <div className={`router-panel stack ${compact ? 'compact' : ''}`}>
       <div className="router-header row">
-        <IconButton icon="back" tip="All routers" size={24} onClick={() => { commitName(); onBack(); }} />
+        <IconButton icon="back" tip="All custom agents" size={24} onClick={() => { commitName(); onBack(); }} />
         <input
           className="input compact grow"
-          aria-label="Router name"
-          placeholder="Router name"
+          aria-label="Agent name"
+          placeholder="Agent name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           onBlur={commitName}
@@ -861,7 +912,7 @@ function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, o
             <div className="row" style={{ gap: 8 }}>
               <label className="stack grow" style={{ gap: 4 }}>
                 <span className="tiny dim">Provider</span>
-                <select
+                <Select
                   className="input select compact"
                   value={addProvider}
                   onChange={(e) => {
@@ -872,7 +923,7 @@ function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, o
                   {providers.map((p) => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label className="stack grow" style={{ gap: 4 }}>
                 <span className="tiny dim">Filter models</span>
@@ -888,7 +939,7 @@ function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, o
             {providerRows.length > 0 ? (
               <>
                 <div className="row" style={{ gap: 8 }}>
-                  <select
+                  <Select
                     className="input select compact grow"
                     aria-label="Model"
                     value={addKey}
@@ -903,7 +954,7 @@ function AgentRouterEditor({ compact, router, active, onSave, onDelete, onUse, o
                         </option>
                       );
                     })}
-                  </select>
+                  </Select>
                   <button type="button" className="button primary compact" onClick={() => addStep(addKey, addProvider)}>
                     Add
                   </button>
@@ -1018,7 +1069,7 @@ function AgentRouteStepRow({
         <label className="row" style={{ gap: 6 }} title="Intelligence rank used when Jev rates prompt difficulty">
           <IntelBars level={level} />
           <span className="tiny dim">{useJev ? 'Jev rank:' : 'Intelligence:'}</span>
-          <select
+          <Select
             className="input select compact tiny-select"
             value={level}
             onChange={(e) => onUpdate({ intelligence: Number(e.target.value) as 1 | 2 | 3 })}
@@ -1026,7 +1077,7 @@ function AgentRouteStepRow({
             <option value={1}>1 · Light</option>
             <option value={2}>2 · Capable</option>
             <option value={3}>3 · Frontier</option>
-          </select>
+          </Select>
         </label>
         <button
           type="button"
@@ -1066,11 +1117,11 @@ export function ModelChip() {
   const models = useCore((s) => s.models);
   const { additionalProviders } = useCore((s) => s.statics);
   const isRouter = current.provider === 'router';
-  const label = isRouter ? current.short || 'Agent Router' : models.find((m) => m.id === current.key)?.label ?? current.short;
+  const label = isRouter ? current.short || 'Custom agent' : models.find((m) => m.id === current.key)?.label ?? current.short;
   const shown = label.length > 26 ? `${label.slice(0, 25)}…` : label;
   const onAdditional = additionalProviders.some((a) => a.id === current.provider);
   const effort = useView('effort');
-  const hint = isRouter ? `Agent Router · ${current.short}` : current.provider === 'scoutcode' ? 'Model' : `Model · running on ${runsOn(current.provider)}`;
+  const hint = isRouter ? `Custom agent · ${current.short}` : current.provider === 'scoutcode' ? 'Model' : `Model · running on ${runsOn(current.provider)}`;
   const start: Tab = isRouter ? 'router' : onAdditional ? 'additional' : TABS.some(([t]) => t === current.provider) ? (current.provider as Tab) : 'scoutcode';
   const [key, setKey] = useState(0);
   return (
@@ -1087,7 +1138,7 @@ export function ModelChip() {
 export function useModelName(m?: Partial<ModelRef> | null): string {
   const models = useCore((s) => s.models);
   if (!m?.key) return '';
-  if (m.provider === 'router' || m.key === 'router') return 'Agent Router';
+  if (m.provider === 'router' || m.key === 'router') return 'Custom agent';
   const key = m.key;
   const found = models.find(
     (x) =>
@@ -1115,7 +1166,7 @@ export function useModelName(m?: Partial<ModelRef> | null): string {
   return `${label} · ${runsOn(m.provider)}`;
 }
 
-function FallbackRow({ m, n, onRemove }: { m: ModelRef; n: number; onRemove: () => void }) {
+function ModelListRow({ m, n, onRemove }: { m: ModelRef; n: number; onRemove: () => void }) {
   const name = useModelName(m);
   return (
     <div className="fallback-row">
@@ -1127,15 +1178,15 @@ function FallbackRow({ m, n, onRemove }: { m: ModelRef; n: number; onRemove: () 
   );
 }
 
-/** Fallback models in the order they're tried, with a picker to add up to `max`. */
-export function FallbackList({ value, onChange, max = 3 }: { value: ModelRef[]; onChange: (v: ModelRef[]) => void; max?: number }) {
+/** Models in the order they're tried, with a picker to add up to `max`. */
+export function ModelList({ value, onChange, max = 3 }: { value: ModelRef[]; onChange: (v: ModelRef[]) => void; max?: number }) {
   const add = (key: string, provider: string) => {
     if (!value.some((m) => m.key === key && m.provider === provider)) onChange([...value, { key, provider }]);
   };
   return (
     <div className="fallback-list">
-      {value.map((m, i) => <FallbackRow key={`${m.provider}:${m.key}`} m={m} n={i + 1} onRemove={() => onChange(value.filter((_, j) => j !== i))} />)}
-      {value.length < max && <div><ModelPicker label={value.length ? 'Add another' : 'Add a fallback model'} onPick={add} /></div>}
+      {value.map((m, i) => <ModelListRow key={`${m.provider}:${m.key}`} m={m} n={i + 1} onRemove={() => onChange(value.filter((_, j) => j !== i))} />)}
+      {value.length < max && <div><ModelPicker label={value.length ? 'Add another' : 'Add a model'} onPick={add} /></div>}
     </div>
   );
 }

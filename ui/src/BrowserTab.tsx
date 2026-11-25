@@ -19,7 +19,7 @@ export function BrowserTab() {
   const [error, setError] = useState('');
   const { browserAgent } = useView('cfg');
   // The webview is drawn above the rest of the window, so it steps aside for anything that would cover it.
-  const covered = useUi((u) => !!u.settings || !!u.deleting || u.pickingFolder || u.pickingFiles || !!u.uncensored || u.dropping || !!u.renaming || u.newProject !== false);
+  const covered = useUi((u) => !!u.settings || !!u.deleting || u.pickingFolder || u.pickingFiles || !!u.uncensored || u.dropping || !!u.renaming);
 
   useEffect(() => {
     invoke<BrowserState>('browser_status').then(setSt, () => {});

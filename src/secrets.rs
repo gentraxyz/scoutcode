@@ -11,7 +11,8 @@
 use serde_json::Value;
 
 /// The settings that are secrets. `additionalProviders` is a list of linked providers with their keys.
-pub const FIELDS: [&str; 10] = ["apiKey", "openrouterKeys", "openrouterKey", "nvidiaKey", "kiloKey", "copilotToken", "grokKey", "hermesKey", "additionalProviders", "imageKey"];
+/// `copilotAccounts` is every GitHub sign-in for Copilot saved on this PC, with its token.
+pub const FIELDS: [&str; 11] = ["apiKey", "openrouterKeys", "openrouterKey", "nvidiaKey", "kiloKey", "copilotToken", "grokKey", "hermesKey", "additionalProviders", "imageKey", "copilotAccounts"];
 
 pub fn is_secret(field: &str) -> bool {
     FIELDS.contains(&field)

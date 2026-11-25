@@ -509,3 +509,62 @@ pub fn save_file(path: &str, text: &str, crlf: bool) -> Result<Option<u64>, Stri
     std::fs::write(path, out).map_err(|e| format!("Could not save: {e}"))?;
     Ok(mtime(path))
 }
+
+// ---------- Mission Control: quick open and search ----------
+
+/// Every file under `root` (skipping node_modules, .git, build output and the like), as paths relative to it with `/`,
+/// for Mission Control's quick open. Stops at `max`.
+pub fn list_files(root: &str, max: usize) -> Vec<String> {
+    let base = Path::new(root);
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let mut out = Vec::new();
+    crate::tools::walk(base, &never, |p| {
+        if let Ok(r) = p.strip_prefix(base) {
+            out.push(r.to_string_lossy().replace('\\', "/"));
+        }
+        out.len() < max
+    });
+    out.sort_unstable();
+    out
+}
+
+/// One line that matched a search: the file (relative, with `/`), its 1-based line, and the line's text.
+#[derive(Serialize)]
+pub struct Hit {
+    path: String,
+    line: usize,
+    text: String,
+}
+
+/// The lines under `root` that contain `query` (plain text, or a regular expression with `regex`), at most `max`.
+pub fn search(root: &str, query: &str, case: bool, is_regex: bool, max: usize) -> Result<Vec<Hit>, String> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pattern = if is_regex { query.to_string() } else { regex::escape(query) };
+    let re = regex::RegexBuilder::new(&pattern).case_insensitive(!case).build().map_err(|e| format!("Invalid regular expression: {e}"))?;
+    let base = Path::new(root);
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let mut out = Vec::new();
+    crate::tools::walk(base, &never, |p| {
+        if std::fs::metadata(p).is_ok_and(|m| m.len() > 2 * 1024 * 1024) {
+            return true;
+        }
+        let Ok(buf) = std::fs::read(p) else { return true };
+        if crate::tools::is_binary(&buf) {
+            return true;
+        }
+        let rel = p.strip_prefix(base).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        for (i, l) in String::from_utf8_lossy(&buf).lines().enumerate() {
+            if re.is_match(l) {
+                let text: String = l.trim().chars().take(240).collect();
+                out.push(Hit { path: rel.clone(), line: i + 1, text });
+                if out.len() >= max {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    Ok(out)
+}

@@ -1,0 +1,321 @@
+/* Agent, the home page (Agent.tsx). Uses the app's theme tokens from styles.css. */
+
+.agent-page { display: flex; min-height: 0; flex: 1; }
+
+/* ---------- the list ---------- */
+/* No panel of its own: the agents float down the left of the page as separate cards, on the page's own background. */
+/* A quiet, flat list: rows with no borders or shadows, the open one on a soft fill. */
+.agent-list { width: 232px; flex: none; display: flex; flex-direction: column; background: transparent; min-height: 0; overflow-y: auto; }
+.agent-block { display: flex; flex-direction: column; flex: none; }
+/* Takes the rest of the column so the chat list (.side-scroll, flex-basis 0) gets a height; with flex: none it collapsed
+   to nothing. If many agents leave too little room, the whole column scrolls instead. */
+.agent-list .side-code { flex: 1 1 auto; min-height: 240px; display: flex; flex-direction: column; min-width: 0; padding: 10px 8px 11px; border-top: 1px solid var(--border); margin-top: 6px; }
+.agent-list-head { display: flex; align-items: center; gap: 2px; padding: 16px 10px 6px 18px; }
+.agent-list-head b { color: var(--strong); font-size: 13px; font-weight: 600; }
+.agent-list-head .tiny { opacity: 0.5; margin-left: 6px; }
+.agent-list-head .icon-button { opacity: 0.6; transition: opacity 0.15s; }
+.agent-list-head .icon-button:hover { opacity: 1; }
+.agent-list-items { overflow-y: auto; padding: 4px 8px 14px; display: flex; flex-direction: column; gap: 1px; }
+.agent-item { display: flex; align-items: center; gap: 11px; padding: 7px 10px; border-radius: 12px; text-align: left; background: transparent; border: 0; color: var(--text); width: 100%; transition: background 0.15s ease; }
+.agent-item:hover { background: var(--hover); }
+.agent-item.on { background: var(--surface-hi); }
+.agent-item-text { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; }
+.agent-item-name { color: var(--strong); font-size: 13px; font-weight: 500; }
+.agent-item-sub { font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-working, .st-thinking { color: var(--accent) !important; }
+.st-waiting { color: var(--usage) !important; }
+.st-blocked, .st-error { color: var(--red) !important; }
+/* What it's up to, as text in the list and the header: plain white, not the state colour. */
+.agent-item-sub.st-working, .agent-item-sub.st-thinking, .agent-item-sub.st-waiting,
+.agent-head-text .st-working, .agent-head-text .st-thinking, .agent-head-text .st-waiting { color: var(--strong) !important; }
+.agent-unread { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: var(--primary); color: var(--primary-ink); font-size: 11px; font-weight: 600; display: grid; place-items: center; }
+
+/* ---------- main ---------- */
+.agent-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; position: relative; }
+
+.agent-empty { flex: 1; display: grid; place-items: center; padding: 30px; }
+.agent-welcome { margin: auto; max-width: 380px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 24px; animation: agent-in 0.4s ease-out both; }
+.agent-welcome h1 { margin: 14px 0 0; font-size: 24px; color: var(--strong); font-weight: 500; letter-spacing: -0.01em; }
+.agent-welcome p { margin: 0 0 12px; line-height: 1.5; font-size: 13.5px; }
+.agent-pill-btn { display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 18px; border-radius: 19px; border: 0; background: var(--primary); color: var(--primary-ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; transition: background 0.15s, transform 0.15s; }
+.agent-pill-btn:hover { background: var(--primary-hi); }
+.agent-pill-btn:active { transform: scale(0.97); }
+/* An empty chat: just the agent, big, in the middle. */
+.agent-hero { margin: auto; padding: 0 0 6vh; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; animation: agent-in 0.4s ease-out both; }
+.agent-hero b { margin-top: 18px; color: var(--strong); font-size: 22px; font-weight: 500; letter-spacing: -0.01em; }
+.agent-hero .dim { font-size: 13.5px; }
+@keyframes agent-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.agent-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px 10px 18px; }
+.agent-head-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.agent-head-text b { color: var(--strong); font-size: 13.5px; font-weight: 500; }
+.agent-head .icon-button { opacity: 0.6; transition: opacity 0.15s; }
+.agent-head .icon-button:hover, .agent-head .icon-button.active { opacity: 1; }
+
+.agent-scroll { flex: 1; overflow-y: auto; min-height: 0; overflow-anchor: none; will-change: scroll-position; }
+.agent-older { display: flex; justify-content: center; padding: 6px 0 2px; opacity: 0.7; }
+.agent-msgs { max-width: 720px; min-height: 100%; margin: 0 auto; padding: 18px 24px 32px; display: flex; flex-direction: column; gap: 4px; }
+.agent-msg { display: flex; gap: 10px; align-items: flex-end; }
+.agent-msg.agent.first { margin-top: 14px; }
+.agent-msg.user { justify-content: flex-end; margin-top: 14px; }
+.agent-msg.user.failed { flex-direction: column; align-items: flex-end; gap: 4px; }
+.agent-msg.user.failed .agent-bubble-user { border-color: color-mix(in srgb, var(--red) 55%, var(--border-hi)); }
+.agent-unsent { display: flex; align-items: center; gap: 10px; color: var(--red); max-width: 78%; }
+.agent-unsent span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.agent-unsent button { background: none; border: 0; padding: 0; color: var(--strong); font: inherit; text-decoration: underline; cursor: pointer; flex: none; }
+/* Its replies sit in their own bubble on the left, like a text thread; yours on the right. */
+.agent-msg.agent { justify-content: flex-start; }
+.agent-bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 9px 15px; max-width: 85%; min-width: 0; color: var(--text); line-height: 1.6; overflow-wrap: anywhere; }
+.agent-bubble pre { max-width: 100%; overflow-x: auto; }
+.agent-bubble > :first-child { margin-top: 0; }
+.agent-bubble > :last-child { margin-bottom: 0; }
+.agent-bubble p { margin: 0.35em 0; }
+.agent-bubble-user { background: var(--surface-hi); border: 1px solid transparent; border-radius: 20px; padding: 8px 15px; max-width: 75%; line-height: 1.5; color: var(--strong); white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-typing { display: flex; align-items: center; padding: 13px 16px; border-radius: 20px; background: var(--surface); border: 1px solid var(--border); margin-top: 6px; }
+.agent-typing .dots { display: inline-flex; gap: 4px; }
+.agent-typing .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: agent-dot 1.2s infinite ease-in-out; }
+.agent-typing .dots i:nth-child(2) { animation-delay: 0.15s; }
+.agent-typing .dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes agent-dot { 0%, 80%, 100% { transform: translateY(0); opacity: 0.4; } 40% { transform: translateY(-4px); opacity: 1; } }
+
+.agent-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.agent-file { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 8px; border-radius: 7px; background: var(--surface-hi); border: 1px solid var(--border); color: var(--muted); }
+.agent-file button { background: none; border: 0; color: var(--dim); padding: 0; display: inline-flex; cursor: pointer; }
+.agent-file button:hover { color: var(--strong); }
+
+/* ---------- what the agent sends ---------- */
+/* Its messages stack: images, then file cards, then its words, all on the left. */
+.agent-msg.agent { flex-direction: column; align-items: flex-start; gap: 6px; }
+
+/* Images: one shows big; several make a tidy grid of squares. */
+.agent-gallery { display: grid; gap: 4px; max-width: min(100%, 420px); border-radius: 18px; overflow: hidden; }
+.agent-gallery.n1 { grid-template-columns: auto; }
+.agent-gallery.n2, .agent-gallery.n4 { grid-template-columns: 1fr 1fr; width: min(100%, 420px); }
+.agent-gallery.n3 { grid-template-columns: 1fr 1fr 1fr; width: min(100%, 420px); }
+.agent-img { padding: 0; border: 0; background: var(--surface); cursor: zoom-in; display: block; position: relative; overflow: hidden; }
+.agent-img img { display: block; transition: transform 0.25s ease, filter 0.2s; }
+.agent-img:hover img { filter: brightness(1.06); }
+.agent-gallery.n1 .agent-img { border-radius: 18px; border: 1px solid var(--border); }
+.agent-gallery.n1 .agent-img img { max-width: min(100%, 420px); max-height: 340px; width: auto; height: auto; object-fit: contain; }
+.agent-gallery:not(.n1) .agent-img { aspect-ratio: 1; }
+.agent-gallery:not(.n1) .agent-img img { width: 100%; height: 100%; object-fit: cover; }
+.agent-gallery:not(.n1) .agent-img:hover img { transform: scale(1.03); }
+.agent-img.loading { width: 260px; height: 170px; display: grid; place-items: center; cursor: default; }
+.agent-gallery:not(.n1) .agent-img.loading { width: auto; height: auto; }
+
+/* Other files: a card that opens the file, with a download button. */
+.agent-filecard { display: flex; align-items: stretch; width: min(100%, 340px); background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; transition: border-color 0.15s; }
+.agent-filecard:hover { border-color: var(--border-hi); }
+.agent-filecard-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 11px; padding: 10px 6px 10px 10px; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.agent-filecard-icon { flex: none; width: 38px; height: 44px; border-radius: 8px; display: grid; place-items: center; font: 700 9.5px/1 var(--mono); letter-spacing: 0.02em; color: #fff; background: #6b7280; }
+.agent-filecard-icon.big { width: 64px; height: 76px; font-size: 13px; border-radius: 12px; }
+.k-pdf .agent-filecard-icon { background: #e5484d; }
+.k-text .agent-filecard-icon, .k-markdown .agent-filecard-icon { background: #3e63dd; }
+.k-html .agent-filecard-icon { background: #f76b15; }
+.k-video .agent-filecard-icon, .k-audio .agent-filecard-icon { background: #8e4ec6; }
+.k-image .agent-filecard-icon { background: #12a594; }
+.agent-filecard-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-filecard-name { color: var(--strong); font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-filecard-sub { color: var(--dim); font-size: 11.5px; }
+.agent-filecard-dl { flex: none; width: 44px; display: grid; place-items: center; background: transparent; border: 0; border-left: 1px solid var(--border); color: var(--muted); cursor: pointer; transition: background 0.15s, color 0.15s; }
+.agent-filecard-dl:hover { background: var(--hover); color: var(--strong); }
+
+/* The viewer: the file big over the app, with its name and Download on top. */
+.agent-viewer { position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, 0.86); display: flex; flex-direction: column; animation: agent-fade 0.15s ease-out; }
+@keyframes agent-fade { from { opacity: 0; } to { opacity: 1; } }
+.agent-viewer-bar { flex: none; display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 12px 0 20px; color: #eee; font-size: 13px; }
+.agent-viewer-name { font-weight: 500; color: #fff; min-width: 0; }
+.agent-viewer-size { color: #999; font-size: 12px; flex: none; }
+.agent-viewer-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 15px; border: 0; background: #fff; color: #111; font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; flex: none; }
+.agent-viewer-btn:hover { background: #e6e6e6; }
+.agent-viewer-btn:disabled { opacity: 0.5; cursor: default; }
+.agent-viewer-x { width: 32px; height: 32px; border-radius: 50%; border: 0; background: rgba(255, 255, 255, 0.1); color: #fff; display: grid; place-items: center; cursor: pointer; flex: none; }
+.agent-viewer-x:hover { background: rgba(255, 255, 255, 0.2); }
+.agent-viewer-body { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0 28px 28px; cursor: zoom-out; }
+.agent-viewer-stage { display: flex; align-items: center; justify-content: center; max-width: 100%; max-height: 100%; cursor: default; color: #ddd; }
+.agent-viewer-body.k-pdf .agent-viewer-stage, .agent-viewer-body.k-html .agent-viewer-stage, .agent-viewer-body.k-text .agent-viewer-stage, .agent-viewer-body.k-markdown .agent-viewer-stage { width: min(100%, 980px); height: 100%; }
+.agent-viewer-img { max-width: 100%; max-height: calc(100vh - 84px); object-fit: contain; border-radius: 8px; }
+.agent-viewer-media { max-width: 100%; max-height: calc(100vh - 84px); border-radius: 8px; background: #000; }
+.agent-viewer-frame { width: 100%; height: 100%; border: 0; border-radius: 10px; background: #fff; }
+.agent-viewer-text, .agent-viewer-doc { width: 100%; height: 100%; margin: 0; overflow: auto; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); color: var(--text); box-sizing: border-box; }
+.agent-viewer-text { padding: 16px 18px; font: 12.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-viewer-doc { padding: 22px 30px; line-height: 1.6; }
+.agent-viewer-msg { display: flex; flex-direction: column; align-items: center; gap: 12px; color: #ccc; text-align: center; }
+/* ---------- cards ---------- */
+.agent-card { margin: 12px 0 4px; max-width: 520px; border: 1px solid var(--border); background: var(--surface); border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.agent-card.kind-approval, .agent-card.kind-local { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-hi)); }
+.agent-card.kind-permission, .agent-card.kind-auth { border-color: color-mix(in srgb, var(--usage) 45%, var(--border-hi)); }
+.agent-card.kind-notice { border-style: dashed; }
+.agent-card.answered { opacity: 0.75; }
+.agent-card-head { display: flex; align-items: flex-start; gap: 8px; color: var(--strong); line-height: 1.4; }
+.agent-card-head .icon { margin-top: 2px; flex: none; }
+.agent-card-detail { font-size: 12.5px; color: var(--muted); white-space: pre-wrap; background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+.agent-card-cmd { margin: 0; max-height: 240px; overflow-y: auto; font: 12px var(--mono); color: var(--code); background: var(--code-bg); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-card-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agent-card-row { display: flex; align-items: center; gap: 14px; justify-content: space-between; }
+/* What it did with ScoutCode: a small centred line between the messages, not a bubble or a card. */
+.agent-activity { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 10px auto 4px; padding: 3px 10px; max-width: 100%; color: var(--muted); font-size: 12px; }
+.agent-activity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-activity .icon { flex: none; opacity: 0.7; }
+.agent-card-answer { font-size: 12px; font-weight: 500; }
+.agent-card-answer.approve { color: var(--green); }
+.agent-card-answer.deny { color: var(--red); }
+.agent-err { color: var(--red); margin: 0; }
+
+/* ---------- composer ---------- */
+.agent-composer { max-width: 720px; width: 100%; margin: 0 auto; padding: 6px 24px 20px; display: flex; flex-direction: column; gap: 6px; }
+/* Round: a pill while it's one line, softly rounded as it grows. */
+.agent-composer-box { display: flex; align-items: flex-end; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 26px; padding: 7px; transition: border-color 0.15s; }
+.agent-composer-box .icon-button { flex: none; width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border-radius: 50%; }
+.agent-composer-box:focus-within { border-color: var(--focus); }
+.agent-composer-box textarea { flex: 1; resize: none; background: transparent; border: 0; outline: none; color: var(--strong); font: inherit; font-size: 14px; line-height: 18px; padding: 6px 4px; margin: 0; box-sizing: border-box; max-height: 180px; field-sizing: content; min-height: 30px; }
+.agent-send { width: 30px; height: 30px; border-radius: 50%; border: 0; background: var(--primary); color: var(--primary-ink); display: grid; place-items: center; flex: none; }
+.agent-send { transition: opacity 0.15s, transform 0.15s; }
+.agent-send:active:not(:disabled) { transform: scale(0.92); }
+.agent-send:disabled { opacity: 0.2; }
+
+/* ---------- editor and settings ---------- */
+.agent-editor { display: flex; gap: 22px; width: min(640px, 92vw); padding: 22px !important; }
+.agent-editor-preview { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 150px; flex: none; padding-top: 14px; }
+.agent-editor-preview b { color: var(--strong); margin-top: 8px; text-align: center; overflow-wrap: anywhere; }
+.agent-editor-form { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.agent-editor-form label, .agent-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.agent-editor-form input:not([type='color']), .agent-editor-form textarea, .agent-key input { background: var(--bg); border: 1px solid var(--border-hi); border-radius: 8px; color: var(--strong); font: inherit; font-size: 13px; padding: 7px 10px; outline: none; }
+.agent-editor-form input:focus, .agent-editor-form textarea:focus, .agent-key input:focus { border-color: var(--focus); }
+.agent-editor-form textarea { resize: vertical; }
+.agent-shapes { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-shapes button { padding: 4px; border-radius: 50%; background: transparent; border: 1px solid transparent; display: grid; }
+.agent-shapes button.on { border-color: var(--border-hi); background: var(--hover); }
+.agent-colors { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.agent-colors > button { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; outline: 1px solid var(--border-hi); }
+.agent-colors > button.on { border-color: var(--bg); outline: 2px solid var(--strong); }
+.agent-color-custom { position: relative; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-hi); color: var(--muted); cursor: pointer; flex-direction: row !important; }
+.agent-color-custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.agent-editor-actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+
+.agent-settings { width: min(520px, 92vw); padding: 22px !important; display: flex; flex-direction: column; gap: 14px; }
+.agent-settings h2 { margin: 0; font-size: 16px; color: var(--strong); }
+.agent-setting { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
+.agent-setting.column { flex-direction: column; align-items: stretch; gap: 8px; }
+.agent-setting b { color: var(--strong); font-size: 13px; font-weight: 500; }
+.agent-key { display: flex; gap: 6px; }
+.agent-key input { flex: 1; }
+.agent-key .grow { flex: 1; align-self: center; }
+.agent-memory-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.agent-memory-used { flex: none; }
+.agent-memory-text { background: var(--bg); border: 1px solid var(--border-hi); border-radius: 8px; color: var(--strong); font: 12px/1.5 var(--mono); padding: 8px 10px; outline: none; resize: vertical; min-height: 120px; max-height: 40vh; }
+.agent-memory-text:focus { border-color: var(--focus); }
+.agent-memory-log ul { margin: 6px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; max-height: 140px; overflow-y: auto; }
+.agent-memory-log summary { cursor: pointer; }
+.agent-settings { max-height: 90vh; overflow-y: auto; }
+
+.agent-card-wrap { scroll-margin: 20px; }
+
+/* ---------- commands, risky actions, app secrets, alarms ---------- */
+.agent-card.risky { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.agent-card-reason { font-size: 13px; color: var(--strong); line-height: 1.45; }
+.agent-secret-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.agent-secret-field input, .agent-sched-form input, .agent-sched-form select, .agent-sched-form textarea { background: var(--bg); border: 1px solid var(--border-hi); border-radius: 8px; color: var(--strong); font: inherit; font-size: 13px; padding: 7px 10px; outline: none; }
+.agent-secret-field input:focus, .agent-sched-form input:focus, .agent-sched-form select:focus, .agent-sched-form textarea:focus { border-color: var(--focus); }
+.agent-card.kind-alarm { border-color: color-mix(in srgb, var(--usage) 50%, var(--border)); animation: agent-alarm-in 0.5s ease-out; }
+.agent-card.kind-alarm .agent-card-head { align-items: center; }
+@keyframes agent-alarm-in { 0% { transform: scale(0.96); opacity: 0; } 60% { transform: scale(1.02); opacity: 1; } 100% { transform: scale(1); } }
+
+/* A row of choices, one picked: command modes, and the kind of a new schedule. */
+.agent-modes { display: flex; gap: 0; border: 1px solid var(--border-hi); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+.agent-modes button { background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 12px; padding: 6px 12px; cursor: pointer; }
+.agent-modes button + button { border-left: 1px solid var(--border-hi); }
+.agent-modes button.on { background: var(--hover); color: var(--strong); font-weight: 500; }
+
+/* ---------- timers, alarms and recurring tasks ---------- */
+.agent-sched-btn { position: relative; display: inline-grid; }
+.agent-sched-count { position: absolute; right: 1px; top: 1px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: var(--surface-hi); color: var(--strong); font-size: 9px; line-height: 14px; text-align: center; pointer-events: none; }
+.agent-schedules { width: min(560px, 92vw); padding: 22px !important; display: flex; flex-direction: column; gap: 12px; max-height: 90vh; overflow-y: auto; }
+.agent-schedules h2 { margin: 0; font-size: 16px; color: var(--strong); }
+.agent-schedules > p { margin: 0; }
+.agent-sched-empty { margin: 8px 0; text-align: center; }
+.agent-sched-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.agent-sched-list li { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.agent-sched-list li.paused { opacity: 0.6; }
+.agent-sched-list li > .icon { flex: none; color: var(--muted); }
+.agent-sched-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.agent-sched-text b { color: var(--strong); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.agent-sched-task { color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.agent-sched-form { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; border-top: 1px solid var(--border); }
+.agent-sched-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.agent-sched-form textarea { resize: vertical; }
+.agent-sched-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.agent-sched-row label { flex: 1; min-width: 90px; }
+.agent-days { display: flex; gap: 4px; }
+.agent-days button { width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--border-hi); background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.agent-days button.on { background: var(--hover); color: var(--strong); border-color: var(--focus); }
+
+@media (max-width: 720px) {
+  .agent-list { width: 76px; }
+  .agent-list .side-code { display: none; }
+  .agent-item-text, .agent-list-head b, .agent-list-head .tiny { display: none; }
+  .agent-editor { flex-direction: column; }
+  .agent-editor-preview { width: auto; }
+}
+
+/* ---------- the avatar ---------- */
+/* A soft round dot with big close-set eyes that's always up to something. Four layers move on their own so the motions
+   combine: the whole avatar floats (.agent-avatar), the dot squashes and tilts (.agent-body), the eyes drift gently
+   (.agent-eyes) and each eye blinks (.agent-eye). --d offsets the timing per agent so a list of them never moves in
+   step. Eye movement is in the SVG's 100-unit box. */
+.agent-avatar { position: relative; display: inline-grid; flex: none; --agent: #7c5cff; --agent-ink: #fff; --d: 0s; animation: agent-float 3.6s ease-in-out infinite; animation-delay: var(--d); }
+.agent-body { display: block; width: 100%; height: 100%; overflow: visible; transform-origin: 50% 90%; animation: agent-squish 7s ease-in-out infinite; animation-delay: var(--d); }
+.agent-eyes { animation: agent-look 10s ease-in-out infinite; animation-delay: var(--d); }
+.agent-eye { transform-box: fill-box; transform-origin: center; animation: agent-blink 4.6s infinite; animation-delay: var(--d); }
+@keyframes agent-look { 0%, 30%, 100% { transform: translate(0, 0); } 40%, 55% { transform: translate(-3px, 0); } 65%, 80% { transform: translate(3px, -1px); } }
+@keyframes agent-blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
+/* A new face pops in: a quick squeeze shut and open, so the swap reads as a change of expression. */
+.agent-face { transform-box: fill-box; transform-origin: center; animation: agent-face-in 0.28s ease-out; }
+@keyframes agent-face-in { 0% { transform: scaleY(0.1); } 70% { transform: scaleY(1.12); } 100% { transform: scaleY(1); } }
+.st-working .agent-eyes { animation-duration: 5s; }
+.st-waiting .agent-eyes, .st-sleeping .agent-eyes, .st-sleeping .agent-eye, .st-blocked .agent-eye, .st-error .agent-eye { animation: none; }
+
+/* Idle: floats, looks around gently, blinks, the odd squish and wobble. (The defaults above.) */
+@keyframes agent-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6%); } }
+@keyframes agent-squish {
+  0%, 60%, 100% { transform: scale(1) rotate(0); }
+  64% { transform: scale(1.08, 0.9) rotate(0); }
+  68% { transform: scale(0.95, 1.06) rotate(0); }
+  72% { transform: scale(1) rotate(0); }
+  82% { transform: rotate(-7deg); }
+  90% { transform: rotate(5deg); }
+}
+
+/* Thinking: a slow sway. */
+.st-thinking { animation: agent-float 2.6s ease-in-out infinite; }
+.st-thinking .agent-body { animation: agent-sway 2.8s ease-in-out infinite; }
+@keyframes agent-sway { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
+
+/* Working: bounces. */
+.st-working { animation: agent-hop 0.9s ease-in-out infinite; }
+.st-working .agent-body { animation: agent-thump 0.9s ease-in-out infinite; }
+@keyframes agent-hop { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-10%); } 55% { transform: translateY(-10%); } }
+@keyframes agent-thump { 0%, 100% { transform: scale(1.06, 0.94); } 20%, 75% { transform: scale(0.96, 1.04); } 45% { transform: scale(1); } }
+
+/* Waiting for you: tilts side to side. */
+.st-waiting .agent-body { animation: agent-tilt 2.2s ease-in-out infinite; }
+@keyframes agent-tilt { 0%, 100% { transform: rotate(-12deg); } 50% { transform: rotate(12deg); } }
+
+/* Sleeping: slow deep breaths, faded, a z drifting up. */
+.st-sleeping { animation: none; }
+.st-sleeping .agent-body { opacity: 0.55; animation: agent-breathe 4s ease-in-out infinite; }
+@keyframes agent-breathe { 0%, 100% { transform: scale(0.94, 0.92); } 50% { transform: scale(1.03, 1.05); } }
+.agent-z { position: absolute; right: -4%; top: -6%; font: 700 0.75em/1 var(--mono); color: var(--muted); pointer-events: none; animation: agent-z 3s ease-out infinite; }
+@keyframes agent-z { 0% { opacity: 0; transform: translate(0, 30%) scale(0.6); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(60%, -90%) scale(1.15); } }
+
+/* Stuck: a shiver now and then. */
+.st-blocked .agent-body, .st-error .agent-body { opacity: 0.8; animation: agent-shiver 3s ease-in-out infinite; }
+@keyframes agent-shiver { 0%, 70%, 100% { transform: translateX(0); } 74% { transform: translateX(-6%); } 78% { transform: translateX(6%); } 82% { transform: translateX(-4%); } 86% { transform: translateX(4%); } 90% { transform: translateX(0); } }
+
+.agent-flag { position: absolute; right: 0; top: 0; width: 26%; height: 26%; min-width: 7px; min-height: 7px; border-radius: 50%; background: var(--usage); box-shadow: 0 0 0 2px var(--bg); animation: agent-ping 1.6s ease-in-out infinite; }
+.agent-flag.warn { background: var(--red); }
+@keyframes agent-ping { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.25); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-avatar, .agent-avatar *, .agent-typing .dots i, .agent-hero, .agent-welcome { animation: none !important; }
+}

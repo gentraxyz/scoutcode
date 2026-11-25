@@ -109,6 +109,47 @@ pub fn set(old: Option<&str>, name: &str, cfg: Option<ServerConfig>) -> Result<(
     save_to(&path, &f)
 }
 
+/// The servers the user has said yes to, by name, each with a fingerprint of its settings. Changing a server's command,
+/// URL, env or headers (by hand in mcp.json, too) asks again. Turning it off or on doesn't.
+fn approvals_file() -> PathBuf {
+    crate::config::home().join("mcp_approved.json")
+}
+
+fn approvals() -> BTreeMap<String, String> {
+    std::fs::read_to_string(approvals_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn fingerprint(cfg: &ServerConfig) -> String {
+    let mut c = cfg.clone();
+    c.disabled = false;
+    let text = serde_json::to_string(&c).unwrap_or_default();
+    Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn is_approved(name: &str, cfg: &ServerConfig) -> bool {
+    approvals().get(name).is_some_and(|f| *f == fingerprint(cfg))
+}
+
+/// Remembers that the user said yes to this server as it is now.
+pub fn approve(name: &str, cfg: &ServerConfig) -> Result<(), String> {
+    let mut map = approvals();
+    map.insert(name.to_string(), fingerprint(cfg));
+    let path = approvals_file();
+    std::fs::create_dir_all(path.parent().ok_or("Invalid path")?).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("Could not save the approval: {e}"))
+}
+
+/// Forgets the approval of a server that was removed, so one added later with the same name asks again.
+pub fn unapprove(name: &str) {
+    let mut map = approvals();
+    if map.remove(name).is_some() {
+        if let Ok(text) = serde_json::to_string_pretty(&map) {
+            let _ = std::fs::write(approvals_file(), text);
+        }
+    }
+}
+
 /// Writes an empty file if there's none, so there's something to open.
 pub fn ensure_file() -> PathBuf {
     let path = file();
@@ -576,6 +617,8 @@ struct Tool {
 #[derive(Clone, PartialEq, Debug)]
 pub enum Status {
     Off,
+    /// In mcp.json, but the user hasn't said yes to it, so it isn't started.
+    NeedsApproval,
     Connecting,
     Ready,
     /// A remote server that wants the user to sign in through the browser.
@@ -643,7 +686,12 @@ impl Hub {
         inner.error = None;
         let old = std::mem::take(&mut inner.servers);
         for (name, cfg) in file.servers {
-            if let Some(s) = old.iter().find(|s| !force && s.name == name && s.cfg == cfg && s.status != Status::Connecting && !matches!(s.status, Status::Failed(_))) {
+            // Nothing runs until the user has said yes to this exact server, so a server that came from elsewhere asks first.
+            if !cfg.disabled && !is_approved(&name, &cfg) {
+                inner.servers.push(Server { name, cfg, status: Status::NeedsApproval, tools: vec![], conn: None, attempt: 0, signed_in: false });
+                continue;
+            }
+            if let Some(s) = old.iter().find(|s| !force && s.name == name && s.cfg == cfg && s.status != Status::Connecting && s.status != Status::NeedsApproval && !matches!(s.status, Status::Failed(_))) {
                 inner.servers.push(Server { name, cfg, status: s.status.clone(), tools: s.tools.clone(), conn: s.conn.clone(), attempt: s.attempt, signed_in: s.signed_in });
                 continue;
             }
@@ -692,6 +740,16 @@ impl Hub {
             drop(inner);
             self.sign_in(name, ctx);
         }
+    }
+
+    /// The user said yes to a server that was waiting for it: remembers that, then connects it.
+    pub fn allow(&'static self, name: &str, ctx: &crate::waker::Waker) -> Result<(), String> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(i) = inner.servers.iter().position(|s| s.name == name && s.status == Status::NeedsApproval) else { return Ok(()) };
+        let cfg = inner.servers[i].cfg.clone();
+        approve(name, &cfg)?;
+        self.start(&mut inner, i, ctx);
+        Ok(())
     }
 
     /// Starts the browser sign-in for this server if it needs one the moment Settings saves it.
@@ -997,6 +1055,12 @@ mod tests {
         let ctx = crate::waker::Waker::default();
         set(None, "scout", Some(cfg.clone())).unwrap();
         hub().reload(&ctx, false);
+        // Not started until the user says yes to it, and a reload doesn't change that.
+        assert_eq!(hub().views()[0].status, Status::NeedsApproval);
+        assert!(hub().specs().is_empty());
+        hub().reload(&ctx, true);
+        assert_eq!(hub().views()[0].status, Status::NeedsApproval);
+        hub().allow("scout", &ctx).unwrap();
         let until = Instant::now() + Duration::from_secs(30);
         while hub().views()[0].status == Status::Connecting && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(50));

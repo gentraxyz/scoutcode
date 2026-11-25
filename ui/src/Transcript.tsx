@@ -3,9 +3,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { act, openExternal, type AgentStep, type Item, type ModelRef } from './api';
 import { logo } from './Accounts';
-import { FallbackList, ModelPicker, useModelName } from './ModelMenu';
+import { ModelPicker, useModelName } from './ModelMenu';
 import { core, focusComposer, ui, useCore, useUi, useView } from './store';
-import { CodeBlock, CopyIconButton, Icon, IconButton, MenuItem, Modal, Popover, SectionLabel, ShowDisplay, Spinner } from './widgets';
+import { CodeBlock, CopyIconButton, Icon, IconButton, MenuItem, Modal, Popover, ShowDisplay, Spinner } from './widgets';
 import { ScoutLogo } from './logo';
 import { addProject } from './Sidebar';
 
@@ -156,9 +156,43 @@ function UserMessage({ item, at, editable, onRetry }: { item: Extract<Item, { ki
   );
 }
 
+const REASONING_KEY = 'scout:reasoningOpen';
+/** Whether reasoning starts expanded: the last choice made on any reply. */
+let reasoningOpen = (() => { try { return localStorage.getItem(REASONING_KEY) === '1'; } catch { return false; } })();
+
+/** What the model thought. While it's still thinking (and hasn't started its answer) the thoughts stream in open, the
+ *  newest lines in view; afterwards they fold to a few lines, or stay open if that's how you last left them. */
+function Reasoning({ text, live }: { text: string; live: boolean }) {
+  const [open, setOpen] = useState(reasoningOpen);
+  const box = useRef<HTMLDivElement>(null);
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    reasoningOpen = next;
+    try { localStorage.setItem(REASONING_KEY, next ? '1' : '0'); } catch {}
+  };
+  useLayoutEffect(() => {
+    if (live && !open && box.current) box.current.scrollTop = box.current.scrollHeight;
+  });
+  const lines = useMemo(() => text.trim().split('\n').filter((l) => l.trim()).length, [text]);
+  return (
+    <div className={`reasoning-block ${live ? 'live' : ''} ${open ? 'open' : ''}`}>
+      <button type="button" className="reasoning-head" onClick={toggle} aria-expanded={open}>
+        <Icon name={open ? 'chevronDown' : 'chevronRight'} />
+        <b className={live ? 'shimmer' : ''}>{live ? 'Thinking' : 'Reasoning'}</b>
+        {!open && !live && lines > 3 && <span className="tiny dim">{lines} lines</span>}
+      </button>
+      <div ref={box} className={`reasoning pre-wrap ${open ? '' : live ? 'peek-live' : 'peek'}`} onClick={!open && !live ? toggle : undefined}>
+        {text.trim()}
+      </div>
+    </div>
+  );
+}
+
 function Assistant({ item, at, editable, showModel, onRetry }: { item: Extract<Item, { kind: 'assistant' }>; at: number; editable: boolean; showModel: boolean; onRetry: () => void }) {
-  const [show, setShow] = useState(false);
-  const latest = useMemo(() => item.reasoning.trim().split('\n').reverse().find((l) => l.trim())?.trim() ?? '', [item.reasoning]);
+  const { running } = useView('run');
+  const isLast = useCore((s) => s.items[s.items.length - 1]?.id === item.id);
+  const thinking = running && isLast && !item.text;
   const canRetry = useMemo(() => {
     const all = core.get()?.items ?? [];
     for (let i = at - 1; i >= 0; i--) {
@@ -173,16 +207,7 @@ function Assistant({ item, at, editable, showModel, onRetry }: { item: Extract<I
 
   return (
     <div className="assistant">
-      {item.reasoning && (
-        <>
-          <button type="button" className="reasoning-head" onClick={() => setShow(!show)}>
-            <Icon name={show ? 'chevronDown' : 'chevronRight'} />
-            <b>Reasoning</b>
-            {!show && <span className="dim ellipsis">{latest}</span>}
-          </button>
-          {show && <div className="reasoning pre-wrap">{item.reasoning}</div>}
-        </>
-      )}
+      {item.reasoning.trim() && <Reasoning text={item.reasoning} live={thinking} />}
       <Markdown text={item.text} />
       {(item.text || item.reasoning) && (
         <div className="assistant-foot">
@@ -323,52 +348,32 @@ function OutOfCredit({ item }: { item: { id: number; text: string } }) {
   );
 }
 
-/** The popup the setup card opens: a list for every model and one for the model that failed, which wins over it. */
-function FallbackEditor({ failed, name, close }: { failed: ModelRef; name: string; close: () => void }) {
-  const { fallbacks } = useView('cfg');
-  const same = (m: ModelRef) => m.key === failed.key && m.provider === failed.provider;
-  const [all, setAll] = useState<ModelRef[]>(fallbacks.all);
-  const [own, setOwn] = useState<ModelRef[]>(fallbacks.models.find(([m]) => same(m))?.[1] ?? []);
-  // The failed model can't stand in for itself.
-  const usable = (l: ModelRef[]) => l.some((m) => !same(m));
-  return (
-    <div className="fallback-setup">
-      <b>Fallback models</b>
-      <span className="small dim">When a model fails, Scout carries the turn on with the next model in its list, then goes back to your model.</span>
-      <SectionLabel>Every model</SectionLabel>
-      <span className="small dim">Used by any model without a list of its own.</span>
-      <FallbackList value={all} onChange={setAll} />
-      <SectionLabel>Only {name}</SectionLabel>
-      <span className="small dim">Used instead of the list above when {name} fails. Leave it empty to use that one.</span>
-      <FallbackList value={own} onChange={setOwn} />
-      <div className="credit-actions">
-        <button type="button" className="button primary" disabled={!usable(own.length ? own : all)} onClick={() => { close(); act('setupFallbacks', { failed, all, own, off: false }); }}>Save and try again</button>
-        <button type="button" className="button" onClick={close}>Cancel</button>
-      </div>
-      <span className="tiny dim">Change these any time in Settings &gt; Fallbacks.</span>
-    </div>
-  );
-}
-
-/** A model failed for the first time: offers to set up fallbacks, or to keep showing errors. */
-function FallbackSetup({ item }: { item: Extract<Item, { kind: 'fallbackSetup' }> }) {
+/** A model failed and there are no custom agents yet: the error, with an offer to make one that carries a turn on to
+ *  the next model when one fails, or to try again on another model now. */
+function AgentSuggest({ item }: { item: Extract<Item, { kind: 'agentSuggest' }> }) {
   const { running } = useView('run');
-  const { fallbacks } = useView('cfg');
+  const routers = useView('cfg').agentRouters;
   const last = useCore((s) => s.items[s.items.length - 1]?.id === item.id);
-  const failed: ModelRef = { key: item.key, provider: item.provider };
-  const name = useModelName(failed);
+  const name = useModelName({ key: item.key, provider: item.provider });
+  const retry = (key?: string, provider?: string) => act('retryTurn', { key, provider });
   return (
     <div className="error-box credit-box">
       <Icon name="close" />
       <div className="stack grow">
         <span className="pre-wrap">{item.text}</span>
-        {last && !running && !fallbacks.chosen && (
-          <div className="credit-actions">
-            <Popover side="top" className="fallback-popover" width={380} trigger={(_, toggle) => <button type="button" className="button primary" onClick={toggle}>Set up fallback models</button>}>
-              {(close) => <FallbackEditor failed={failed} name={name} close={close} />}
-            </Popover>
-            <button type="button" className="button" onClick={() => act('setupFallbacks', { failed, all: [], own: [], off: true })}>No fallbacks, just show errors</button>
-          </div>
+        {last && !running && (
+          <>
+            {!routers?.length && (
+              <span className="small dim">
+                Make a custom agent: a route of models, starting with {name}, where the next one carries the turn on whenever one fails or hits a limit.
+              </span>
+            )}
+            <div className="credit-actions">
+              {!routers?.length && <button type="button" className="button primary" onClick={() => ui.set({ settings: 'router' })}>Make a custom agent</button>}
+              <button type="button" className={`button ${routers?.length ? 'primary' : ''}`} onClick={() => retry()}>Try again</button>
+              <ModelPicker label="Choose another model" onPick={retry} />
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -396,8 +401,8 @@ const Row = memo(function Row({ item, at, editable, hit, showModel = false, onRe
     case 'outOfCredit':
       body = <OutOfCredit item={item} />;
       break;
-    case 'fallbackSetup':
-      body = <FallbackSetup item={item} />;
+    case 'agentSuggest':
+      body = <AgentSuggest item={item} />;
       break;
   }
   return <div className={`item item-${item.kind} ${hit ? 'hit' : ''}`} data-at={at}>{body}</div>;
@@ -537,7 +542,7 @@ type Mark = { at: number; id: number; user: boolean; text: string };
 
 /** Stands in for the scrollbar: a tick for each message down the right edge, the one being read lit. Pointing at a tick
  *  shows the start of its message, and clicking goes to it. */
-const MessageRail = memo(function MessageRail({ items, scroller }: { items: Item[]; scroller: RefObject<HTMLDivElement | null> }) {
+const MessageRail = memo(function MessageRail({ items, scroller, reveal }: { items: Item[]; scroller: RefObject<HTMLDivElement | null>; reveal: (at: number, block: ScrollLogicalPosition) => void }) {
   const marks = useMemo(() => {
     const out: Mark[] = [];
     items.forEach((it, at) => {
@@ -594,7 +599,7 @@ const MessageRail = memo(function MessageRail({ items, scroller }: { items: Item
           onMouseEnter={(e) => setPeek({ mark: m, top: e.currentTarget.offsetTop + e.currentTarget.offsetHeight / 2 })}
           onFocus={(e) => setPeek({ mark: m, top: e.currentTarget.offsetTop + e.currentTarget.offsetHeight / 2 })}
           onBlur={() => setPeek(null)}
-          onClick={() => scroller.current?.querySelector(`[data-at="${m.at}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' })}
+          onClick={() => reveal(m.at, 'start')}
         ><i /></button>
       ))}
       {peek && (
@@ -657,42 +662,14 @@ const WORKING_VERBS = [
   'Assessing', 'Correlating', 'Deliberating', 'Formulating', 'Interpreting', 'Mapping', 'Parsing', 'Structuring',
   'Validating', 'Calibrating', 'Compiling', 'Indexing', 'Examining', 'Deducing', 'Tracing', 'Weighing',
 ];
-const GLITCH_CHARS = '·:-_/';
-const GLITCH_MS = 650;
 const VERB_MS = 3200;
+/** How many items a chat draws when opened, and how many more each time the reader scrolls near the top. */
+const WINDOW = 150;
+const STEP = 100;
 
-/** Text that scrambles through noise into its new value whenever `text` changes. */
-function GlitchText({ text }: { text: string }) {
-  const [shown, setShown] = useState(text);
-  const [glitching, setGlitching] = useState(false);
-  const from = useRef(text);
-  useEffect(() => {
-    if (from.current === text) return;
-    const start = performance.now();
-    const old = from.current;
-    from.current = text;
-    const len = Math.max(old.length, text.length);
-    let frame = 0;
-    setGlitching(true);
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / GLITCH_MS);
-      // Letters settle left to right; the rest are noise, with the old word showing through at first.
-      const settled = Math.floor(t * len);
-      let out = '';
-      for (let i = 0; i < len; i++) {
-        if (i < settled) out += text[i] ?? '';
-        // Mostly the old letters, with only a few flickering, so the change reads as a soft shimmer.
-        else if (Math.random() < 0.7) out += (t < 0.5 ? old[i] : text[i]) ?? '';
-        else if (i < text.length) out += GLITCH_CHARS[Math.floor(Math.random() * GLITCH_CHARS.length)];
-      }
-      setShown(out);
-      if (t < 1) frame = requestAnimationFrame(tick);
-      else { setShown(text); setGlitching(false); }
-    };
-    frame = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(frame); setShown(text); setGlitching(false); };
-  }, [text]);
-  return <span className={`glitch-text ${glitching ? 'glitching' : ''}`} data-text={shown}>{shown}</span>;
+/** A word that softly crossfades into the next whenever `text` changes. */
+function SoftWord({ text }: { text: string }) {
+  return <span key={text} className="working-word shimmer">{text}</span>;
 }
 
 function elapsed(ms: number) {
@@ -700,8 +677,9 @@ function elapsed(ms: number) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
 }
 
-/** Under the last message while Scout works, so a slow model still shows it's busy: a rotating word that glitches
- *  into the next, how long the turn has run, and the model it runs on. */
+/** Under the last message while Scout works, so a slow model still shows it's busy. Laid out like a tool row (the dot
+ *  in the tools' icon slot), so it sits in the same place whether or not any tool has run yet: a word that fades into
+ *  the next, how long the turn has run, and the model it runs on. */
 function WorkingIndicator() {
   const { status } = useView('run');
   const permission = useView('permission');
@@ -721,7 +699,7 @@ function WorkingIndicator() {
   const word = waiting ? 'Awaiting input' : WORKING_VERBS[verb];
   return (
     <div className="working-indicator" aria-live="polite">
-      <GlitchText text={`${word}…`} />
+      <SoftWord text={word} />
       <span className="working-meta tiny dim ellipsis">
         {elapsed(now - since)}
         {modelName && <> · {modelName}</>}
@@ -758,6 +736,48 @@ export function Transcript() {
     }
   }, []);
 
+  // Only the latest items are drawn: a chat with thousands of messages and tool calls made the window run out of
+  // memory when opened. Older ones are drawn as the reader scrolls up, or when find or the rail goes to one.
+  // Keyed to the first item, so another chat (or a rewound or compacted one) starts again from its latest items, even
+  // on the very first draw.
+  const latest = Math.max(0, items.length - WINDOW);
+  const [win, setWin] = useState<{ first: number | undefined; from: number }>(() => ({ first: items[0]?.id, from: latest }));
+  const shownFrom = win.first === items[0]?.id ? Math.min(win.from, latest) : latest;
+  const shownRef = useRef(shownFrom);
+  shownRef.current = shownFrom;
+  const setFrom = useCallback((from: number) => setWin({ first: core.get()?.items[0]?.id, from }), []);
+  const anchor = useRef<{ height: number; top: number } | null>(null);
+  const jump = useRef<{ at: number; block: ScrollLogicalPosition } | null>(null);
+  const reveal = useCallback((at: number, block: ScrollLogicalPosition) => {
+    const el = scroller.current?.querySelector(`[data-at="${at}"]`);
+    if (el) return el.scrollIntoView({ block, behavior: block === 'start' ? 'smooth' : 'auto' });
+    if (at >= shownRef.current) return;
+    jump.current = { at, block };
+    setFrom(Math.max(0, at - 20));
+  }, [setFrom]);
+  // Drawing older items above keeps what was on screen where it was.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && anchor.current) {
+      el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.height);
+      anchor.current = null;
+    }
+    if (jump.current) {
+      const { at, block } = jump.current;
+      const row = el?.querySelector(`[data-at="${at}"]`);
+      if (row) {
+        jump.current = null;
+        row.scrollIntoView({ block });
+      }
+    }
+  }, [shownFrom]);
+  const loadOlder = () => {
+    const el = scroller.current;
+    if (!el || shownFrom === 0 || anchor.current) return;
+    anchor.current = { height: el.scrollHeight, top: el.scrollTop };
+    setFrom(Math.max(0, shownFrom - STEP));
+  };
+
   useEffect(() => { stick.current = true; }, [chatEpoch]);
   // Stays at the bottom while the reply grows, unless the reader has scrolled up.
   useLayoutEffect(() => {
@@ -765,8 +785,8 @@ export function Transcript() {
     if (el && stick.current && hit === null) el.scrollTop = el.scrollHeight;
   });
   useEffect(() => {
-    if (hit !== null) scroller.current?.querySelector(`[data-at="${hit}"]`)?.scrollIntoView({ block: 'center' });
-  }, [hit]);
+    if (hit !== null) reveal(hit, 'center');
+  }, [hit, reveal]);
   // Items off screen only guess their height until they've been drawn, so the bottom moves after a render too.
   const hasItems = items.length > 0;
   const hitting = useRef(false);
@@ -786,7 +806,8 @@ export function Transcript() {
   const { modelAt, switchAt } = useMemo(() => modelMarks(items, running), [items, running]);
   const rows = useMemo(() => {
     const out: ReactNode[] = [];
-    for (let i = 0; i < items.length; ) {
+    if (shownFrom > 0) out.push(<button key="older" type="button" className="button ghost small transcript-older" onClick={loadOlder}>Show earlier ({shownFrom} more)</button>);
+    for (let i = shownFrom; i < items.length; ) {
       if (items[i].kind !== 'tool') {
         const sw = switchAt.get(i);
         if (sw) out.push(<ModelSwitch key={`switch-${items[i].id}`} to={sw} />);
@@ -802,7 +823,7 @@ export function Transcript() {
       else out.push(<ToolGroup key={run[0].id} items={run} first={start} hit={hit} onRetry={handleRetry} />);
     }
     return out;
-  }, [items, running, hit, handleRetry, modelAt, switchAt]);
+  }, [items, running, hit, handleRetry, modelAt, switchAt, shownFrom]); // eslint-disable-line
 
   if (items.length === 0) return <div className="transcript"><EmptyState /></div>;
   return (
@@ -811,10 +832,11 @@ export function Transcript() {
       <div className="transcript" ref={scroller} onScroll={(e) => {
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+        if (el.scrollTop < 400) loadOlder();
       }}>
         <div className="column">{rows}{running && <WorkingIndicator />}</div>
       </div>
-      <MessageRail items={items} scroller={scroller} />
+      <MessageRail items={items} scroller={scroller} reveal={reveal} />
       {retryTarget && (
         <Modal onClose={() => setRetryTarget(null)}>
           <b className="strong big">Retry from this message?</b>

@@ -1,5 +1,5 @@
 // Dreaming: once Scout has sat untouched for 20 minutes, and at most once a day, a free model reads the last two days of
-// chats and tidies user and project memory (see dream.rs). This is the Dream Log, in Settings and in the Inbox.
+// chats and tidies user and project memory (see dream.rs). This is the Dream Log, in Settings.
 import { useEffect, useState } from 'react';
 import { act } from './api';
 import { useView } from './store';
@@ -34,7 +34,7 @@ export function useUnseenDreams(): Dream[] {
   return (d?.log ?? []).filter((x) => !x.seen && !x.undone && x.status === 'done' && x.changes.length > 0);
 }
 
-/** The Inbox's dreams: opening the page marks them seen, but they stay listed until you leave it or dismiss them. */
+/** Dreams that changed memory, for the Dream Log: opening the page marks them seen. */
 export function useInboxDreams() {
   const d = useView('dreaming');
   const unseen = useUnseenDreams();

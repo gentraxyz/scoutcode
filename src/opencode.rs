@@ -79,19 +79,27 @@ fn exe() -> PathBuf {
     install_dir().join(if cfg!(windows) { "opencode.exe" } else { "opencode" })
 }
 
-/// Its sign-in, settings and history: Scout's alone.
+/// Its folders' name: the first account's, and the start of the others' (see `profiles.rs`).
+pub const HOME: &str = "opencode-home";
+
+/// Its sign-in, settings and history, for the account in use: Scout's alone.
 fn own_home() -> PathBuf {
-    crate::config::home().join("runtime").join("opencode-home")
+    crate::profiles::home("opencode", HOME)
+}
+
+/// The email of the account in use, if its sign-in file says.
+pub fn account_name() -> Option<String> {
+    crate::profiles::email_in(&own_home().join("data").join("opencode").join("auth.json"))
 }
 
 pub fn installed() -> bool {
     exe().is_file()
 }
 
-/// Deletes the CLI, with its sign-in and history.
+/// Deletes the CLI, with every account's sign-in and history.
 pub fn remove_runtime() {
     let _ = std::fs::remove_dir_all(root());
-    let _ = std::fs::remove_dir_all(own_home());
+    crate::profiles::reset("opencode", HOME);
 }
 
 fn unpack(file: &Path, name: &str, to: &Path) -> std::io::Result<()> {

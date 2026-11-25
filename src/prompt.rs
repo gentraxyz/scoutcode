@@ -155,7 +155,12 @@ pub fn mode_note(mode: &str) -> String {
 
 /// The user's text without a trailing mode note, for display.
 pub fn strip_mode_note(s: &str) -> &str {
-    match s.rfind("\n\n[Permission mode: ") {
+    let s = match s.rfind("\n\n[Permission mode: ") {
+        Some(i) if s.ends_with(']') => &s[..i],
+        _ => s,
+    };
+    // The Browse page's note comes before it (browser.rs).
+    match s.rfind(crate::browser::BROWSE_MARK) {
         Some(i) if s.ends_with(']') => &s[..i],
         _ => s,
     }

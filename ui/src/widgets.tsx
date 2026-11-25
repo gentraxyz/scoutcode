@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Children, Fragment, isValidElement, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { openExternal, type DiffLines, type Display, type Todo } from './api';
 
@@ -7,6 +7,8 @@ import { openExternal, type DiffLines, type Display, type Todo } from './api';
 const PATHS: Record<string, string> = {
   plus: 'M8 3v10M3 8h10',
   close: 'M4 4l8 8M12 4l-8 8',
+  // The return key: down the right, then back left to an arrowhead.
+  enter: 'M12.5 3.5v4.5a1.5 1.5 0 0 1-1.5 1.5H3.5M6.300 6.700L3.5 9.500l2.800 2.800',
   eraser: 'M7 13.5h6.5M2.900 9.700l5.700-5.700a1.400 1.400 0 0 1 2 0l2.400 2.400a1.400 1.400 0 0 1 0 2L8 13.500H5.700L2.900 10.700a.700.700 0 0 1 0-1zM5.800 6.800l4.400 4.400',
   check: 'M3.5 8.5l3 3 6-7',
   inbox: 'M2 9h3.5l1 2h3l1-2H14M3.5 3h9L14 9v4H2V9z',
@@ -15,8 +17,8 @@ const PATHS: Record<string, string> = {
   chevronDown: 'M3.5 6L8 10.5 12.5 6',
   chevronUp: 'M3.5 10L8 5.5 12.5 10',
   more: 'M3.5 8h.01M8 8h.01M12.5 8h.01',
-  sidebar: 'M2.5 3.5h11v9h-11zM6 3.5v9',
-  panel: 'M2.5 3.5h11v9h-11zM10 3.5v9',
+  sidebar: 'M5 3.5h6a2.5 2.5 0 0 1 2.5 2.5v4a2.5 2.5 0 0 1-2.5 2.5H5A2.5 2.5 0 0 1 2.5 10V6A2.5 2.5 0 0 1 5 3.5zM6.5 3.5v9',
+  panel: 'M5 3.5h6a2.5 2.5 0 0 1 2.5 2.5v4a2.5 2.5 0 0 1-2.5 2.5H5A2.5 2.5 0 0 1 2.5 10V6A2.5 2.5 0 0 1 5 3.5zM9.5 3.5v9',
   folder: 'M2 4.5h4l1.5 1.5H14v6.5H2z',
   folderOpen: 'M2 12.5V4h3.800l1.500 1.500h5.200v2M2 12.500l1.900-5h10.600l-1.900 5z',
   hammer: 'M3 13l6.300-6.300M7.200 4.600l2-2 4.200 4.200-2 2z',
@@ -44,6 +46,7 @@ const PATHS: Record<string, string> = {
   download: 'M8 2.5v7.5M4.8 7L8 10.2 11.2 7M3 13.5h10',
   user: 'M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2.5 14c.6-3 2.8-4.5 5.5-4.5s4.900 1.500 5.500 4.500',
   bell: 'M4 7a4 4 0 1 1 8 0c0 3.500 1.500 4.500 1.500 4.500h-11S4 10.500 4 7zM6.800 14h2.400',
+  clock: 'M8 14a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM8 4.800V8l2.200 1.400',
   chat: 'M2.500 3.500h11v7.500H7l-3 2.500V11H2.500z',
   pencil: 'M3 13l.700-2.800 7-7 2.100 2.100-7 7zM9.700 4.200l2.100 2.100',
   paperclip: 'M12.500 7.500l-4.800 4.800a2.800 2.800 0 0 1-4-4l5.200-5.200a1.900 1.900 0 0 1 2.700 2.700l-5 5a.9.9 0 0 1-1.300-1.300l4.500-4.500',
@@ -81,6 +84,13 @@ const PATHS: Record<string, string> = {
   lock: 'M4 7.500h8v6H4zM5.500 7.500V5.300a2.500 2.500 0 0 1 5 0v2.200M8 10v1.500',
   cloud: 'M4.600 12.500h6.700a2.800 2.800 0 0 0 .300-5.600 3.900 3.900 0 0 0-7.500.700 2.500 2.500 0 0 0 .500 4.900z',
   stop: 'M4.500 4.500h7v7h-7z',
+  // Mission Control: an editor window, its side bar, and code brackets in it.
+  mission: 'M2 3.500a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1zM5.500 2.500v11M9 6.800L7.800 8 9 9.200M11 6.800L12.200 8 11 9.200',
+  split: 'M2.500 3h11v10h-11zM8 3v10',
+  // Entertainment: a screen with a play button in it, on a stand.
+  entertainment: 'M2.500 4a1.300 1.300 0 0 1 1.300-1.300h8.400A1.300 1.300 0 0 1 13.500 4v6a1.300 1.300 0 0 1-1.300 1.300H3.800A1.300 1.300 0 0 1 2.500 10zM6.800 5.400v3.200L9.500 7zM5.500 13.800h5',
+  // Social: two people, one in front.
+  social: 'M6 7.500a2.300 2.300 0 1 0 0-4.600 2.300 2.300 0 0 0 0 4.600zM1.800 13.500c.400-2.400 2-3.700 4.200-3.700s3.800 1.300 4.200 3.700M10.600 7.300a2 2 0 1 0-.500-3.900M11.700 9.900c1.400.400 2.300 1.600 2.600 3.400',
   trash: 'M2.800 4.300h10.400M6.300 4.300V2.800h3.400v1.500M4.200 4.300l.6 8.900h6.400l.6-8.900M6.700 6.800v4M9.300 6.800v4',
 };
 
@@ -143,12 +153,13 @@ type OpenPopover = { anchor: () => HTMLSpanElement | null; panel: () => HTMLDivE
 const openPopovers: OpenPopover[] = [];
 
 /** A chip or button that opens a floating panel. Esc or a click outside closes it. */
-export function Popover({ trigger, children, align = 'start', side = 'auto', className = '', onOpen, width }: {
+export function Popover({ trigger, children, align = 'start', side = 'auto', className = '', anchorClassName = '', onOpen, width }: {
   trigger: (open: boolean, toggle: () => void) => ReactNode;
   children: (close: () => void) => ReactNode;
   align?: 'start' | 'end';
   side?: 'auto' | 'top';
   className?: string;
+  anchorClassName?: string;
   onOpen?: () => void;
   /** Pixels, or 'anchor' to be as wide as the trigger. */
   width?: number | 'anchor';
@@ -235,7 +246,7 @@ export function Popover({ trigger, children, align = 'start', side = 'auto', cla
   }, [open]);
   return (
     <>
-      <span ref={anchor} className="popover-anchor">{trigger(open, toggle)}</span>
+      <span ref={anchor} className={`popover-anchor ${anchorClassName}`}>{trigger(open, toggle)}</span>
       {open && createPortal(
         <div ref={panel} className={`popover ${above ? 'above' : ''} ${closing ? 'closing' : ''} ${className}`} style={{ width: width === 'anchor' ? anchor.current?.offsetWidth : width, ...style }}>{children(close)}</div>,
         document.body,
@@ -251,6 +262,144 @@ export function MenuItem({ selected, onClick, icon, disabled, children }: { sele
       <span className="grow ellipsis">{children}</span>
       {selected && <Icon name="check" size={14} />}
     </button>
+  );
+}
+
+// ---------- select ----------
+
+type SelectOption = { value: string; label: string; disabled?: boolean; group?: string };
+/** What onChange gets: shaped like a change event, so handlers written for a native <select> work as they are. */
+export type SelectChange = { target: { value: string }; currentTarget: { value: string } };
+
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return '';
+}
+
+/** Reads the <option> and <optgroup> children, through fragments and maps, the way a native <select> would. */
+function readOptions(children: ReactNode, group?: string, out: SelectOption[] = []): SelectOption[] {
+  Children.forEach(children, (c) => {
+    if (!isValidElement<{ children?: ReactNode; value?: string | number; label?: string; disabled?: boolean }>(c)) return;
+    if (c.type === Fragment) readOptions(c.props.children, group, out);
+    else if (c.type === 'optgroup') readOptions(c.props.children, c.props.label, out);
+    else if (c.type === 'option') {
+      const label = textOf(c.props.children);
+      out.push({ value: String(c.props.value ?? label), label, disabled: c.props.disabled, group });
+    }
+  });
+  return out;
+}
+
+/**
+ * Scout's own dropdown, in place of the browser's native list. Takes <option> and <optgroup> children and
+ * the same value / onChange / disabled props as a <select>, so swapping one for the other changes nothing else.
+ */
+export function Select({ value, onChange, disabled, className = '', children, title, 'aria-label': ariaLabel, ...rest }: {
+  value: string | number | null | undefined;
+  onChange: (e: SelectChange) => void;
+  disabled?: boolean;
+  className?: string;
+  children: ReactNode;
+  title?: string;
+  'aria-label'?: string;
+  [k: `data-${string}`]: string | undefined;
+}) {
+  const options = readOptions(children);
+  const current = String(value ?? '');
+  const at = options.findIndex((o) => o.value === current);
+  const shown = options[at];
+  const [hi, setHi] = useState(at);
+  const list = useRef<HTMLDivElement>(null);
+  const typed = useRef({ text: '', at: 0 });
+  const grow = /(^|\s)grow(\s|$)/.test(className);
+  const pick = (o: SelectOption | undefined, close: () => void) => {
+    if (!o || o.disabled) return;
+    close();
+    if (o.value !== current) onChange({ target: { value: o.value }, currentTarget: { value: o.value } });
+  };
+  const step = (from: number, by: number) => {
+    for (let i = from + by; i >= 0 && i < options.length; i += by) if (!options[i].disabled) return i;
+    return from;
+  };
+  // Keeps the highlighted row in view as the arrows move it.
+  useEffect(() => {
+    list.current?.querySelector<HTMLElement>(`[data-i="${hi}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [hi]);
+  const keys = (e: React.KeyboardEvent, open: boolean, toggle: () => void, close: () => void) => {
+    const k = e.key;
+    if (!open) {
+      if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Enter' || k === ' ') { e.preventDefault(); setHi(at); toggle(); }
+      return;
+    }
+    if (k === 'ArrowDown') { e.preventDefault(); setHi((h) => step(h, 1)); }
+    else if (k === 'ArrowUp') { e.preventDefault(); setHi((h) => step(h < 0 ? options.length : h, -1)); }
+    else if (k === 'Home') { e.preventDefault(); setHi(step(-1, 1)); }
+    else if (k === 'End') { e.preventDefault(); setHi(step(options.length, -1)); }
+    else if (k === 'Enter' || k === ' ') { e.preventDefault(); e.stopPropagation(); pick(options[hi], close); }
+    else if (k === 'Tab') close();
+    else if (k.length === 1 && /\S/.test(k)) {
+      // Typing jumps to the first row that starts with what was typed in the last moment.
+      const now = Date.now();
+      typed.current = { text: (now - typed.current.at < 700 ? typed.current.text : '') + k.toLowerCase(), at: now };
+      const found = options.findIndex((o) => !o.disabled && o.label.toLowerCase().startsWith(typed.current.text));
+      if (found >= 0) setHi(found);
+    }
+  };
+  return (
+    <Popover
+      width="anchor"
+      className="select-menu"
+      anchorClassName={`select-anchor ${grow ? 'grow' : ''}`}
+      onOpen={() => setHi(at)}
+      trigger={(open, toggle) => (
+        <button
+          type="button"
+          className={`${className} select-trigger ${open ? 'open' : ''}`}
+          disabled={disabled}
+          title={title}
+          aria-label={ariaLabel}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={toggle}
+          onKeyDown={(e) => keys(e, open, toggle, () => open && toggle())}
+          {...rest}
+        >
+          {/* Every label sits in one cell, so the button is as wide as the longest, like a native select. */}
+          <span className="select-value">
+            {options.map((o, i) => <span key={i} className={i === at ? '' : 'select-sizer'} aria-hidden={i !== at}>{o.label}</span>)}
+            {!shown && <span className="dim">{' '}</span>}
+          </span>
+          <Icon name="chevronDown" size={13} />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div ref={list} className="select-list" role="listbox" onMouseLeave={() => setHi(-1)}>
+          {options.map((o, i) => (
+            <Fragment key={i}>
+              {o.group !== undefined && o.group !== options[i - 1]?.group && <div className="select-group tiny">{o.group}</div>}
+              <button
+                type="button"
+                role="option"
+                data-i={i}
+                aria-selected={i === at}
+                disabled={o.disabled}
+                tabIndex={-1}
+                className={`select-option ${i === at ? 'selected' : ''} ${i === hi ? 'hi' : ''}`}
+                onMouseEnter={() => setHi(i)}
+                onClick={() => pick(o, close)}
+              >
+                <span className="grow ellipsis">{o.label}</span>
+                {i === at && <Icon name="check" size={13} />}
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </Popover>
   );
 }
 

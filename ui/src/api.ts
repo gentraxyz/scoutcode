@@ -20,7 +20,7 @@ export type Item =
   | { id: number; kind: 'assistant'; text: string; reasoning: string; model?: string | null; provider?: string | null; tps?: number | null }
   | { id: number; kind: 'tool'; name: string; label: string; progress: string; result: ToolResult | null; steps?: AgentStep[] }
   | { id: number; kind: 'notice' | 'error' | 'outOfCredit'; text: string }
-  | { id: number; kind: 'fallbackSetup'; text: string; key: string; provider: string };
+  | { id: number; kind: 'agentSuggest'; text: string; key: string; provider: string };
 
 /** A model in the picker: its list key and where it runs. */
 export type ModelRef = { key: string; provider: string };
@@ -33,7 +33,7 @@ export type ReviewView = { chat: string; running: boolean; reviews: Review[] };
 /** Turns explore on or off, keeping or replacing its models. */
 export const setExplore = (on: boolean, models: ModelRef[]) => act('setExplore', { on, models: models.map(({ key, provider }) => ({ key, provider })) });
 /** The models to try, in order, when the chosen one fails. */
-export type Fallbacks = { chosen: boolean; all: ModelRef[]; models: [ModelRef, ModelRef[]][] };
+
 /** One step in the Agent Router. */
 export type AgentRouteStep = { key: string; provider: string; intelligence: 1 | 2 | 3; retryRateLimit: boolean };
 /** The Agent Router: an ordered list of provider/model steps, optionally routed by Jev prompt difficulty. */
@@ -102,7 +102,7 @@ export type LinkEdit = { path: string; added: number; removed: number; created: 
 export type LinkCall = { tool: string; label: string; ok: boolean; at: number; edits: LinkEdit[] };
 
 export type McpServer = {
-  name: string; summary: string; disabled: boolean; state: 'off' | 'connecting' | 'ready' | 'signIn' | 'signingIn' | 'failed'; error: string | null; tools: string[]; signedIn: boolean;
+  name: string; summary: string; disabled: boolean; state: 'off' | 'approval' | 'connecting' | 'ready' | 'signIn' | 'signingIn' | 'failed'; error: string | null; tools: string[]; signedIn: boolean;
   form: { remote: boolean; command: string; args: string; env: string; url: string; headers: string };
 };
 export type UpdateStatus =
@@ -169,7 +169,7 @@ export type View = {
   cfg: {
     loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; antigravity: boolean; vibe: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; autoCompactTokens: number; fallbacks: Fallbacks; agentRouters: AgentRouter[]; experimentalImages: boolean; browserAgent: boolean; image: { provider: string; model: string | null; key: string | null }; explore: Explore; games: Games; music: Music; local: LocalSettings;
+    additional: { id: string; masked: string | null }[]; customProviders: CustomProvider[]; agentAccounts: Record<AccountProvider, AgentAccounts>; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; confirmClose: boolean; autoCompactTokens: number; agentRouters: AgentRouter[]; experimentalImages: boolean; browserAgent: boolean; image: { provider: string; model: string | null; key: string | null }; explore: Explore; games: Games; music: Music; local: LocalSettings;
   };
   local: LocalView;
   review: ReviewView;
@@ -221,10 +221,30 @@ export type View = {
   uncensored: UncensoredTerms | null;
 };
 
+/** The providers signed in to on this PC that can have several accounts. */
+export type AccountProvider = 'codex' | 'claude' | 'grok' | 'opencode' | 'copilot';
+/** Their accounts on this PC: each its own sign-in, the one `active` runs. Names are emails, once known. */
+export type AgentAccounts = { active: string; list: { id: string; name: string | null }[] };
+
+/** What to call account `i` in a list of them. */
+export function accountLabel(a: { name: string | null }, i: number): string {
+  return a.name ?? `Account ${i + 1}`;
+}
+
+/** A provider the user added: any server that speaks OpenAI's or Anthropic's API. */
+export type CustomProvider = { id: string; name: string; kind: 'openai' | 'anthropic'; url: string; icon: string | null };
+
+export type AdditionalProvider = {
+  id: string; name: string; needsKey: boolean; note: string; keyUrl: string; keyLink: string; keyHint: string;
+  /** Only on the user's own providers. */
+  custom?: CustomProvider;
+};
+
 export type Statics = {
   modes: { id: string; label: string; about: string }[];
   efforts: string[];
-  additionalProviders: { id: string; name: string; needsKey: boolean; note: string; keyUrl: string; keyLink: string; keyHint: string }[];
+  /** The built-in additional providers, then the user's own (from `cfg.customProviders`, merged in by the store). */
+  additionalProviders: AdditionalProvider[];
   kiloWarning: string;
   plans: { copilot: string; devin: string; kiro: string; antigravity: string; vibe: string; codex: string; claude: string; opencode: string; grok: string; hermes: string };
   languages: [string, string][];
@@ -245,15 +265,22 @@ export function openExternal(url: string): void {
 
 export { invoke };
 
-/** "$0.50", "$12.00", "$0.0015". */
-export function usd(v: number): string {
-  const cents = v.toFixed(2);
-  return Math.abs(Number(cents) - v) < 1e-9 ? `$${cents}` : `$${money(v)}`;
+/** `n`, or `fallback` when it isn't a finite number (a server of another version may leave a field out). */
+export const num = (n: unknown, fallback = 0): number => (typeof n === 'number' && Number.isFinite(n) ? n : fallback);
+
+/** `n.toFixed(digits)` that never throws, whatever `n` turns out to be. */
+export const fixed = (n: unknown, digits: number): string => num(n).toFixed(digits);
+
+/** "$0.50", "$12.00", "$0.0015". Anything that isn't a number reads as $0.00 rather than crashing the page. */
+export function usd(v: number | null | undefined): string {
+  const n = num(v);
+  const cents = n.toFixed(2);
+  return Math.abs(Number(cents) - n) < 1e-9 ? `$${cents}` : `$${money(n)}`;
 }
 
 /** Up to four decimals, without trailing zeros. */
-export function money(v: number): string {
-  return v.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+export function money(v: number | null | undefined): string {
+  return num(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 /** A USD amount as typed ("1.5", "$2"), or null when it isn't one. */
@@ -265,13 +292,15 @@ export function parseUsd(s: string): number | null {
 }
 
 /** 131072 → "131K", 1048576 → "1M". */
-export function tokens(n: number): string {
+export function tokens(v: number | null | undefined): string {
+  const n = num(v);
   if (n >= 1_000_000) return `${Math.round((n / 1_000_000) * 10) / 10}M`;
   if (n >= 1000) return `${Math.round(n / 1000)}K`;
   return String(n);
 }
 
-export function shortDate(day: string): string {
+export function shortDate(day: string | null | undefined): string {
+  if (typeof day !== 'string' || !day) return '';
   const [, m, d] = day.split('-').map(Number);
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return m && d ? `${months[m - 1]} ${d}` : day;
@@ -282,4 +311,11 @@ export function shortDate(day: string): string {
 export function projectDir(dir: string): string {
   const m = /^(.*?)[\/]\.scout[\/]worktrees[\/][^\/]+[\/]*$/i.exec(dir);
   return m ? m[1] : dir;
+}
+
+/** Why Scout can't restart to update right now, or null when it can. */
+export function restartBlocker(running: boolean, dirty: boolean): string | null {
+  if (running) return 'Scout is working. You can restart when it finishes.';
+  if (dirty) return 'Save the file open in the editor first.';
+  return null;
 }

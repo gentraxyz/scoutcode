@@ -28,9 +28,27 @@ static AGENT: crate::node::Agent = crate::node::Agent {
 /// Its settings, in a folder that's Scout's alone: no update checks, and no history of its own, since the chat is Scout's.
 const SETTINGS: &str = "check_for_update_on_startup = false\n\n[features]\nguardian_approval = false\n\n[history]\npersistence = \"none\"\n";
 
-/// Its sign-in, settings and sessions: Scout's alone.
+/// Its folders' name: the first account's, and the start of the others' (see `profiles.rs`).
+pub const HOME: &str = "codex-home";
+
+/// Its sign-in, settings and sessions, for the account in use: Scout's alone.
 fn own_home() -> PathBuf {
-    crate::config::home().join("runtime").join("codex-home")
+    crate::profiles::home("codex", HOME)
+}
+
+/// The email of the account signed in to in folder `home`: Codex keeps it in the sign-in's ID token.
+pub fn account_name_in(home: &Path) -> Option<String> {
+    use base64::Engine;
+    let auth: Value = serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).ok()?).ok()?;
+    let token = auth.pointer("/tokens/id_token")?.as_str()?;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(token.split('.').nth(1)?.trim_end_matches('=')).ok()?;
+    let claims: Value = serde_json::from_slice(&payload).ok()?;
+    claims.get("email").and_then(Value::as_str).map(String::from)
+}
+
+/// The same for the account in use.
+pub fn account_name() -> Option<String> {
+    account_name_in(&own_home())
 }
 
 pub fn installed() -> bool {
@@ -41,10 +59,10 @@ pub fn ensure_runtime(progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> 
     AGENT.ensure(progress)
 }
 
-/// Deletes the adapter and Codex, with the sign-in and history.
+/// Deletes the adapter and Codex, with every account's sign-in and history.
 pub fn remove_runtime() {
     AGENT.remove();
-    let _ = std::fs::remove_dir_all(own_home());
+    crate::profiles::reset("codex", HOME);
 }
 
 /// Another copy's settings and keys stay with it. `CODEX_PATH` alone would run some other program as Codex, and an
@@ -253,5 +271,17 @@ mod tests {
         assert!(explain("Authentication required").contains("Settings > Providers"));
         assert!(explain("You've hit your usage limit.").contains(PLAN_URL));
         assert_eq!(explain("boom"), "Codex: boom");
+    }
+
+    #[test]
+    fn an_accounts_email_comes_from_its_id_token() {
+        use base64::Engine;
+        let dir = std::env::temp_dir().join(format!("scout-codex-auth-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"email":"me@example.com"}"#);
+        std::fs::write(dir.join("auth.json"), json!({ "tokens": { "id_token": format!("h.{claims}.s") } }).to_string()).unwrap();
+        assert_eq!(account_name_in(&dir).as_deref(), Some("me@example.com"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(account_name_in(&dir), None);
     }
 }

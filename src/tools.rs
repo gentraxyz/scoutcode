@@ -618,7 +618,7 @@ pub fn rel(cwd: &str, abs: &Path) -> String {
     }
 }
 
-fn is_binary(b: &[u8]) -> bool {
+pub fn is_binary(b: &[u8]) -> bool {
     b.iter().take(8000).any(|&c| c == 0)
 }
 
@@ -1211,10 +1211,47 @@ pub fn no_window(c: &mut Command) {
     let _ = c;
 }
 
+/// Commands longer than this run from a script file instead of the command line. Windows caps a whole command line at
+/// 32,767 characters (and quoting can double a command's length), Linux caps one argument at 128 KB; past either, the
+/// shell never starts ("The filename or extension is too long").
+const MAX_INLINE_COMMAND: usize = 8000;
+
+/// Writes a long command to a script file the shell can run. Old scripts are swept here, once whatever ran them is
+/// long done.
+fn script_file(command: &str, powershell: bool) -> std::io::Result<PathBuf> {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join("scout-commands");
+    std::fs::create_dir_all(&dir)?;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let week = Duration::from_secs(7 * 24 * 3600);
+        for e in entries.flatten() {
+            if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > week) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let name = format!("cmd-{}-{}-{nanos}.{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed), if powershell { "ps1" } else { "sh" });
+    let path = dir.join(name);
+    // Windows PowerShell 5.1 reads a script without a BOM as the ANSI code page, which mangles non-ASCII text.
+    let body = if powershell { format!("\u{feff}{command}") } else { command.to_string() };
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
 fn start(command: &str, cwd: &str) -> std::io::Result<Child> {
     let sh = shell();
     let mut c = Command::new(&sh.file);
-    if sh.powershell {
+    if command.len() > MAX_INLINE_COMMAND {
+        let script = script_file(command, sh.powershell)?;
+        // Forward slashes so Git Bash reads a Windows path as is; PowerShell takes either.
+        let script = script.to_string_lossy().replace('\\', "/");
+        if sh.powershell {
+            c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script]);
+        } else {
+            c.arg(&script);
+        }
+    } else if sh.powershell {
         c.args(["-NoProfile", "-Command", command]);
     } else {
         c.args(["-c", command]);
@@ -1874,6 +1911,20 @@ mod tests {
         // Both count as read, so they can be edited next.
         assert_eq!(read.len(), 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_command_too_long_for_the_command_line_still_runs() {
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let (cancel, mut read) = (AtomicBool::new(false), HashSet::new());
+        let mut noop = |_: &str| {};
+        let mut ctx = Ctx { cwd: &cwd, chat: "", cancel: &cancel, read_files: &mut read, on_progress: &mut noop };
+        // Far past Windows' 32,767-character command line, with quotes that grow when escaped, and non-ASCII text.
+        let filler = "\"quoted\" é ".repeat(10_000);
+        let command = if shell().powershell { format!("$x = '{filler}'; 'len ok'; 'héllo'") } else { format!("x='{filler}'; echo len ok; echo héllo") };
+        assert!(command.len() > 100_000);
+        let r = run("bash", &json!({ "command": command }), &mut ctx).unwrap();
+        assert!(!r.is_error && r.output.contains("len ok") && r.output.contains("héllo"), "{}", r.output);
     }
 
     #[test]

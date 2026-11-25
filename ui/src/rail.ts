@@ -5,7 +5,7 @@ export type Tab = 'router' | 'scoutcode' | 'claude' | 'codex' | 'grok' | 'openro
 
 // Claude and Grok are also chatbots: their pages hold both the chatbot and its models.
 export const TABS: [Tab, string][] = [
-  ['router', 'Agent Router'], ['codex', 'Codex'], ['claude', 'Claude'], ['grok', 'Grok'], ['chatbots', 'Other chatbots'],
+  ['router', 'Custom agents'], ['codex', 'Codex'], ['claude', 'Claude'], ['grok', 'Grok'], ['chatbots', 'Other chatbots'],
   ['scoutcode', 'ScoutCode'], ['openrouter', 'OpenRouter'], ['nvidia', 'NVIDIA NIM'], ['opencode', 'OpenCode'], ['kilo', 'Kilo Code'],
   ['copilot', 'GitHub Copilot'], ['devin', 'Devin'], ['kiro', 'Kiro'], ['antigravity', 'Antigravity'], ['vibe', 'Mistral Vibe'], ['hermes', 'Hermes'], ['local', 'Local models'], ['additional', 'Additional Providers'],
 ];

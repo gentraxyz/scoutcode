@@ -2,7 +2,7 @@
 import { useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
-import { invoke, type Item, type Model, type Snapshot, type Statics, type View } from './api';
+import { invoke, type AdditionalProvider, type Item, type Model, type Snapshot, type Statics, type View } from './api';
 
 const reducedMotion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 
@@ -35,20 +35,16 @@ export const core = createStore<CoreState>(null as unknown as CoreState);
 
 /** A tab in the panel: one of its pages, the New Tab page, a sub-agent's work (by its tool item's id) or a background shell. */
 export type DockTab = 'terminal' | `terminal:${number}` | 'changes' | 'files' | 'games' | 'review' | 'browser' | 'new' | `new:${number}` | `task:${number}` | `shell:${string}`;
-export type SettingsTab = 'appearance' | 'preferences' | 'instructions' | 'memory' | 'providers' | 'fallbacks' | 'router' | 'images' | 'browser' | 'skills' | 'mcp' | 'chatbots' | 'account' | 'updates';
+export type SettingsTab = 'appearance' | 'preferences' | 'instructions' | 'memory' | 'providers' | 'router' | 'images' | 'browser' | 'skills' | 'mcp' | 'chatbots' | 'account' | 'updates' | 'logs';
 
 export const ui = createStore({
   sidebar: true,
-  /** The chat, or ScoutCode Delta (the issue tracker) in its place. */
-  page: 'chat' as 'chat' | 'delta' | 'inbox' | 'epsilon' | 'usage',
-  /** The Epsilon computer open on the 'epsilon' page. */
-  vm: 'persistent' as 'persistent' | 'temporary',
-  /** A cloud (Epsilon) chat is on screen instead of the local one: a new one in a repository, or a task. */
-  cloud: null as { repoId: number | null; taskId: string | null } | null,
-  /** "New project" is asking whether it goes on this PC or in the cloud. */
-  newProject: false as false | 'ask' | 'cloud',
+  /** Agent (the home page: persistent agents, Agent.tsx), Code (the coding agent's chats, 'chat'), or another page. */
+  page: 'agent' as 'agent' | 'chat' | 'usage' | 'mission' | 'social',
   /** The first-run setup is showing: on first run, or reopened from Settings. */
   onboarding: false,
+  /** Which setup: all of it, only signing in and meeting an agent (from the Agent page), or only ScoutCode's steps (from the Code tab). */
+  onboardingMode: 'full' as 'full' | 'agent' | 'code',
   dockOpen: false,
   dockTab: 'new' as DockTab,
   /** The panel's open tabs, in the strip's order. */
@@ -64,6 +60,8 @@ export const ui = createStore({
   editorDirty: false,
   settings: null as SettingsTab | null,
   deleting: null as { id: string; title: string } | null,
+  /** The window was asked to close and "Close Scout?" is up. */
+  confirmingClose: false,
   /** A model marked uncensored was picked before the account could use it: the popup asks, then `pick` picks it. */
   uncensored: null as { name: string; pick: () => void } | null,
   renaming: null as string | null,
@@ -83,10 +81,10 @@ export const ui = createStore({
   musicOpen: false,
 }, (prev, patch) => {
   // Opening and closing count; moving between tabs inside an open panel doesn't (Settings animates its own pages).
-  const flips = (k: 'settings' | 'deleting' | 'cloud') => k in patch && !prev[k] !== !patch[k];
+  const flips = (k: 'settings' | 'deleting') => k in patch && !prev[k] !== !patch[k];
   return ('page' in patch && patch.page !== prev.page) || ('sidebar' in patch && patch.sidebar !== prev.sidebar)
     || ('dockOpen' in patch && patch.dockOpen !== prev.dockOpen) || ('pickingFolder' in patch && patch.pickingFolder !== prev.pickingFolder) || ('pickingFiles' in patch && patch.pickingFiles !== prev.pickingFiles)
-    || flips('settings') || flips('deleting') || flips('cloud');
+    || flips('settings') || flips('deleting');
 });
 
 export function useCore<T>(pick: (s: CoreState) => T): T {
@@ -109,6 +107,18 @@ export function focusComposer() {
  * Starts listening, then reads where things stand. What arrives before the snapshot is held back, and only what's newer
  * than the snapshot is then applied: Rust sends each change once, so one lost here would stay lost.
  */
+/** The built-in additional providers, as the snapshot gave them: the user's own are added to them from each new view. */
+let builtIn: AdditionalProvider[] = [];
+
+function withCustom(statics: Statics, view: View): Statics {
+  const custom = view.cfg?.customProviders ?? [];
+  const additionalProviders = [
+    ...builtIn,
+    ...custom.map((c): AdditionalProvider => ({ id: c.id, name: c.name, needsKey: false, note: `${c.kind === 'anthropic' ? 'Anthropic API' : 'OpenAI-compatible API'} at ${c.url}`, keyUrl: '', keyLink: '', keyHint: 'API key', custom: c })),
+  ];
+  return { ...statics, additionalProviders };
+}
+
 export async function connect() {
   let ready = false;
   const held: { seq: number; apply: () => void }[] = [];
@@ -117,7 +127,10 @@ export async function connect() {
       if (ready) apply(payload);
       else held.push({ seq: payload.seq, apply: () => apply(payload) });
     });
-  await on<{ seq: number; data: Partial<View> }>('view', (p) => core.set({ view: { ...core.get().view, ...p.data } }));
+  await on<{ seq: number; data: Partial<View> }>('view', (p) => {
+    const view = { ...core.get().view, ...p.data };
+    core.set(p.data.cfg ? { view, statics: withCustom(core.get().statics, view) } : { view });
+  });
   await on<{ seq: number; data: Model[] }>('models', (p) => core.set({ models: p.data }));
   await on<{ seq: number; reset: boolean; items?: Item[]; changes?: { at: number; item: Item }[] }>('items', (p) => {
     if (p.reset) return core.set({ items: p.items ?? [] });
@@ -126,7 +139,8 @@ export async function connect() {
     core.set({ items });
   });
   const { seq, view, models, items, ...statics } = await invoke<Snapshot & { seq: number }>('snapshot');
-  core.set({ view, models, items, statics });
+  builtIn = statics.additionalProviders;
+  core.set({ view, models, items, statics: withCustom(statics as Statics, view) });
   ready = true;
   for (const h of held) if (h.seq > seq) h.apply();
 }

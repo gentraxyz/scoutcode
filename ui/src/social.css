@@ -1,0 +1,60 @@
+/* Social: the interests feed (Social.tsx). */
+.social { flex: 1 1 0; min-height: 0; overflow-y: auto; border-top: 1px solid var(--border); --bsky: #1185fe; --masto: #858afa; --devto: var(--strong); }
+.social-body { max-width: 640px; margin: 0 auto; padding: 18px 24px 48px; display: flex; flex-direction: column; gap: 12px; }
+
+.social-interests { display: flex; flex-direction: column; gap: 8px; }
+.social-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px; border: 1px solid var(--border-hi); border-radius: 12px; background: var(--surface); }
+.social-chips:focus-within { border-color: var(--focus); }
+.social-chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 10px; border-radius: 8px; background: var(--surface-hi); color: var(--strong); font-size: 12.5px; }
+.social-chip button { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; color: var(--dim); }
+.social-chip button:hover { background: var(--menu-hover); color: var(--strong); }
+.social-add { flex: 1 1 140px; min-width: 120px; height: 26px; padding: 0 6px; background: none; border: 0; outline: 0; color: var(--strong); font-size: 13px; }
+.social-add::placeholder { color: var(--dim); }
+.social-ideas { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 4px; }
+.social-idea { height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; color: var(--dim); }
+.social-idea:hover { background: var(--hover); color: var(--strong); }
+
+.social-controls { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.social-toggle { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; color: var(--dim); }
+.social-toggle:hover { background: var(--hover); color: var(--text); }
+.social-toggle .dot { width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid currentColor; }
+.social-toggle.on { color: var(--strong); background: var(--surface-hi); }
+.social-toggle.on.bluesky .dot { background: var(--bsky); border-color: var(--bsky); }
+.social-toggle.on.mastodon .dot { background: var(--masto); border-color: var(--masto); }
+.social-toggle.on.devto .dot { background: var(--devto); border-color: var(--devto); }
+.social-seg { display: inline-flex; padding: 2px; border-radius: 9px; background: var(--surface); border: 1px solid var(--border); }
+.social-seg button { height: 24px; padding: 0 10px; border-radius: 7px; font-size: 12px; color: var(--dim); }
+.social-seg button.on { background: var(--surface-hi); color: var(--strong); }
+.social-spin { display: grid; place-items: center; width: 30px; height: 30px; color: var(--dim); }
+.social-error { padding: 0 6px; color: var(--dim); }
+
+.social-list { display: flex; flex-direction: column; gap: 8px; transition: opacity var(--med, 0.22s); }
+.social-list.stale { opacity: 0.55; }
+.social-card { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 12px 14px; text-align: left; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.social-card:hover { border-color: var(--border-hi); background: color-mix(in srgb, var(--surface), var(--surface-hi) 50%); }
+.social-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.social-ghost { height: 132px; animation: social-pulse 1.2s ease-in-out infinite alternate; }
+@keyframes social-pulse { from { opacity: 0.45; } to { opacity: 0.9; } }
+
+.social-card-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.social-avatar { flex: none; width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: var(--surface-hi); }
+.social-avatar-letter { display: grid; place-items: center; font-size: 12px; font-weight: 600; color: var(--muted); }
+.social-who { flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.social-name { flex: 0 1 auto; color: var(--strong); font-weight: 600; font-size: 13px; }
+.social-handle { flex: 0 1 auto; color: var(--dim); font-size: 12px; }
+.social-source { flex: none; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; padding: 2px 7px; border-radius: 6px; }
+.social-source.bluesky { color: var(--bsky); background: color-mix(in srgb, var(--bsky) 14%, transparent); }
+.social-source.mastodon { color: var(--masto); background: color-mix(in srgb, var(--masto) 14%, transparent); }
+.social-source.devto { color: var(--devto); background: var(--surface-hi); }
+.social-time { flex: none; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.social-title { color: var(--strong); font-size: 15px; font-weight: 600; line-height: 1.35; }
+.social-text { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 8; overflow: hidden; }
+.social-text.desc { color: var(--muted); -webkit-line-clamp: 3; }
+.social-image { width: 100%; max-height: 300px; object-fit: cover; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-hi); }
+
+.social-foot { display: flex; align-items: center; gap: 14px; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+.social-foot > span { display: inline-flex; align-items: center; gap: 4px; }
+.social-why { color: var(--faint); }
+.social-card:hover .social-why { color: var(--dim); }
+.social-more { align-self: center; }

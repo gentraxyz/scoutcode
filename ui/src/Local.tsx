@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { act, gb, invoke, type Fit, type HfFile, type HfRepo, type LocalSettings, type LocalView } from './api';
 import { useView } from './store';
-import { Icon, Spinner, Toggle } from './widgets';
+import { Icon, Select, Spinner, Toggle } from './widgets';
 
 export const LOCAL_NOTE = 'Runs models on this PC with llama.cpp. Free, private and offline: nothing you send leaves your computer. Needs enough memory for the model, and a GPU makes it much faster.';
 
@@ -185,13 +185,13 @@ function HuggingFace() {
         {repo && (
           <>
             <div className="row">
-              <select className="input select grow" aria-label="File" value={picked ?? ''} onChange={(e) => setPicked(e.target.value)}>
+              <Select className="input select grow" aria-label="File" value={picked ?? ''} onChange={(e) => setPicked(e.target.value)}>
                 {repo.files.map((f) => (
                   <option key={f.path} value={f.path} disabled={f.split}>
                     {f.quant ?? f.path} · {gb(f.size)} · {f.split ? 'split into parts, not supported yet' : FIT_LABEL[f.fit]}
                   </option>
                 ))}
-              </select>
+              </Select>
               <button type="button" className="button primary" disabled={!file}
                 onClick={() => file && act('localDownloadHf', { repo: repo.repo, path: file.path, sha256: file.sha256, size: file.size })}>
                 Download
@@ -266,9 +266,9 @@ function Engine() {
   return (
     <>
       <Row title="Runs on" sub={chosen?.about}>
-        <select className="input select" value={local.backend ?? ''} disabled={!!inst || !!local.setup} onChange={(e) => act('setLocal', { patch: { backend: e.target.value } })}>
+        <Select className="input select" value={local.backend ?? ''} disabled={!!inst || !!local.setup} onChange={(e) => act('setLocal', { patch: { backend: e.target.value } })}>
           {local.backends.map((b) => <option key={b.id} value={b.id}>{b.name}{b.installed ? '' : ` (${gb(b.size)} download)`}</option>)}
-        </select>
+        </Select>
       </Row>
       {inst ? (
         <div className="row">
@@ -318,15 +318,15 @@ function Running() {
         </div>
       )}
       <Row title="Context size" sub="How much of the chat the model sees at once, in tokens. More needs more memory. Scout summarizes the chat before it fills up.">
-        <select className="input select" value={cfg.context} onChange={(e) => act('setLocal', { patch: { context: Number(e.target.value) } })}>
+        <Select className="input select" value={cfg.context} onChange={(e) => act('setLocal', { patch: { context: Number(e.target.value) } })}>
           {CONTEXTS.map((c) => <option key={c} value={c}>{c / 1024}K</option>)}
-        </select>
+        </Select>
       </Row>
       <Row title="Thinking limit" sub="The most tokens a model thinks for before it has to answer. Less is faster; more can help on hard problems.">
-        <select className="input select" value={cfg.reasoningBudget} onChange={(e) => act('setLocal', { patch: { reasoningBudget: Number(e.target.value) } })}>
+        <Select className="input select" value={cfg.reasoningBudget} onChange={(e) => act('setLocal', { patch: { reasoningBudget: Number(e.target.value) } })}>
           {!THINKING.some((t) => t.tokens === cfg.reasoningBudget) && <option value={cfg.reasoningBudget}>{cfg.reasoningBudget} tokens</option>}
           {THINKING.map((t) => <option key={t.tokens} value={t.tokens}>{t.name}</option>)}
-        </select>
+        </Select>
       </Row>
     </>
   );
@@ -339,9 +339,9 @@ function SmallModels() {
   return (
     <>
       <Row title="Tools" sub={preset.about}>
-        <select className="input select" value={preset.id} onChange={(e) => act('setLocal', { patch: { tools: e.target.value } })}>
+        <Select className="input select" value={preset.id} onChange={(e) => act('setLocal', { patch: { tools: e.target.value } })}>
           {PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        </Select>
       </Row>
       <Row title="One tool call at a time" sub="The model makes a single call per reply and sees its result before the next. Small models get confused by several at once.">
         <Toggle label="One tool call at a time" on={cfg.singleCall} onChange={(on) => act('setLocal', { patch: { singleCall: on } })} />

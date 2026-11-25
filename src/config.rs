@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
 
 /// The permission modes, from the most caution to the most freedom. "default" (ask before every edit) was dropped: a
 /// saved "default" now opens as Code ("acceptEdits").
@@ -32,6 +33,87 @@ pub struct AdditionalProvider {
     pub key_hint: &'static str,
     /// What to start on when there's nothing else to run on, if it's still listed.
     pub default_model: &'static str,
+    /// The API it speaks.
+    pub kind: ApiKind,
+    /// The user added it themselves (see `CustomProvider`).
+    pub custom: bool,
+}
+
+/// The API a provider speaks. Anthropic's goes through its OpenAI-compatible endpoint (`/v1/chat/completions`), with
+/// Anthropic's own headers as well, and its model list is Anthropic's own.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKind {
+    #[default]
+    Openai,
+    Anthropic,
+}
+
+/// A provider the user added themselves: any server that speaks OpenAI's or Anthropic's API. Its key, if it has one,
+/// is kept with the other linked providers' (`Config::additional`), so it's a secret; this part isn't.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CustomProvider {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: ApiKind,
+    pub url: String,
+    /// A data: URL, from the site's favicon or a picture the user chose. None shows the name's first letter.
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// The custom providers, as `AdditionalProvider`s so the rest of the app treats them like the built-in ones. Each one
+/// lives for the rest of the run: a model listed on it may still name it after it's changed or removed.
+fn custom_registry() -> &'static RwLock<Vec<&'static AdditionalProvider>> {
+    static R: OnceLock<RwLock<Vec<&'static AdditionalProvider>>> = OnceLock::new();
+    R.get_or_init(|| RwLock::new(vec![]))
+}
+
+/// Makes these the custom providers. One that hasn't changed keeps its entry, so nothing new is made for it.
+pub fn set_custom(list: &[CustomProvider]) {
+    let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+    let mut r = custom_registry().write().unwrap();
+    let next = list
+        .iter()
+        .map(|c| {
+            let url = c.url.trim().trim_end_matches('/');
+            r.iter().copied().find(|a| a.id == c.id && a.name == c.name && a.url == url && a.kind == c.kind).unwrap_or_else(|| {
+                &*Box::leak(Box::new(AdditionalProvider {
+                    id: leak(&c.id),
+                    name: leak(&c.name),
+                    url: leak(url),
+                    // Without a key, no key is sent: a server on this PC or the network may not take one.
+                    needs_key: false,
+                    note: "",
+                    key_url: "",
+                    key_link: "",
+                    key_hint: "",
+                    default_model: "",
+                    kind: c.kind,
+                    custom: true,
+                }))
+            })
+        })
+        .collect();
+    *r = next;
+}
+
+/// Every additional provider, the built-in ones first, then the user's own.
+pub fn all_additional() -> Vec<&'static AdditionalProvider> {
+    ADDITIONAL.iter().chain(custom_registry().read().unwrap().iter().copied()).collect()
+}
+
+/// Whether requests to `base_url` go to a provider that speaks Anthropic's API.
+pub fn is_anthropic(base_url: &str) -> bool {
+    all_additional().iter().any(|a| a.kind == ApiKind::Anthropic && a.url == base_url)
+}
+
+/// A new custom provider's id. It's part of each model's key ("<id>/<model>"), so it has no slash.
+pub fn new_custom_id() -> String {
+    let mut b = [0u8; 4];
+    let _ = getrandom::fill(&mut b);
+    format!("custom-{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
 }
 
 pub static ADDITIONAL: [AdditionalProvider; 5] = [
@@ -45,6 +127,8 @@ pub static ADDITIONAL: [AdditionalProvider; 5] = [
         key_link: "Get a key from OVH Cloud",
         key_hint: "OVH AI Endpoints key",
         default_model: "Qwen3.8-27B",
+        kind: ApiKind::Openai,
+        custom: false,
     },
     AdditionalProvider {
         id: "google",
@@ -56,6 +140,8 @@ pub static ADDITIONAL: [AdditionalProvider; 5] = [
         key_link: "Make a key in Google AI Studio",
         key_hint: "AIza…",
         default_model: "gemini-flash-latest",
+        kind: ApiKind::Openai,
+        custom: false,
     },
     AdditionalProvider {
         id: "deepseek",
@@ -67,6 +153,8 @@ pub static ADDITIONAL: [AdditionalProvider; 5] = [
         key_link: "Make a key on DeepSeek's platform",
         key_hint: "sk-…",
         default_model: "deepseek-chat",
+        kind: ApiKind::Openai,
+        custom: false,
     },
     AdditionalProvider {
         id: "cohere",
@@ -78,6 +166,8 @@ pub static ADDITIONAL: [AdditionalProvider; 5] = [
         key_link: "Make a key in Cohere's dashboard",
         key_hint: "Cohere API key",
         default_model: "command-a-03-2025",
+        kind: ApiKind::Openai,
+        custom: false,
     },
     AdditionalProvider {
         id: "experiential",
@@ -89,6 +179,8 @@ pub static ADDITIONAL: [AdditionalProvider; 5] = [
         key_link: "Make a key on Experiential Labs",
         key_hint: "xpl_…",
         default_model: "gpt-6-luna",
+        kind: ApiKind::Openai,
+        custom: false,
     },
 ];
 
@@ -102,7 +194,7 @@ pub const COHERE_URL: &str = "https://api.cohere.ai/compatibility/v1";
 pub const COHERE_MODELS_URL: &str = "https://api.cohere.com/v1/models?endpoint=chat&page_size=1000";
 
 pub fn additional_provider(id: &str) -> Option<&'static AdditionalProvider> {
-    ADDITIONAL.iter().find(|a| a.id == id)
+    ADDITIONAL.iter().find(|a| a.id == id).or_else(|| custom_registry().read().unwrap().iter().copied().find(|a| a.id == id))
 }
 
 /// An additional provider the user has linked, with their key if it has one.
@@ -188,6 +280,8 @@ pub struct Config {
     pub copilot_token: Option<String>,
     /// The GitHub account that token belongs to, for Settings.
     pub copilot_user: Option<String>,
+    /// Every Copilot sign-in saved on this PC, the one in use (`copilot_token`) among them.
+    pub copilot_accounts: Vec<CopilotAccount>,
     /// The user has signed in to Devin here. Its CLI keeps the token; Scout never sees it.
     pub devin_enabled: bool,
     /// The user has signed in to Kiro here. Its CLI keeps the token; Scout never sees it.
@@ -214,6 +308,8 @@ pub struct Config {
     pub hermes_key: Option<String>,
     /// The additional providers the user has linked, in the order they linked them.
     pub additional: Vec<LinkedProvider>,
+    /// The providers the user added themselves. Each is also in `additional`, with its key.
+    pub custom_providers: Vec<CustomProvider>,
     /// Where the chosen model runs: "scoutcode", "openrouter", "nvidia", "kilo", "copilot", "devin", "kiro", "antigravity", "vibe", "codex", "claude", "opencode", "grok", "hermes" or an additional provider's id. The model is that provider's id for it.
     pub provider: String,
     /// Who the key belongs to, for the sidebar. Saved at sign-in and refreshed from the model list.
@@ -248,8 +344,6 @@ pub struct Config {
     pub auto_update: bool,
     /// Desktop app only: the version that last ran here, to tell when the app has been updated.
     pub last_version: Option<String>,
-    /// Desktop app only: the models to try when the chosen one fails.
-    pub fallbacks: Fallbacks,
     /// Desktop app only: the user's Agent Routers, each an ordered route across providers with optional Jev
     /// difficulty routing. One is chosen like a model: provider "router", model its id.
     pub agent_routers: Vec<AgentRouter>,
@@ -286,6 +380,8 @@ pub struct Config {
     pub chatbot_link_mode: String,
     /// Desktop app only: send anonymous usage analytics (see analytics.rs). On unless turned off.
     pub usage_analytics: bool,
+    /// Closing the window asks first, until the user ticks "Don't ask again".
+    pub confirm_close: bool,
     /// Desktop app only: models run on this PC with llama.cpp (see local.rs), and what small models are given.
     pub local: Local,
 }
@@ -332,26 +428,6 @@ pub struct LocalModel {
 pub struct ModelRef {
     pub key: String,
     pub provider: String,
-}
-
-/// The models to try, in order, when the chosen one fails.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Fallbacks {
-    /// The user has answered the card the first failure shows, so a model without fallbacks just shows its error.
-    pub chosen: bool,
-    /// For every model without a list of its own.
-    pub all: Vec<ModelRef>,
-    /// For single models: each one and its own list.
-    pub models: Vec<(ModelRef, Vec<ModelRef>)>,
-}
-
-impl Fallbacks {
-    /// What to try after `failed`: its own list, or the one for every model, without itself.
-    pub fn after(&self, failed: &ModelRef) -> Vec<ModelRef> {
-        let list = self.models.iter().find(|(m, _)| m == failed).map(|(_, l)| l).unwrap_or(&self.all);
-        list.iter().filter(|m| *m != failed).cloned().collect()
-    }
 }
 
 fn default_intelligence() -> u8 {
@@ -484,6 +560,25 @@ impl Config {
     }
 }
 
+
+/// A GitHub sign-in for Copilot saved on this PC. The one in use is `Config::copilot_token`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CopilotAccount {
+    pub token: String,
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+/// The saved Copilot sign-ins. A file from before the list has only `copilotToken`, which becomes the first.
+fn saved_copilot_accounts(s: &Map<String, Value>, token: Option<&str>, user: Option<&str>) -> Vec<CopilotAccount> {
+    let mut list: Vec<CopilotAccount> = s.get("copilotAccounts").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    list.retain(|a| !a.token.is_empty());
+    if let Some(t) = token.filter(|t| !list.iter().any(|a| a.token == *t)) {
+        list.insert(0, CopilotAccount { token: t.into(), user: user.map(String::from) });
+    }
+    list
+}
+
 /// One of the user's OpenRouter keys, under the name they gave it.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenRouterKey {
@@ -587,7 +682,11 @@ pub fn load_config() -> Config {
                 .collect()
         })
         .unwrap_or_default();
+    // Before the linked providers are read, so the custom ones among them are known.
+    let custom_providers: Vec<CustomProvider> = s.get("customProviders").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    set_custom(&custom_providers);
     let mut cfg = Config {
+        custom_providers,
         api_key: s.get("apiKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         guest: s.get("desktopGuest").and_then(Value::as_bool).unwrap_or(false),
         openrouter_keys: saved_openrouter_keys(&s),
@@ -596,6 +695,7 @@ pub fn load_config() -> Config {
         kilo_key: s.get("kiloKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         copilot_token: s.get("copilotToken").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
         copilot_user: s.get("copilotUser").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
+        copilot_accounts: vec![],
         devin_enabled: s.get("devinEnabled").and_then(Value::as_bool).unwrap_or(false),
         kiro_enabled: s.get("kiroEnabled").and_then(Value::as_bool).unwrap_or(false),
         antigravity_enabled: s.get("antigravityEnabled").and_then(Value::as_bool).unwrap_or(false),
@@ -637,7 +737,6 @@ pub fn load_config() -> Config {
         discord_project: s.get("discordProject").and_then(Value::as_bool).unwrap_or(false),
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
         last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),
-        fallbacks: s.get("modelFallbacks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         agent_routers: saved_agent_routers(&s),
         experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
         browser_agent: s.get("browserAgent").and_then(Value::as_bool).unwrap_or(false),
@@ -654,9 +753,11 @@ pub fn load_config() -> Config {
         chatbot_link: s.get("chatbotLink").and_then(Value::as_bool).unwrap_or(true),
         chatbot_link_mode: s.get("chatbotLinkMode").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or("default").to_string(),
         usage_analytics: s.get("usageAnalytics").and_then(Value::as_bool).unwrap_or(true),
+        confirm_close: s.get("confirmClose").and_then(Value::as_bool).unwrap_or(true),
         local: s.get("local").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
     };
     crate::explore::set_enabled(cfg.explore.on);
+    cfg.copilot_accounts = saved_copilot_accounts(&s, cfg.copilot_token.as_deref(), cfg.copilot_user.as_deref());
     // Environment variables win over the file, so one-off runs need no login.
     if let Ok(k) = std::env::var("SCOUTCODE_API_KEY") {
         cfg.api_key = Some(k);
@@ -776,6 +877,7 @@ impl Config {
         self.kilo_key = other.kilo_key.clone();
         self.copilot_token = other.copilot_token.clone();
         self.copilot_user = other.copilot_user.clone();
+        self.copilot_accounts = other.copilot_accounts.clone();
         self.devin_enabled = other.devin_enabled;
         self.kiro_enabled = other.kiro_enabled;
         self.antigravity_enabled = other.antigravity_enabled;
@@ -789,6 +891,7 @@ impl Config {
         self.hermes_signed_in = other.hermes_signed_in;
         self.hermes_key = other.hermes_key.clone();
         self.additional = other.additional.clone();
+        self.custom_providers = other.custom_providers.clone();
         self.agent_routers = other.agent_routers.clone();
         self.experimental_images = other.experimental_images;
         self.browser_agent = other.browser_agent;
@@ -858,10 +961,6 @@ pub fn is_sign_in(token: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
-    fn m(key: &str) -> ModelRef {
-        ModelRef { key: key.into(), provider: "scoutcode".into() }
-    }
-
     #[test]
     fn a_teams_providers_go_through_the_server_with_the_users_own_sign_in() {
         let mut cfg = load_config();
@@ -886,17 +985,6 @@ mod tests {
         assert!(cfg.acp_allowed("claude") && !cfg.acp_allowed("kiro"));
         cfg.team = None;
         assert!(cfg.acp_allowed("kiro"));
-    }
-
-    #[test]
-    fn a_models_own_fallbacks_win_over_the_ones_for_every_model() {
-        let f = Fallbacks { chosen: true, all: vec![m("a"), m("b")], models: vec![(m("x"), vec![m("c")])] };
-        assert_eq!(f.after(&m("x")), vec![m("c")]);
-        assert_eq!(f.after(&m("y")), vec![m("a"), m("b")]);
-        // A model isn't its own fallback.
-        assert_eq!(f.after(&m("a")), vec![m("b")]);
-        let saved: Fallbacks = serde_json::from_value(json!(f)).unwrap();
-        assert_eq!(saved.after(&m("x")), vec![m("c")]);
     }
 
     #[test]
@@ -929,6 +1017,32 @@ mod tests {
 
         let saved: AgentRouter = serde_json::from_value(json!(jev_router)).unwrap();
         assert_eq!(saved, jev_router);
+    }
+
+    #[test]
+    fn a_lone_copilot_token_becomes_the_first_saved_account() {
+        let list = saved_copilot_accounts(json!({}).as_object().unwrap(), Some("gho_a"), Some("ann"));
+        assert_eq!(list, vec![CopilotAccount { token: "gho_a".into(), user: Some("ann".into()) }]);
+        let saved = json!({ "copilotAccounts": [{ "token": "t1", "user": "one" }, { "token": "t2" }, { "token": "" }] });
+        let list = saved_copilot_accounts(saved.as_object().unwrap(), Some("t2"), None);
+        assert_eq!(list.iter().map(|a| a.token.as_str()).collect::<Vec<_>>(), vec!["t1", "t2"]);
+    }
+
+    #[test]
+    fn custom_providers_are_additional_providers() {
+        // Reading the settings registers the saved custom providers, so it comes first.
+        let mut cfg = load_config();
+        set_custom(&[CustomProvider { id: "custom-t1".into(), name: "Mine".into(), kind: ApiKind::Anthropic, url: "https://api.example.test/v1/".into(), icon: None }]);
+        let a = additional_provider("custom-t1").expect("registered");
+        assert!(a.custom && a.kind == ApiKind::Anthropic && a.url == "https://api.example.test/v1");
+        assert!(is_anthropic("https://api.example.test/v1") && !is_anthropic(NVIDIA_URL));
+        cfg.team = None;
+        cfg.additional = vec![LinkedProvider { id: "custom-t1".into(), key: Some("sk-ant".into()) }];
+        let c = cfg.for_provider("custom-t1");
+        assert_eq!((c.base_url.as_str(), c.api_key.as_deref()), ("https://api.example.test/v1", Some("sk-ant")));
+        assert!(!new_custom_id().contains('/'));
+        set_custom(&[]);
+        assert!(additional_provider("custom-t1").is_none());
     }
 
     #[test]

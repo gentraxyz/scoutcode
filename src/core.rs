@@ -27,8 +27,9 @@ pub enum ItemKind {
     Error(String),
     /// The account can't pay for the model, so the turn stopped and the window asks what to do. Says why.
     OutOfCredit(String),
-    /// A model failed and no fallbacks are set up yet, so the window offers to set some. Says why, and which model.
-    FallbackSetup(String, ModelRef),
+    /// A model failed and the user has no custom agents yet, so the window shows the error with an offer to make one,
+    /// which carries a turn on to the next model when one fails. Says why, and which model.
+    AgentSuggest(String, ModelRef),
 }
 
 pub struct Item {
@@ -156,11 +157,11 @@ struct Chat {
     queue: Vec<Outgoing>,
     /// It finished while another chat was on screen.
     unread: bool,
-    /// The turn is running on a fallback because the chosen model failed.
+    /// The turn is running through a custom agent (Agent Router), one model after another as each fails.
     fallback: Option<FallbackRun>,
 }
 
-/// One step in a fallback or Agent Router run.
+/// One step in a custom agent's run.
 #[derive(Clone, Debug)]
 struct FallbackStep {
     model: ModelRef,
@@ -247,6 +248,9 @@ pub struct Core {
     additional_errors: Vec<String>,
     /// The additional provider to choose a model on once its list is in: it was linked with nothing else to run on.
     start_additional: Option<&'static str>,
+    /// An account being added to a provider whose accounts are folders (see `profiles.rs`): the provider, the new
+    /// account, and the one in use before, to go back to if the sign-in doesn't finish.
+    adding_account: Option<(&'static str, String, String)>,
     /// The user just chose to go without an account: move to a free model once the list has them.
     start_guest: bool,
     /// Hermes was just connected: choose its first free model once it's in the list.
@@ -367,12 +371,33 @@ fn mask_key(key: &str) -> String {
 
 // ---------- model lists ----------
 
+/// The folder name of a provider whose accounts are folders (see `profiles.rs`).
+fn agent_home(which: &str) -> &'static str {
+    match which {
+        "codex" => crate::codex::HOME,
+        "grok" => crate::grok::HOME,
+        "opencode" => crate::opencode::HOME,
+        _ => crate::claude::HOME,
+    }
+}
+
+/// The email of the account in use on `which`, if its CLI says.
+fn account_name(which: &str) -> Option<String> {
+    match which {
+        "codex" => crate::codex::account_name(),
+        "claude" => crate::claude::account_name(),
+        "grok" => crate::grok::account_name(),
+        "opencode" => crate::opencode::account_name(),
+        _ => None,
+    }
+}
+
 /// The providers whose models are listed, by the id `Config::provider` gives them, in the order the list shows them.
 fn model_sources(cfg: &Config) -> Vec<&'static str> {
     let mut out = vec![];
     // In a Scout Enterprise team, only what the team runs, and the providers on this PC it allows that are signed in.
     if let Some(t) = &cfg.team {
-        let relayed = ["scoutcode", "openrouter", "nvidia", "kilo"].into_iter().chain(config::ADDITIONAL.iter().map(|a| a.id)).chain(["hermes"]);
+        let relayed = ["scoutcode", "openrouter", "nvidia", "kilo"].into_iter().chain(config::all_additional().into_iter().map(|a| a.id)).chain(["hermes"]);
         out.extend(relayed.filter(|s| t.runs(s)));
         let on = [("copilot", cfg.copilot_token.is_some()), ("devin", cfg.devin_enabled), ("kiro", cfg.kiro_enabled), ("antigravity", cfg.antigravity_enabled), ("vibe", cfg.vibe_enabled), ("codex", cfg.codex_enabled), ("claude", cfg.claude_enabled), ("opencode", cfg.opencode_enabled), ("grok", cfg.grok_on())];
         out.extend(on.into_iter().filter(|(s, on)| *on && cfg.acp_allowed(s)).map(|(s, _)| s));
@@ -389,7 +414,7 @@ fn model_sources(cfg: &Config) -> Vec<&'static str> {
     }
     // Always asked for: Kilo's free models need no key.
     out.push("kilo");
-    out.extend(config::ADDITIONAL.iter().filter(|a| cfg.linked(a.id).is_some()).map(|a| a.id));
+    out.extend(config::all_additional().into_iter().filter(|a| cfg.linked(a.id).is_some()).map(|a| a.id));
     if cfg.local_on() {
         out.push(crate::local::PROVIDER);
     }
@@ -562,6 +587,26 @@ fn todos_json(todos: &[Todo]) -> Value {
     Value::Array(todos.iter().map(|t| json!({ "content": t.content, "status": t.status })).collect())
 }
 
+/// Characters of a tool's output the window gets. A chat with thousands of tool calls sent all of their output at once
+/// when opened, and the window ran out of memory. The model still has all of it.
+const VIEW_OUTPUT: usize = 12_000;
+
+/// A tool's output as the window shows it: the start and, mostly, the end, which is where a command's result is.
+fn clip_for_view(s: &str) -> String {
+    if s.len() <= VIEW_OUTPUT {
+        return s.to_string();
+    }
+    let n = s.chars().count();
+    if n <= VIEW_OUTPUT {
+        return s.to_string();
+    }
+    let head = VIEW_OUTPUT / 4;
+    let tail = VIEW_OUTPUT - head;
+    let start: String = s.chars().take(head).collect();
+    let end: String = s.chars().skip(n - tail).collect();
+    format!("{start}\n\n… [{} characters not shown here] …\n\n{end}", n - VIEW_OUTPUT)
+}
+
 fn item_json(item: &Item) -> Value {
     match &item.kind {
         ItemKind::User { text, files } => json!({ "id": item.id, "kind": "user", "text": text, "files": files }),
@@ -577,7 +622,7 @@ fn item_json(item: &Item) -> Value {
                             .unwrap_or("");
                         Display::Text(crate::agent::denied_display(name, fb))
                     } else {
-                        Display::Text(r.output.clone())
+                        Display::Text(clip_for_view(&r.output))
                     }
                 });
                 json!({ "isError": r.is_error, "summary": r.summary, "display": display_json(&display) })
@@ -587,7 +632,7 @@ fn item_json(item: &Item) -> Value {
         ItemKind::Notice(text) => json!({ "id": item.id, "kind": "notice", "text": text }),
         ItemKind::Error(text) => json!({ "id": item.id, "kind": "error", "text": text }),
         ItemKind::OutOfCredit(text) => json!({ "id": item.id, "kind": "outOfCredit", "text": text }),
-        ItemKind::FallbackSetup(text, m) => json!({ "id": item.id, "kind": "fallbackSetup", "text": text, "key": m.key, "provider": m.provider }),
+        ItemKind::AgentSuggest(text, m) => json!({ "id": item.id, "kind": "agentSuggest", "text": text, "key": m.key, "provider": m.provider }),
     }
 }
 
@@ -631,11 +676,14 @@ fn rebuild(s: &Session, next_id: &mut u64) -> Vec<Item> {
                 let (text, files) = user_parts(content);
                 kinds.push(ItemKind::User { text, files });
             }
-            Message::Assistant { content, tool_calls, model, provider, .. } => {
-                if let Some(c) = content.as_ref().filter(|c| !c.is_empty()) {
+            Message::Assistant { content, tool_calls, reasoning_content, model, provider } => {
+                let text = content.clone().unwrap_or_default();
+                let reasoning = reasoning_content.clone().unwrap_or_default();
+                // A step that only thought before calling its tools still shows what it thought.
+                if !text.is_empty() || !reasoning.trim().is_empty() {
                     let m = model.clone().or_else(|| (!s.model.is_empty()).then(|| s.model.clone()));
                     let p = provider.clone().or_else(|| s.provider.clone());
-                    kinds.push(ItemKind::Assistant { text: c.clone(), reasoning: String::new(), model: m, provider: p, tps: None });
+                    kinds.push(ItemKind::Assistant { text, reasoning, model: m, provider: p, tps: None });
                 }
                 for c in tool_calls.iter().flatten() {
                     let args: Value = serde_json::from_str(&c.function.arguments).unwrap_or_default();
@@ -730,6 +778,7 @@ impl Core {
             next_chat: 0,
             additional_errors: vec![],
             start_additional: None,
+            adding_account: None,
             start_guest: false,
             start_hermes: false,
             hermes_models_error: None,
@@ -914,7 +963,44 @@ impl Core {
         std::mem::swap(&mut self.chat, &mut self.background[i]);
     }
 
+    /// What happened, in the session log (logs.rs). Not the streamed text or tool output: what was asked for, what
+    /// failed and why.
+    fn log_ev(&self, ev: &Ev) {
+        use crate::logs::{info, warn};
+        let chat = format!("chat {}", self.chat.key);
+        let short = |s: &str| s.chars().take(300).collect::<String>();
+        match ev {
+            Ev::RequestStart => info(&chat, format!("Asking {} on {}.", self.current_key(), self.chat.provider)),
+            Ev::ToolCall { name, label, .. } => info(&chat, format!("Tool {name}: {}", short(label.lines().next().unwrap_or("")))),
+            Ev::ToolResult { result, .. } if result.is_error => warn(&chat, format!("Tool failed: {}", short(result.summary.as_deref().unwrap_or(&result.output)))),
+            Ev::Notice(n) => info(&chat, format!("Notice: {n}")),
+            Ev::AskPermission(req, _) => info(&chat, format!("Asked to allow {}: {}", req.tool, short(req.label.lines().next().unwrap_or("")))),
+            Ev::RouterPicked { step, tier, .. } => info(&chat, format!("Router picked tier {tier}: {} on {}.", step.key, step.provider)),
+            Ev::Finished(_, Ok(())) => info(&chat, "Turn finished."),
+            Ev::Finished(_, Err(e)) => warn(&chat, format!("Turn ended: {e}")),
+            Ev::Models(Err(e), _) => warn("models", format!("Couldn't list models: {e}")),
+            Ev::Models(Ok(m), true) => info("models", format!("{} models listed.", m.len())),
+            Ev::KiloCheck(Err(e)) => warn("kilo", e),
+            Ev::KiroModelsError(Some(e)) => warn("kiro", e),
+            Ev::AgentModelsError(which, Some(e)) => warn(which, e),
+            Ev::OpencodeModelsError(Some(e)) => warn("opencode", e),
+            Ev::HermesModelsError(Some(e)) => warn("hermes", e),
+            Ev::GrokModelsError(Some(e)) => warn("grok", e),
+            Ev::AdditionalErrors(errs) if !errs.is_empty() => warn("providers", errs.join("\n")),
+            Ev::Usage(Err(e), _) | Ev::UsagePolled(Err(e)) => warn("usage", e),
+            Ev::Dreamed(Ok(n)) => info("dream", format!("Dream made {n} memory changes.")),
+            Ev::Dreamed(Err(e)) => warn("dream", e),
+            Ev::Login(Ok(_)) => info("account", "Signed in."),
+            Ev::Login(Err(e)) => warn("account", format!("Sign-in failed: {e}")),
+            Ev::LocalModel(m, _) => info("local", format!("Local model downloaded: {}", m.id)),
+            _ => {}
+        }
+    }
+
     pub fn handle(&mut self, ev: Ev) {
+        if !matches!(ev, Ev::ForChat(..)) {
+            self.log_ev(&ev);
+        }
         match ev {
             Ev::ForChat(key, ev) => self.handle_for(key, *ev),
             Ev::ChatTitle { session_id, title } => {
@@ -1064,15 +1150,15 @@ impl Core {
                         fall_back = Some(next);
                     } else if let Some(run) = &self.chat.fallback {
                         let msg = if run.is_router {
-                            format!("{e}\n\nAll models in the Agent Router failed.")
+                            format!("{e}\n\nEvery model in this custom agent failed.")
                         } else {
-                            format!("{e}\n\nThe fallback models failed too.")
+                            format!("{e}\n\nThe other models failed too.")
                         };
                         self.push(ItemKind::Error(msg));
                     } else if out_of_credit {
                         self.push(ItemKind::OutOfCredit(e));
-                    } else if model_failed && !self.cfg.fallbacks.chosen {
-                        self.push(ItemKind::FallbackSetup(e, failed));
+                    } else if model_failed && self.cfg.agent_routers.is_empty() {
+                        self.push(ItemKind::AgentSuggest(e, failed));
                     } else {
                         self.push(ItemKind::Error(e));
                     }
@@ -1090,6 +1176,7 @@ impl Core {
                 }
                 self.chat.agent = Some(*agent);
                 self.chat.running = false;
+                self.update_discord();
                 self.chat.stopping = false;
                 self.chat.stopped = stopped;
                 self.end_stream();
@@ -1409,7 +1496,7 @@ impl Core {
         self.save_openrouter_keys(keys);
     }
 
-    /// Moves or removes a key: `op` is "up", "down" or "remove".
+    /// Moves or removes a key: `op` is "up", "down", "first" or "remove".
     pub fn edit_openrouter_key(&mut self, i: usize, op: &str) {
         let mut keys = self.cfg.openrouter_keys.clone();
         if i >= keys.len() {
@@ -1417,6 +1504,11 @@ impl Core {
         }
         match op {
             "up" if i > 0 => keys.swap(i, i - 1),
+            // The model menu's key switcher: this key is tried first, the rest keep their order.
+            "first" if i > 0 => {
+                let k = keys.remove(i);
+                keys.insert(0, k);
+            }
             "down" if i + 1 < keys.len() => keys.swap(i, i + 1),
             "remove" => {
                 keys.remove(i);
@@ -1521,10 +1613,60 @@ impl Core {
         self.keys_changed();
     }
 
+    /// Unlinks an additional provider. A custom one is removed for good.
     pub fn unlink_additional(&mut self, id: &str) {
         let mut linked = self.cfg.additional.clone();
         linked.retain(|o| o.id != id);
         self.save_additional(linked);
+        if self.cfg.custom_providers.iter().any(|c| c.id == id) {
+            let mut list = self.cfg.custom_providers.clone();
+            list.retain(|c| c.id != id);
+            self.save_custom(list);
+        }
+    }
+
+    fn save_custom(&mut self, list: Vec<config::CustomProvider>) {
+        config::save_one("customProviders", if list.is_empty() { Value::Null } else { json!(list) });
+        config::set_custom(&list);
+        self.cfg.custom_providers = list;
+    }
+
+    /// Adds a provider of the user's own (`id` None), or changes one. On a change, a missing `key` keeps the one saved.
+    pub fn save_custom_provider(&mut self, id: Option<String>, name: String, kind: config::ApiKind, url: String, key: Option<String>, icon: Option<String>) -> Result<(), String> {
+        let name = name.trim().to_string();
+        let url = url.trim().trim_end_matches('/').to_string();
+        if name.is_empty() {
+            return Err("Give the provider a name.".into());
+        }
+        match url::Url::parse(&url) {
+            Ok(u) if matches!(u.scheme(), "https" | "http") && u.host_str().is_some() => {}
+            _ => return Err("That address isn't a web address. It should look like https://api.example.com/v1".into()),
+        }
+        if icon.as_deref().is_some_and(|i| !i.starts_with("data:image/") || i.len() > 400_000) {
+            return Err("That icon is too big. Pick a picture under 300 KB.".into());
+        }
+        let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+        let mut list = self.cfg.custom_providers.clone();
+        let (id, new) = match id {
+            Some(id) => {
+                let c = list.iter_mut().find(|c| c.id == id).ok_or("That provider was removed.")?;
+                *c = config::CustomProvider { id: id.clone(), name, kind, url, icon };
+                (id, false)
+            }
+            None => {
+                let id = config::new_custom_id();
+                list.push(config::CustomProvider { id: id.clone(), name, kind, url, icon });
+                (id, true)
+            }
+        };
+        self.save_custom(list);
+        if new || key.is_some() {
+            self.link_additional(&id, key);
+        } else {
+            // Its address or API may have changed, so its models are read again.
+            self.keys_changed();
+        }
+        Ok(())
     }
 
     /// Links an additional provider, or changes its key. With nothing else to run on, models move there once it has
@@ -1553,7 +1695,15 @@ impl Core {
     }
 
     /// Saves or forgets the Copilot sign-in. Without one, a model that ran on Copilot moves back to ScoutCode.
+    /// Saves the Copilot sign-in in use, which is also kept with the others, or forgets which one is in use.
     fn save_copilot(&mut self, token: Option<String>, user: Option<String>) {
+        if let Some(t) = &token {
+            match self.cfg.copilot_accounts.iter_mut().find(|a| a.token == *t) {
+                Some(a) => a.user = user.clone().or(a.user.take()),
+                None => self.cfg.copilot_accounts.push(config::CopilotAccount { token: t.clone(), user: user.clone() }),
+            }
+            config::save_one("copilotAccounts", json!(self.cfg.copilot_accounts));
+        }
         config::save_one("copilotToken", json!(token));
         config::save_one("copilotUser", json!(user));
         self.cfg.copilot_token = token;
@@ -1564,7 +1714,15 @@ impl Core {
         self.keys_changed();
     }
 
+    /// Signs out of the Copilot account in use. With another saved, that one takes over; uninstalling forgets them all.
     pub fn copilot_sign_out(&mut self, uninstall: bool) {
+        let current = self.cfg.copilot_token.clone();
+        self.cfg.copilot_accounts.retain(|a| !uninstall && Some(&a.token) != current.as_ref());
+        config::save_one("copilotAccounts", if self.cfg.copilot_accounts.is_empty() { Value::Null } else { json!(self.cfg.copilot_accounts) });
+        if let Some(next) = self.cfg.copilot_accounts.first().cloned() {
+            crate::quota::forget("copilot");
+            return self.save_copilot(Some(next.token), next.user);
+        }
         self.save_copilot(None, None);
         if uninstall {
             crate::copilot::remove_runtime();
@@ -1779,6 +1937,7 @@ impl Core {
         match update {
             Update::Done => {
                 *self.agent_login(which).0 = None;
+                self.account_signed_in(which);
                 self.save_agent(which, true);
                 self.choose_model("auto", which);
             }
@@ -1787,6 +1946,7 @@ impl Core {
                 let (slot, error) = self.agent_login(which);
                 *slot = None;
                 *error = (!e.is_empty()).then_some(e);
+                self.undo_adding(which);
             }
             Update::Progress { done, total } => {
                 if let Some(s) = self.agent_login(which).0 {
@@ -1817,6 +1977,8 @@ impl Core {
         self.keys_changed();
     }
 
+    /// Signs out of the Codex or Claude Code account in use. With another account left, that one takes over and the
+    /// provider stays on; uninstalling forgets every account.
     pub fn agent_sign_out(&mut self, which: &str, uninstall: bool) {
         if which == "codex" {
             crate::codex::sign_out();
@@ -1829,7 +1991,122 @@ impl Core {
                 crate::claude::remove_runtime();
             }
         }
+        if !uninstall && self.next_account(which) {
+            return;
+        }
         self.save_agent(which, false);
+    }
+
+    /// After signing out of the account in use: with another account left, that one takes over and says true.
+    fn next_account(&mut self, which: &str) -> bool {
+        let p = crate::profiles::get(which);
+        if p.list.len() > 1 {
+            crate::profiles::remove(which, agent_home(which), &p.active);
+            self.account_changed(which);
+            return true;
+        }
+        crate::profiles::set_name(which, &p.active, None);
+        false
+    }
+
+    /// A sign-in finished: an account being added is kept, and the account in use gets its name.
+    fn account_signed_in(&mut self, which: &str) {
+        if self.adding_account.as_ref().is_some_and(|(w, _, _)| *w == which) {
+            self.adding_account = None;
+        }
+        crate::profiles::set_name(which, &crate::profiles::get(which).active, account_name(which));
+        crate::quota::forget(which);
+    }
+
+    /// Whether a sign-in to `which` is under way.
+    fn signing_in(&self, which: &str) -> bool {
+        match which {
+            "codex" => self.login.codex.is_some(),
+            "claude" => self.login.claude.is_some(),
+            "grok" => self.login.grok.is_some(),
+            "opencode" => self.login.opencode.is_some(),
+            "copilot" => self.login.copilot.is_some(),
+            _ => true,
+        }
+    }
+
+    /// Adds another account to a provider that can have several: for one whose accounts are folders, an empty one is
+    /// made the one in use first. Then its sign-in starts.
+    pub fn add_account(&mut self, which: &str) {
+        let Some(which) = ["codex", "claude", "grok", "opencode", "copilot"].into_iter().find(|w| *w == which) else { return };
+        if self.signing_in(which) {
+            return;
+        }
+        if which == "copilot" {
+            return self.copilot_sign_in();
+        }
+        self.undo_adding(which);
+        // The account signed in to before there could be several gets its name now, to tell it apart.
+        let p = crate::profiles::get(which);
+        if p.list.iter().any(|a| a.id == p.active && a.name.is_none()) {
+            crate::profiles::set_name(which, &p.active, account_name(which));
+        }
+        let (new, before) = crate::profiles::add(which);
+        self.adding_account = Some((which, new, before));
+        match which {
+            "grok" => self.grok_sign_in(),
+            "opencode" => self.opencode_sign_in(),
+            _ => self.agent_sign_in(which),
+        }
+    }
+
+    /// An account being added whose sign-in didn't finish is forgotten, and the one before is in use again.
+    fn undo_adding(&mut self, which: &str) {
+        if let Some((w, new, before)) = self.adding_account.take() {
+            if w != which {
+                self.adding_account = Some((w, new, before));
+                return;
+            }
+            crate::profiles::remove(w, agent_home(w), &new);
+            crate::profiles::switch(w, &before);
+        }
+    }
+
+    /// Makes another of a provider's accounts the one in use, from the next message on.
+    pub fn switch_account(&mut self, which: &str, id: &str) {
+        if which == "copilot" {
+            let Some(a) = id.parse::<usize>().ok().and_then(|i| self.cfg.copilot_accounts.get(i).cloned()) else { return };
+            if self.cfg.copilot_token.as_deref() != Some(a.token.as_str()) {
+                self.save_copilot(Some(a.token), a.user);
+                crate::quota::forget("copilot");
+            }
+            return;
+        }
+        if crate::profiles::get(which).active != id && crate::profiles::switch(which, id) {
+            self.account_changed(which);
+        }
+    }
+
+    /// Forgets an account that isn't in use, with its sign-in on this PC. The one in use is signed out of instead.
+    pub fn remove_account(&mut self, which: &str, id: &str) {
+        if which == "copilot" {
+            let Some(i) = id.parse::<usize>().ok().filter(|i| *i < self.cfg.copilot_accounts.len()) else { return };
+            if self.cfg.copilot_token.as_deref() == Some(self.cfg.copilot_accounts[i].token.as_str()) {
+                return self.copilot_sign_out(false);
+            }
+            self.cfg.copilot_accounts.remove(i);
+            config::save_one("copilotAccounts", json!(self.cfg.copilot_accounts));
+            return;
+        }
+        if crate::profiles::get(which).active == id {
+            return match which {
+                "grok" => self.grok_sign_out(false),
+                "opencode" => self.opencode_sign_out(),
+                _ => self.agent_sign_out(which, false),
+            };
+        }
+        crate::profiles::remove(which, agent_home(which), id);
+    }
+
+    /// Another account's limits and models: what was shown was the other account's.
+    fn account_changed(&mut self, which: &str) {
+        crate::quota::forget(which);
+        self.keys_changed();
     }
 
     /// Turns OpenCode on, which downloads its CLI for the free models, or off, which signs out of it too. Without it, a
@@ -1868,6 +2145,7 @@ impl Core {
                 if signed_in {
                     config::save_one("opencodeSignedIn", json!(true));
                     self.cfg.opencode_signed_in = true;
+                    self.account_signed_in("opencode");
                 }
                 self.save_opencode(true);
                 if self.chat.provider != "opencode" {
@@ -1878,6 +2156,7 @@ impl Core {
                 // Cancelling fails with no message.
                 self.login.opencode = None;
                 self.login.opencode_error = (!e.is_empty()).then_some(e);
+                self.undo_adding("opencode");
             }
             Update::Progress { done, total } => {
                 if let Some(s) = &mut self.login.opencode {
@@ -1904,6 +2183,9 @@ impl Core {
     /// Signs out of the OpenCode account. Its free models stay.
     pub fn opencode_sign_out(&mut self) {
         crate::opencode::sign_out();
+        if self.next_account("opencode") {
+            return;
+        }
         config::save_one("opencodeSignedIn", json!(false));
         self.cfg.opencode_signed_in = false;
         self.keys_changed();
@@ -1943,6 +2225,7 @@ impl Core {
                 if signed_in {
                     config::save_one("grokSignedIn", json!(true));
                     self.cfg.grok_signed_in = true;
+                    self.account_signed_in("grok");
                 }
                 if self.chat.provider != "grok" {
                     self.choose_model("auto", "grok");
@@ -1953,6 +2236,7 @@ impl Core {
                 // Cancelling fails with no message.
                 self.login.grok = None;
                 self.login.grok_error = (!e.is_empty()).then_some(e);
+                self.undo_adding("grok");
             }
             Update::Progress { done, total } => {
                 if let Some(s) = &mut self.login.grok {
@@ -1978,6 +2262,9 @@ impl Core {
     /// Signs out of Grok. Uninstalling forgets the key too, since nothing is left to use it.
     pub fn grok_sign_out(&mut self, uninstall: bool) {
         crate::grok::sign_out();
+        if !uninstall && self.next_account("grok") {
+            return;
+        }
         config::save_one("grokSignedIn", json!(false));
         self.cfg.grok_signed_in = false;
         if uninstall {
@@ -2070,6 +2357,7 @@ impl Core {
         if let Some(s) = slot.take() {
             s.cancel.store(true, Ordering::Relaxed);
         }
+        self.undo_adding(which);
     }
 
     /// Makes `key` (a model's id in the list) the one sent to `provider`, for the next message and the next launch.
@@ -2118,20 +2406,9 @@ impl Core {
         self.models.iter().find(|x| x.id == m.key).map(|x| x.label()).unwrap_or_else(|| crate::api::short_id(&m.key))
     }
 
-    /// The next model to hand a failed turn to, starting a run of `failed`'s fallbacks if this is its first failure.
-    fn next_fallback(&mut self, failed: &ModelRef) -> Option<ModelRef> {
-        if self.chat.fallback.is_none() {
-            let left: Vec<FallbackStep> = self.cfg.fallbacks.after(failed).into_iter().map(|model| FallbackStep { model, retry_rate_limit: None }).collect();
-            if left.is_empty() {
-                return None;
-            }
-            self.chat.fallback = Some(FallbackRun {
-                from: failed.clone(),
-                is_router: false,
-                current_retry_rate_limit: None,
-                left,
-            });
-        }
+    /// The next model of the custom agent this turn runs through, once `_failed` has failed. None outside a custom agent:
+    /// a single model just shows its error.
+    fn next_fallback(&mut self, _failed: &ModelRef) -> Option<ModelRef> {
         let run = self.chat.fallback.as_mut()?;
         if run.left.is_empty() {
             return None;
@@ -2141,13 +2418,10 @@ impl Core {
         Some(step.model)
     }
 
-    /// Whether a failure should end the turn at once rather than be retried: there's a fallback to move on to, or the
-    /// user hasn't been asked about fallbacks yet. The last fallback, and a model left to show its errors, still retry.
+    /// Whether a failure should end the turn at once rather than be retried: the custom agent has another model to move
+    /// on to. Its last model, and a single model, still retry.
     fn fails_fast(&self) -> bool {
-        match &self.chat.fallback {
-            Some(run) => !run.left.is_empty(),
-            None => !self.cfg.fallbacks.chosen || !self.cfg.fallbacks.after(&ModelRef { key: self.current_key(), provider: self.chat.provider.clone() }).is_empty(),
-        }
+        self.chat.fallback.as_ref().is_some_and(|run| !run.left.is_empty())
     }
 
     /// Carries on the failed turn on `next`, for this turn only.
@@ -2163,12 +2437,12 @@ impl Core {
             return true;
         }
         let Some(router) = self.cfg.agent_router(&self.chat.model).cloned() else {
-            self.push(ItemKind::Notice("There's no Agent Router yet. Make one in the model menu or Settings > Agent Router.".into()));
+            self.push(ItemKind::Notice("There's no custom agent yet. Make one in the model menu or Settings > Custom agents.".into()));
             return false;
         };
         let steps = router.ordered_steps(None);
         let Some(first) = steps.first() else {
-            self.push(ItemKind::Notice(format!("The Agent Router \"{}\" has no models yet. Add models in the model menu or Settings > Agent Router.", router.name)));
+            self.push(ItemKind::Notice(format!("The custom agent \"{}\" has no models yet. Add models in the model menu or Settings > Custom agents.", router.name)));
             return false;
         };
         self.chat.fallback = Some(FallbackRun {
@@ -2192,35 +2466,6 @@ impl Core {
         if let Some(a) = &mut self.chat.agent {
             a.cfg.take_keys(&self.cfg);
         }
-    }
-
-    /// The answer to the card the first failure shows: the list for every model and `failed`'s own, which wins over
-    /// it (empty to use that one), or `off` to just show errors. With a fallback to try, the failed turn carries on.
-    pub fn setup_fallbacks(&mut self, failed: ModelRef, all: Vec<ModelRef>, own: Vec<ModelRef>, off: bool) {
-        let f = &mut self.cfg.fallbacks;
-        f.chosen = true;
-        if !off {
-            f.all = all;
-            f.models.retain(|(m, _)| *m != failed);
-            if !own.is_empty() {
-                f.models.push((failed.clone(), own));
-            }
-        }
-        config::save_one("modelFallbacks", json!(f));
-        if off || self.chat.running || !matches!(self.chat.items.last().map(|i| &i.kind), Some(ItemKind::FallbackSetup(..))) {
-            return;
-        }
-        self.chat.fallback = None;
-        if let Some(next) = self.next_fallback(&failed) {
-            self.push(ItemKind::Notice(format!("Trying {}.", self.model_label(&next))));
-            self.retry_on(next);
-        }
-    }
-
-    /// Settings' edits to the fallbacks.
-    pub fn set_fallbacks(&mut self, f: config::Fallbacks) {
-        config::save_one("modelFallbacks", json!(f));
-        self.cfg.fallbacks = f;
     }
 
     /// The list key of the model being used: its entry's id, or the id itself when the list doesn't have it (auto).
@@ -2555,6 +2800,7 @@ impl Core {
         }
         agent.rate_limit_retry = self.chat.fallback.as_ref().and_then(|r| r.current_retry_rate_limit);
         self.chat.running = true;
+        self.update_discord();
         self.chat.stopping = false;
         self.chat.stopped = false;
         self.chat.shared.cancel.store(false, Ordering::Relaxed);
@@ -3011,6 +3257,11 @@ impl Core {
     }
 
     /// Turns anonymous usage analytics on or off. Turning it off is the last event sent.
+    pub fn set_confirm_close(&mut self, on: bool) {
+        self.cfg.confirm_close = on;
+        config::save_one("confirmClose", json!(on));
+    }
+
     pub fn set_analytics(&mut self, on: bool) {
         if !on {
             crate::analytics::track("analytics turned off", json!({}));
@@ -3043,11 +3294,22 @@ impl Core {
     }
 
     /// Sends the current state to Discord: nothing when it's off, and the folder's name only when that's allowed.
+    /// While a custom agent (Agent Router) works in the open chat, the profile shows the agent's own line instead.
     pub fn update_discord(&self) {
         let activity = self.cfg.discord_presence.then(|| crate::discord::Activity {
             project: self.cfg.discord_project.then(|| crate::discord::project_name(&self.chat.cwd)).flatten(),
+            agent: self.running_agent_name(),
         });
         crate::discord::update(activity);
+    }
+
+    /// The name of the custom agent whose turn runs in the open chat, or None when no agent is working.
+    fn running_agent_name(&self) -> Option<String> {
+        if !self.chat.running {
+            return None;
+        }
+        let run = self.chat.fallback.as_ref().filter(|f| f.is_router)?;
+        self.cfg.agent_routers.iter().find(|r| r.id == run.from.key).map(|r| r.name.clone())
     }
 
     /// Whether the agent may use the built-in browser. Applies from the next message, when the agent takes the settings.
@@ -3596,7 +3858,7 @@ impl Core {
                     "error": result.as_ref().is_some_and(|r| r.is_error), "summary": result.as_ref().and_then(|r| r.summary.clone()),
                 }),
                 ItemKind::Notice(t) => json!({ "id": i.id, "kind": "notice", "text": cut(t) }),
-                ItemKind::Error(t) | ItemKind::OutOfCredit(t) | ItemKind::FallbackSetup(t, _) => json!({ "id": i.id, "kind": "error", "text": cut(t) }),
+                ItemKind::Error(t) | ItemKind::OutOfCredit(t) | ItemKind::AgentSuggest(t, _) => json!({ "id": i.id, "kind": "error", "text": cut(t) }),
             })
             .collect();
         json!({
@@ -3610,7 +3872,7 @@ impl Core {
             "modes": MODES.iter().map(|m| json!({ "id": m, "label": config::mode_label(m), "about": config::mode_about(m) })).collect::<Vec<_>>(),
             "models": self.remote_models(),
             "starred": self.starred,
-            "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name })).collect::<Vec<_>>(),
+            "additionalProviders": config::all_additional().iter().map(|a| json!({ "id": a.id, "name": a.name })).collect::<Vec<_>>(),
             "chat": {
                 "id": self.chat.session_id,
                 "cwd": self.chat.cwd,
@@ -3678,6 +3940,7 @@ impl Core {
                 use crate::mcp_client::{Status as S, join_args, join_pairs};
                 let (state, error) = match &s.status {
                     S::Off => ("off", None),
+                    S::NeedsApproval => ("approval", None),
                     S::Connecting => ("connecting", None),
                     S::Ready => ("ready", None),
                     S::NeedsSignIn => ("signIn", None),
@@ -3688,6 +3951,13 @@ impl Core {
                     "form": { "remote": !s.cfg.url.is_empty(), "command": s.cfg.command, "args": join_args(&s.cfg.args), "env": join_pairs(&s.cfg.env, "="), "url": s.cfg.url, "headers": join_pairs(&s.cfg.headers, ": ") } })
             })
             .collect();
+        let mut agent_accounts: serde_json::Map<String, Value> = crate::profiles::PROVIDERS.iter().map(|p| (p.to_string(), json!(crate::profiles::get(p)))).collect();
+        // Copilot's accounts are its saved tokens, by their place in the list.
+        let copilot_active = cfg.copilot_accounts.iter().position(|a| cfg.copilot_token.as_deref() == Some(a.token.as_str()));
+        agent_accounts.insert("copilot".into(), json!({
+            "active": copilot_active.map(|i| i.to_string()).unwrap_or_default(),
+            "list": cfg.copilot_accounts.iter().enumerate().map(|(i, a)| json!({ "id": i.to_string(), "name": a.user })).collect::<Vec<_>>(),
+        }));
         vec![
             ("uncensored", json!(crate::api::uncensored_terms())),
             ("cfg", json!({
@@ -3717,14 +3987,16 @@ impl Core {
                 "hermesSignedIn": cfg.hermes_signed_in,
                 "hermesKey": cfg.hermes_key.as_deref().map(mask_key),
                 "additional": cfg.additional.iter().map(|l| json!({ "id": l.id, "masked": l.key.as_deref().map(mask_key) })).collect::<Vec<_>>(),
+                "customProviders": cfg.custom_providers,
+                "agentAccounts": agent_accounts,
                 "notifyFlash": cfg.notify_flash,
                 "notifyToast": cfg.notify_toast,
                 "discordPresence": cfg.discord_presence,
                 "discordProject": cfg.discord_project,
                 "autoUpdate": cfg.auto_update,
                 "usageAnalytics": cfg.usage_analytics,
+                "confirmClose": cfg.confirm_close,
                 "autoCompactTokens": cfg.auto_compact_tokens,
-                "fallbacks": cfg.fallbacks,
                 "agentRouters": cfg.agent_routers,
                 "experimentalImages": cfg.experimental_images,
                 "browserAgent": cfg.browser_agent,
@@ -3918,6 +4190,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn long_tool_output_is_clipped_for_the_window_keeping_its_end() {
+        assert_eq!(clip_for_view("short"), "short");
+        let long: String = (0..5000).map(|i| format!("line {i}\n")).collect();
+        let shown = clip_for_view(&long);
+        assert!(shown.chars().count() < VIEW_OUTPUT + 100);
+        assert!(shown.starts_with("line 0\n") && shown.ends_with("line 4999\n") && shown.contains("characters not shown"));
+        // Many-byte characters are cut on character boundaries.
+        let wide = "é".repeat(VIEW_OUTPUT + 10);
+        assert!(clip_for_view(&wide).contains("10 characters not shown"));
+    }
+
+    #[test]
     fn mode_transitions_and_cycling() {
         let modes = MODES;
         assert_eq!(modes, ["plan", "acceptEdits", "auto", "yolo"]);
@@ -3944,12 +4228,14 @@ mod tests {
     fn new_chat_inherits_configured_mode() {
         let cfg = Config {
             api_key: None,
+            custom_providers: vec![],
             guest: false,
             openrouter_keys: vec![],
             nvidia_key: None,
             kilo_enabled: false,
             kilo_key: None,
             copilot_token: None,
+            copilot_accounts: vec![],
             copilot_user: None,
             devin_enabled: false,
             kiro_enabled: false,
@@ -3985,7 +4271,6 @@ mod tests {
             discord_project: false,
             auto_update: false,
             last_version: None,
-            fallbacks: Default::default(),
             experimental_images: false,
             browser_agent: false,
             image_provider: "openrouter".into(),
@@ -4001,6 +4286,7 @@ mod tests {
             chatbot_link: false,
             chatbot_link_mode: "default".into(),
             usage_analytics: false,
+            confirm_close: true,
             agent_routers: Default::default(),
             local: Default::default(),
         };

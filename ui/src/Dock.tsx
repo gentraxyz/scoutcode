@@ -328,7 +328,7 @@ function charWidth(font: string) {
 }
 
 /** One shell, in one of the terminal's tabs. Stays mounted while hidden, so its screen survives switching tabs. */
-function TerminalSession({ id, cwd, visible, onExit, onFolder }: { id: number; cwd: string; visible: boolean; onExit: () => void; onFolder: (dir: string) => void }) {
+export function TerminalSession({ id, cwd, visible, onExit, onFolder }: { id: number; cwd: string; visible: boolean; onExit: () => void; onFolder: (dir: string) => void }) {
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<{ xterm: XTerm; fit: FitAddon } | null>(null);
   const [exited, setExited] = useState(false);
@@ -490,7 +490,7 @@ function ChangeRow({ c, repo }: { c: Change; repo: string }) {
   );
 }
 
-function ChangesTab({ cwd }: { cwd: string }) {
+export function ChangesTab({ cwd }: { cwd: string }) {
   const epoch = useView('filesEpoch');
   const [state, setState] = useState<{ repo: string; files: Change[] } | string | null>(null);
   const [tick, setTick] = useState(0);
@@ -544,7 +544,7 @@ function TreeFolder({ dir, depth, epoch, active, onOpen }: { dir: string; depth:
   );
 }
 
-const editorTheme = EditorView.theme({
+export const editorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'var(--sidebar)', color: 'var(--text)', fontSize: '12.5px' },
   '.cm-content': { caretColor: 'var(--text)', fontFamily: '"Cascadia Mono", Consolas, monospace' },
   '.cm-gutters': { backgroundColor: 'var(--sidebar)', color: 'var(--faint)', border: 'none' },
@@ -553,7 +553,7 @@ const editorTheme = EditorView.theme({
   '.cm-cursor': { borderLeftColor: 'var(--text)' },
 }, { dark: true });
 
-const highlight = syntaxHighlighting(HighlightStyle.define([
+export const highlight = syntaxHighlighting(HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier], color: '#f5a524' },
   { tag: [tags.string, tags.special(tags.string)], color: '#4ac27d' },
   { tag: [tags.comment], color: '#767f8c', fontStyle: 'italic' },

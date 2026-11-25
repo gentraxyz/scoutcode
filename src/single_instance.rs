@@ -16,7 +16,7 @@ pub fn claim() -> bool {
     use windows::core::w;
 
     let restarting = std::env::var_os(RESTART_ENV).is_some();
-    let handle: HANDLE = match unsafe { CreateMutexW(None, false, w!("Local\\ScoutDesktop.SingleInstance")) } {
+    let handle: HANDLE = match unsafe { CreateMutexW(None, true, w!("Local\\ScoutDesktop.SingleInstance")) } {
         Ok(h) => h,
         // Without the mutex there's nothing to compare against, so start as before.
         Err(_) => return true,

@@ -24,14 +24,27 @@ type Conn = Box<dyn Pipe>;
 const RETRY_EVERY: Duration = Duration::from_secs(30);
 
 /// What the profile shows. `project` is a folder's name, never its path, and is None unless the user allowed it.
+/// `agent` is the name of the custom agent whose turn is running now, None when no agent is working.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Activity {
     pub project: Option<String>,
+    pub agent: Option<String>,
 }
 
 impl Activity {
+    /// The agent's own line while it works; otherwise the folder line, or nothing.
     fn state(&self) -> Option<String> {
-        self.project.as_ref().map(|name| format!("Working on {name}"))
+        match (&self.agent, &self.project) {
+            (Some(name), _) => {
+                let name = name.trim();
+                let name = if name.is_empty() { "Agent" } else { name };
+                // Discord rejects long status lines, so a long agent name is cut short.
+                let name: String = name.chars().take(100).collect();
+                Some(format!("{name} is working"))
+            }
+            (None, Some(name)) => Some(format!("Working on {name}")),
+            (None, None) => None,
+        }
     }
 }
 
@@ -184,8 +197,16 @@ mod tests {
 
     #[test]
     fn the_profile_shows_no_folder_unless_one_is_given() {
-        assert_eq!(Activity { project: None }.state(), None);
-        assert_eq!(Activity { project: Some("scout".into()) }.state().as_deref(), Some("Working on scout"));
+        assert_eq!(Activity { project: None, agent: None }.state(), None);
+        assert_eq!(Activity { project: Some("scout".into()), agent: None }.state().as_deref(), Some("Working on scout"));
+    }
+
+    #[test]
+    fn a_running_agent_has_its_own_line_instead_of_the_folder() {
+        let activity = Activity { project: Some("scout".into()), agent: Some("Night Coder".into()) };
+        assert_eq!(activity.state().as_deref(), Some("Night Coder is working"));
+        let unnamed = Activity { project: None, agent: Some("  ".into()) };
+        assert_eq!(unnamed.state().as_deref(), Some("Agent is working"));
     }
 
     #[test]

@@ -452,6 +452,8 @@ pub struct Agent {
     read_only_specs: Vec<Value>,
     /// The task call a sub-agent is running for, and its steps so far.
     sub: Option<(String, Vec<tools::AgentStep>)>,
+    /// The reasoning shown since the last saved reply, kept with that reply so a reopened chat still shows it.
+    thought: String,
 }
 
 /// A CLI that runs its own tools over the Agent Client Protocol: see `acp_run`.
@@ -587,6 +589,7 @@ impl Agent {
             specs: (EditTool::StrReplace, tools::specs(None, EditTool::StrReplace)),
             read_only_specs: tools::specs(Some(&tools::READ_ONLY), EditTool::StrReplace),
             sub: None,
+            thought: String::new(),
         }
     }
 
@@ -614,10 +617,11 @@ impl Agent {
             Some(self.shared.model.lock().unwrap().clone()),
             Some(self.shared.provider.lock().unwrap().clone()),
         );
+        let thought = std::mem::take(&mut self.thought);
         self.session.messages.push(Message::Assistant {
             content,
             tool_calls,
-            reasoning_content: None,
+            reasoning_content: (!thought.trim().is_empty()).then_some(thought),
             model,
             provider,
         });
@@ -878,12 +882,14 @@ impl Agent {
         if self.cfg.experimental_images {
             all.push(tools::image_spec());
         }
-        if self.cfg.browser_agent {
+        // A message from the Browse page turns the browser on for the chat, whatever Settings > Browser says.
+        let browsed = crate::browser::browsed(&self.session.messages);
+        if self.cfg.browser_agent || browsed {
             all.push(crate::browser::activation_spec());
         }
         all.extend(crate::mcp_client::hub().specs());
         // Last, so turning the browser on only adds to the end of the list, and only once per chat.
-        if self.cfg.browser_agent && crate::browser::active(&self.session.messages) {
+        if browsed || self.cfg.browser_agent && crate::browser::active(&self.session.messages) {
             all.extend(crate::browser::specs());
         }
         all
@@ -1085,10 +1091,11 @@ impl Agent {
             return result;
         }
         if crate::browser::is_tool(name) {
-            if !self.cfg.browser_agent {
+            let browsed = crate::browser::browsed(&self.session.messages);
+            if !self.cfg.browser_agent && !browsed {
                 return ToolResult::err("The built-in browser is off for agents. The user can turn it on in Settings > Browser.", "off");
             }
-            if name != "browser" && !crate::browser::active(&self.session.messages) {
+            if name != "browser" && !browsed && !crate::browser::active(&self.session.messages) {
                 return ToolResult::err("Call browser first to turn the browser on.", "not on");
             }
             // browser_eval is asked about like a command, below; the rest only when they'd submit, buy, send or delete.
@@ -1313,7 +1320,7 @@ impl Agent {
                         h.send(Ev::Text(t));
                     }
                 }
-                CopilotMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
+                CopilotMsg::Reasoning(t) if main => { self.thought.push_str(&t); h.send(Ev::Reasoning(t)) }
                 CopilotMsg::Reasoning(_) => {}
                 CopilotMsg::RequestStart if main => h.send(Ev::RequestStart),
                 CopilotMsg::RequestStart => {}
@@ -1446,7 +1453,7 @@ impl Agent {
                         h.send(Ev::Text(t));
                     }
                 }
-                DevinMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
+                DevinMsg::Reasoning(t) if main => { self.thought.push_str(&t); h.send(Ev::Reasoning(t)) }
                 DevinMsg::Reasoning(_) => {}
                 DevinMsg::Todos(t) if main => {
                     self.todos = t.clone();
@@ -1683,7 +1690,7 @@ impl Agent {
                         h.send(Ev::Text(t));
                     }
                 }
-                CliMsg::Reasoning(t) if main => h.send(Ev::Reasoning(t)),
+                CliMsg::Reasoning(t) if main => { self.thought.push_str(&t); h.send(Ev::Reasoning(t)) }
                 CliMsg::Reasoning(_) => {}
                 CliMsg::Todos(t) if main => {
                     self.todos = t.clone();
@@ -2172,6 +2179,17 @@ impl Agent {
             self.compact("", h)?;
         }
         self.checkpoint(input.text());
+        let mut input = input;
+        // Sent from the Browse page: the agent hears so, and what's open there.
+        if let Some(note) = crate::browser::browse_note() {
+            match &mut input {
+                Content::Text(t) => t.push_str(&note),
+                Content::Parts(p) => match p.iter_mut().find_map(|x| x.get_mut("text")) {
+                    Some(Value::String(t)) => t.push_str(&note),
+                    _ => p.push(json!({"type":"text","text":note})),
+                },
+            }
+        }
         self.session.messages.push(Message::User { content: input });
         self.unsent = None;
         save_session(&mut self.session);
@@ -2259,6 +2277,7 @@ impl Agent {
             if self.on_local() && self.cfg.local.single_call {
                 calls.truncate(1);
             }
+            self.thought = r.reasoning.clone();
             self.push_assistant((!r.content.is_empty()).then(|| r.content.clone()), (!calls.is_empty()).then(|| calls.clone()));
             h.send(Ev::AssistantDone);
             save_session(&mut self.session);

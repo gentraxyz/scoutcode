@@ -317,6 +317,13 @@ impl Worker {
     }
 
     fn set(&self, status: Status) {
+        match &status {
+            Status::Failed(e) => crate::logs::warn("update", e),
+            Status::Available { version, .. } => crate::logs::info("update", format!("Version {version} is available.")),
+            Status::Ready { version, .. } => crate::logs::info("update", format!("Version {version} is downloaded and ready.")),
+            Status::UpToDate => crate::logs::info("update", "Up to date."),
+            _ => {}
+        }
         *self.status.lock().unwrap() = status;
         self.ctx.request_repaint();
     }

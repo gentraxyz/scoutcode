@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { act, invoke, type Permission } from './api';
+import { act, fixed, invoke, num, usd, type Permission } from './api';
 import { ModelChip } from './ModelMenu';
 import { FreeQuotaChip, meterText, PlanLimits, usePlanLimit, usedShare } from './Quota';
 import { Markdown } from './Transcript';
 import { ui, useCore, useUi, useView } from './store';
 import { CodeBlock, Icon, IconButton, Popover, ShowDisplay, Spinner, TodoList } from './widgets';
-import { WorkingOn } from './Cloud';
+import { WorkingOn } from './WorkingOn';
 
 /** How far a ScoutCode model on Modal has got starting, from the status line api::modal_status_line writes, or null. */
 const modalProgress = (status: string): number | null => {
@@ -46,7 +46,8 @@ export function PermissionBody({ p, onAnswer, link }: { p: Permission; onAnswer:
   return (
     <>
       {p.reason && <div className="red">Held for review. {p.reason}</div>}
-      {p.tool === 'bash' ? <CodeBlock code={p.label} /> : <div className="mono code-text">{p.label}</div>}
+      {/* Capped and scrolled, so a long command never pushes the buttons out of reach. */}
+      <div className="card-scroll">{p.tool === 'bash' ? <CodeBlock code={p.label} /> : <div className="mono code-text">{p.label}</div>}</div>
       {p.preview && <div className="card-scroll"><ShowDisplay d={p.preview} /></div>}
       <div className="row wrap">
         <button type="button" className="button primary" onClick={() => onAnswer('allow')}>Allow</button>
@@ -443,15 +444,17 @@ function UsageRing() {
   // A plan with limits (Claude, Codex, Grok): how much of the window closest to running out is used. Otherwise the
   // share of the funds this session has spent, grey until the server reports a balance.
   const plan = usePlanLimit();
-  const b = totals.balance;
-  const frac = plan ? usedShare(plan.top) : b !== undefined && b >= 0 && totals.cost + b > 0 ? Math.min(1, totals.cost / (totals.cost + b)) : 0;
+  const b = typeof totals.balance === 'number' && Number.isFinite(totals.balance) ? totals.balance : undefined;
+  const cost = num(totals.cost);
+  const ctx = num(context);
+  const frac = plan ? usedShare(plan.top) : b !== undefined && b >= 0 && cost + b > 0 ? Math.min(1, cost / (cost + b)) : 0;
   const low = plan !== null && frac >= 0.9;
   const c = 2 * Math.PI * 6;
   const limit = Math.max(1, autoCompactTokens);
   if (!plan && !started && b === undefined) return null;
   const rows: [string, string][] = [
-    ['Cost', `$${totals.cost.toFixed(4)}`], ['Requests', String(totals.requests)], ['Prompt tokens', `${totals.promptTokens} (${totals.cachedTokens} cached)`],
-    ['Completion tokens', String(totals.completionTokens)], ['Context', `${(context / 1000).toFixed(1)}k tokens · ${Math.min(100, (context / limit) * 100).toFixed(0)}% of auto-compact`],
+    ['Cost', `$${fixed(cost, 4)}`], ['Requests', String(num(totals.requests))], ['Prompt tokens', `${num(totals.promptTokens)} (${num(totals.cachedTokens)} cached)`],
+    ['Completion tokens', String(num(totals.completionTokens))], ['Context', `${fixed(ctx / 1000, 1)}k tokens · ${fixed(Math.min(100, (ctx / limit) * 100), 0)}% of auto-compact`],
   ];
   return (
     <Popover align="end" side="top" width={280} trigger={(_, toggle) => (
@@ -465,7 +468,7 @@ function UsageRing() {
       {() => (
         <div className="stack pad">
           {plan && <PlanLimits snapshots={plan.snapshots} />}
-          {b !== undefined && <div className="stat-row wide-key"><span className="small dim">Balance</span><span className="small">${b.toFixed(2)}</span></div>}
+          {b !== undefined && <div className="stat-row wide-key"><span className="small dim">Balance</span><span className="small">{usd(b)}</span></div>}
           {started && <b className="strong">Usage this session</b>}
           {started && rows.map(([k, v]) => <div key={k} className="stat-row wide-key"><span className="small dim">{k}</span><span className="small">{v}</span></div>)}
         </div>

@@ -28,7 +28,16 @@ static AGENT: crate::node::Agent = crate::node::Agent {
 
 /// Its sign-in, settings and sessions: Scout's alone.
 fn own_home() -> PathBuf {
-    crate::config::home().join("runtime").join("claude-home")
+    crate::profiles::home("claude", HOME)
+}
+
+/// Its folders' name: the first account's, and the start of the others' (see `profiles.rs`).
+pub const HOME: &str = "claude-home";
+
+/// The email of the Claude account signed in to in the folder in use, from what Claude Code saves about the sign-in.
+pub fn account_name() -> Option<String> {
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(own_home().join(".claude.json")).ok()?).ok()?;
+    saved.pointer("/oauthAccount/emailAddress").and_then(serde_json::Value::as_str).map(String::from)
 }
 
 pub fn installed() -> bool {
@@ -42,7 +51,7 @@ pub fn ensure_runtime(progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> 
 /// Deletes the adapter and Claude Code, with the sign-in.
 pub fn remove_runtime() {
     AGENT.remove();
-    let _ = std::fs::remove_dir_all(own_home());
+    crate::profiles::reset("claude", HOME);
 }
 
 /// Another copy's settings and keys stay with it. An Anthropic key or another endpoint from outside would bill or send

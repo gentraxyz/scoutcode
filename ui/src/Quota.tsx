@@ -23,7 +23,7 @@ export function meterText(m: QuotaMeter): string {
 
 /** "resets in 40s", "resets in 3h", "resets Nov 5". */
 function resetText(at: number | null, now: number): string | null {
-  if (at === null) return null;
+  if (at === null || !Number.isFinite(at)) return null;
   const s = Math.round((at - now) / 1000);
   if (s <= 0) return 'reset now';
   if (s < 90) return `resets in ${s}s`;
@@ -141,7 +141,7 @@ export const usedShare = (m: QuotaMeter) => 1 - (share(m) ?? 1);
 export function useUsageShare(): { frac: number; low: boolean; tip: string } {
   const plan = usePlanLimit();
   const { totals } = useView('totals');
-  const b = totals.balance;
+  const b = typeof totals.balance === 'number' && Number.isFinite(totals.balance) ? totals.balance : undefined;
   if (plan) {
     const frac = usedShare(plan.top);
     return { frac, low: frac >= 0.9, tip: `${plan.top.label}: ${meterText(plan.top)}` };

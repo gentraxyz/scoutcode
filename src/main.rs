@@ -14,6 +14,8 @@ mod codex;
 mod api;
 mod bridge;
 mod config;
+mod favicon;
+mod profiles;
 mod copilot;
 mod browser;
 mod browser_ext;
@@ -27,12 +29,14 @@ mod kiro;
 mod antigravity;
 mod vibe;
 mod local;
+mod logs;
 mod diff;
 mod dream;
 mod title;
 mod dock;
 mod folders;
 mod grok;
+mod idle_memory;
 mod hermes;
 mod instructions;
 mod mcp;
@@ -105,6 +109,8 @@ fn main() {
     if !single_instance::claim() {
         return;
     }
+    // From here on this copy owns the window, so its run gets a log (see logs.rs).
+    logs::init();
     let app = tauri::Builder::default()
         .manage(dock::Terminal::default())
         .invoke_handler(bridge::handler())
@@ -154,7 +160,14 @@ fn main() {
         .on_window_event(|window, event| {
             // Scout ends with its main window, so no copy stays running unseen.
             if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
+                logs::info("window", "The main window closed.");
                 window.app_handle().exit(0);
+            }
+            // Minimized, the webview is asked to give memory back (see idle_memory.rs).
+            if window.label() == "main" && matches!(event, WindowEvent::Resized(_)) {
+                if let Some(w) = window.app_handle().get_webview_window("main") {
+                    idle_memory::on_resized(&w);
+                }
             }
             // Files dropped anywhere on the window are attached to the message being typed.
             if let WindowEvent::DragDrop(drop) = event {
@@ -173,9 +186,11 @@ fn main() {
         .expect("start the window");
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
+            logs::info("exit", "Scout is closing.");
             if let Some(core) = handle.try_state::<Arc<Mutex<core::Core>>>() {
                 core.lock().unwrap().on_exit();
             }
+            logs::end();
         }
     });
 }

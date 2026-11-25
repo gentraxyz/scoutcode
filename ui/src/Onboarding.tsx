@@ -1,14 +1,24 @@
-// Multi-step onboarding flow:
-// 0. Welcome: Scout logo, "Welcome to Scout", and "The gateway to free AI models"
-// 1. Language: Apple-style searchable list for the interface language (English full, the rest partial), plus AI reply language
-// 2. What Makes Scout Different (free usage, providers + ScoutCode Cloud, Epsilon, memory, Dreaming, games and music)
-// 3. ScoutCode: sign in (with Scout logo), or continue without an account
-// 4. Providers: a list to add or remove from, beside a live copy of the model menu showing what they'll get
-// 5. Project Setup (defaults to ~/Scout; preloads detected chats on mount and groups them by project, defaulting to Skip)
-// 6. Appearance (theme, accent, window material, logo — with Classic logo fixed)
-// 7. General Options (sectioned cards with icons: personal instructions, ScoutMote, Discord RPC, Games, Notifications & updates)
+// Onboarding, built around the agent. After the welcome and the language, the user picks a path:
+// - Just my agent: sign in (required: agents live on the ScoutCode account), meet the agent, appearance. ScoutCode's
+//   steps are offered later, the first time they open the Code tab (CodeSetupPrompt).
+// - Agent + ScoutCode: the same, then Why Scout, providers, project and options.
+// - ScoutCode only (guest): reached from the sign-in step, for someone who won't make an account; skips the agent.
+// Steps:
+// - Language: Apple-style searchable list for the interface language (English full, the rest partial), plus AI reply language
+// - Path: just the agent, or the agent and ScoutCode
+// - ScoutCode: sign in (with Scout logo); continuing without an account only on the ScoutCode-only path
+// - Meet: the agent asks, in a scripted chat, for its name, title, shape, colour and notes, and is made from the answers
+// - Why Scout (free usage, providers + ScoutCode Cloud, Epsilon, memory, Dreaming, games and music)
+// - Providers: a list to add or remove from, beside a live copy of the model menu showing what they'll get
+// - Project Setup (defaults to ~/Scout; preloads detected chats on mount and groups them by project, defaulting to Skip)
+// - Appearance (theme, accent, window material, logo — with Classic logo fixed)
+// - General Options (sectioned cards with icons: personal instructions, ScoutMote, Discord RPC, Games, Notifications & updates)
+// `ui.onboardingMode` can also open just the agent's steps (from the Agent page, signed out) or just ScoutCode's (from the Code tab).
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { act, invoke, setExplore, type Games, type Music, type View } from './api';
+import { Avatar } from './agent/Avatar';
+import { MeetAgent } from './agent/MeetAgent';
+import { markCodeSetupDone, markCodeSetupPending } from './CodeSetupPrompt';
 import { closeGame } from './Games';
 import { closeMusic } from './Music';
 import { BrowserEntry, logo, providerStatus, ScoutKeyEntry } from './Accounts';
@@ -16,27 +26,41 @@ import { isFull, replyLanguageFor, setUiLanguage, useTranslation, SUPPORTED_LANG
 import { ScoutLogo, LOGOS, logoSvg } from './logo';
 import { isProviderTab, ModelMenuPreview, RailIcon, useTabAccess } from './ModelMenu';
 import { DEFAULT_RAIL, hasSavedRail, seedRail, setRail, TABS, tabName, useRail, type Tab } from './rail';
-import { ui, useCore, useView } from './store';
+import { ui, useCore, useUi, useView } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { WelcomeIntro } from './WelcomeIntro';
-import { Icon, Link, SectionLabel, Spinner, Toggle } from './widgets';
+import { Icon, Link, SectionLabel, Select, Spinner, Toggle } from './widgets';
 
 type Cfg = View['cfg'];
-type StepId = 'language' | 'special' | 'scout' | 'providers' | 'project' | 'appearance' | 'options';
+type StepId = 'language' | 'path' | 'scout' | 'meet' | 'special' | 'providers' | 'project' | 'appearance' | 'options';
+/** What they're setting up: just the agent, the agent and ScoutCode, or (as a guest) only ScoutCode. */
+type Path = 'agent' | 'both' | 'code';
+type Mode = 'full' | 'agent' | 'code';
 
-const STEPS: { id: StepId; labelKey: TranslationKey }[] = [
-  { id: 'language', labelKey: 'step_language' },
-  { id: 'special', labelKey: 'step_why' },
-  { id: 'scout', labelKey: 'step_scoutcode' },
-  { id: 'providers', labelKey: 'step_providers' },
-  { id: 'project', labelKey: 'step_project' },
-  { id: 'appearance', labelKey: 'step_appearance' },
-  { id: 'options', labelKey: 'step_options' },
-];
+const STEP_LABEL: Record<StepId, TranslationKey | string> = {
+  language: 'step_language',
+  path: 'Setup',
+  scout: 'step_scoutcode',
+  meet: 'Your agent',
+  special: 'step_why',
+  providers: 'step_providers',
+  project: 'step_project',
+  appearance: 'step_appearance',
+  options: 'step_options',
+};
+
+function stepsFor(mode: Mode, path: Path): StepId[] {
+  if (mode === 'agent') return ['scout', 'meet'];
+  if (mode === 'code') return ['special', 'providers', 'project', 'options'];
+  const head: StepId[] = ['language', 'path', 'scout'];
+  if (path === 'agent') return [...head, 'meet', 'appearance'];
+  if (path === 'both') return [...head, 'meet', 'special', 'providers', 'project', 'appearance', 'options'];
+  return [...head, 'special', 'providers', 'project', 'appearance', 'options'];
+}
 
 // ---------- Shared frame ----------
 
-const StepCtx = createContext({ index: 1, total: STEPS.length });
+const StepCtx = createContext({ index: 1, total: 1 });
 
 interface Next { label: string; onClick: () => void; disabled?: boolean; ghost?: boolean }
 
@@ -259,9 +283,9 @@ function LanguageStep({ onNext }: { onNext: () => void }) {
           <div className="row">
             <Icon name="chat" size={14} />
             <span className="small grow">{t('lang_replies_in')}</span>
-            <select className="input select" value={reply} onChange={(e) => setReply(e.target.value)}>
+            <Select className="input select" value={reply} onChange={(e) => setReply(e.target.value)}>
               {languages.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-            </select>
+            </Select>
           </div>
           {!isFull(uiLanguage) && (
             <div className="tiny dim">
@@ -279,13 +303,12 @@ function LanguageStep({ onNext }: { onNext: () => void }) {
 const SPECIAL_FEATURE_KEYS: { icon: string; titleKey: TranslationKey; descKey: TranslationKey }[] = [
   { icon: 'gift', titleKey: 'special_free_title', descKey: 'special_free_desc' },
   { icon: 'layers', titleKey: 'special_providers_title', descKey: 'special_providers_desc' },
-  { icon: 'epsilon', titleKey: 'special_epsilon_title', descKey: 'special_epsilon_desc' },
   { icon: 'memory', titleKey: 'special_memory_title', descKey: 'special_memory_desc' },
   { icon: 'sparkle', titleKey: 'special_dream_title', descKey: 'special_dream_desc' },
   { icon: 'game', titleKey: 'special_play_title', descKey: 'special_play_desc' },
 ];
 
-function SpecialStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+function SpecialStep({ onBack, onNext }: { onBack?: () => void; onNext: () => void }) {
   const { t } = useTranslation();
   return (
     <StepFrame
@@ -312,20 +335,29 @@ function SpecialStep({ onBack, onNext }: { onBack: () => void; onNext: () => voi
 
 // ---------- Step 3: ScoutCode (before other logins, skippable) ----------
 
-function ScoutLoginStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+/**
+ * `required`: the agent needs an account, so there's no guest card and Continue waits for a sign-in. `onGuest` (setting up
+ * ScoutCode too) still lets them leave the agent out and use ScoutCode as a guest.
+ */
+function ScoutLoginStep({ onBack, onNext, required, onGuest }: { onBack?: () => void; onNext: () => void; required?: boolean; onGuest?: () => void }) {
   const cfg = useView('cfg');
   const { t } = useTranslation();
   const skip = () => {
     if (!cfg.hasKey) act('setGuest', { on: true });
     onNext();
   };
+  const next: Next = cfg.hasKey
+    ? { label: t('btn_continue'), onClick: onNext }
+    : required
+      ? { label: t('btn_continue'), onClick: onNext, disabled: true }
+      : { label: t('btn_skip'), onClick: skip, ghost: true };
   return (
     <StepFrame
-      title={t('scout_title')}
-      sub={t('scout_sub')}
+      title={required && !cfg.hasKey ? 'Sign in to ScoutCode' : t('scout_title')}
+      sub={required ? 'Your agents live on your ScoutCode account, so they can keep working while Scout is closed.' : t('scout_sub')}
       wide
       back={onBack}
-      next={cfg.hasKey ? { label: t('btn_continue'), onClick: onNext } : { label: t('btn_skip'), onClick: skip, ghost: true }}
+      next={next}
     >
       {cfg.hasKey ? (
         <div className="ob-card narrow stack">
@@ -339,7 +371,7 @@ function ScoutLoginStep({ onBack, onNext }: { onBack: () => void; onNext: () => 
           </div>
         </div>
       ) : (
-        <div className="ob-choices">
+        <div className={`ob-choices${required ? ' single' : ''}`}>
           <div className="ob-choice recommended">
             <div className="ob-choice-head row">
               <ScoutLogo size={32} />
@@ -347,7 +379,7 @@ function ScoutLoginStep({ onBack, onNext }: { onBack: () => void; onNext: () => 
                 <b className="strong big">{t('scout_signin_title')}</b>
                 <span className="tiny dim">{t('scout_signin_sub')}</span>
               </div>
-              <span className="ob-choice-badge">{t('scout_recommended')}</span>
+              {!required && <span className="ob-choice-badge">{t('scout_recommended')}</span>}
             </div>
             <ul className="ob-perks">
               <li className="ob-perk"><Icon name="credit" size={14} /><span>{t('scout_perk_credit')}</span></li>
@@ -363,7 +395,7 @@ function ScoutLoginStep({ onBack, onNext }: { onBack: () => void; onNext: () => 
               </details>
             </div>
           </div>
-          <div className="ob-choice">
+          {!required && <div className="ob-choice">
             <div className="ob-choice-head row">
               <span className="ob-guest-icon"><Icon name="user" size={16} /></span>
               <div className="stack tight grow min0">
@@ -382,13 +414,104 @@ function ScoutLoginStep({ onBack, onNext }: { onBack: () => void; onNext: () => 
                 {cfg.guest && <Icon name="check" size={14} />}{t('btn_use_free')}
               </button>
             </div>
-          </div>
+          </div>}
         </div>
+      )}
+      {required && !cfg.hasKey && onGuest && (
+        <button type="button" className="text-button small dim ob-guest-link" onClick={onGuest}>
+          Skip the agent and use ScoutCode as a guest
+        </button>
       )}
       <div className="ob-fineprint">
         <CloudTerms />
         <span className="tiny dim">{t('scout_team_hint')}</span>
       </div>
+    </StepFrame>
+  );
+}
+
+// ---------- Path: just the agent, or the agent and ScoutCode ----------
+
+function PathStep({ path, onPick, onBack, onNext }: { path: Path; onPick: (p: Path) => void; onBack: () => void; onNext: () => void }) {
+  const { t } = useTranslation();
+  const card = (id: Path, head: ReactNode, title: string, sub: string, perks: [string, string][], badge?: string) => (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={path === id}
+      className={`ob-choice ob-path${path === id ? ' selected' : ''}`}
+      onClick={() => onPick(id)}
+      onDoubleClick={() => { onPick(id); onNext(); }}
+    >
+      <div className="ob-choice-head row">
+        {head}
+        <div className="stack tight grow min0">
+          <b className="strong big">{title}</b>
+          <span className="tiny dim">{sub}</span>
+        </div>
+        {badge && <span className="ob-choice-badge">{badge}</span>}
+      </div>
+      <ul className="ob-perks">
+        {perks.map(([icon, text]) => <li key={text} className="ob-perk"><Icon name={icon} size={14} /><span>{text}</span></li>)}
+      </ul>
+      <span className="ob-path-check" aria-hidden>{path === id && <Icon name="check" size={13} />}</span>
+    </button>
+  );
+  return (
+    <StepFrame
+      title="What would you like to set up?"
+      sub="Start with your agent. You can set up ScoutCode, the coding agent, now or any time later."
+      wide
+      back={onBack}
+      next={{ label: t('btn_continue'), onClick: onNext }}
+    >
+      <div className="ob-choices even" role="radiogroup" aria-label="What to set up">
+        {card(
+          'agent',
+          <span className="ob-path-avatars"><Avatar shape="blob" color="#7c5cff" size={34} /></span>,
+          'Just my agent',
+          'The quickest way in',
+          [
+            ['sparkle', 'Meet your agent and give it a name and a look'],
+            ['cloud', 'It works on its own computer, even when Scout is closed'],
+            ['chat', 'It keeps you posted and sends you what it makes'],
+            ['code', 'Set up ScoutCode later from the Code tab'],
+          ],
+          'Recommended',
+        )}
+        {card(
+          'both',
+          <span className="ob-path-avatars">
+            <Avatar shape="square" color="#22b8cf" size={30} />
+            <span className="ob-path-code"><Icon name="code" size={14} /></span>
+          </span>,
+          'Agent + ScoutCode',
+          'Everything, in one go',
+          [
+            ['check', 'Everything in Just my agent'],
+            ['layers', 'Link free AI providers for coding'],
+            ['folder', 'Pick a project and bring in your Claude Code and Codex chats'],
+            ['sliders', 'Options like Dreaming, games and music'],
+          ],
+        )}
+      </div>
+    </StepFrame>
+  );
+}
+
+// ---------- Meet: the agent sets itself up in a chat ----------
+
+function MeetStep({ onBack, onNext }: { onBack?: () => void; onNext: () => void }) {
+  const [ready, setReady] = useState(false);
+  const { t } = useTranslation();
+  return (
+    <StepFrame
+      title="Meet your agent"
+      sub="Answer a few questions and it’ll set itself up."
+      back={onBack}
+      next={ready ? { label: t('btn_continue'), onClick: onNext } : { label: 'Skip for now', onClick: onNext, ghost: true }}
+    >
+      <MeetAgent onReady={() => setReady(true)} />
     </StepFrame>
   );
 }
@@ -802,7 +925,7 @@ function ProjectStep({
 
 // ---------- Step 6: Appearance ----------
 
-function AppearanceStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+function AppearanceStep({ onBack, onNext, last }: { onBack: () => void; onNext: () => void; last?: boolean }) {
   const theme = useTheme();
   const { t } = useTranslation();
   const elements = ELEMENTS.find((e) => e.id === theme.elements)!.vars;
@@ -812,7 +935,7 @@ function AppearanceStep({ onBack, onNext }: { onBack: () => void; onNext: () => 
       sub={t('app_sub')}
       wide
       back={onBack}
-      next={{ label: t('btn_continue'), onClick: onNext }}
+      next={{ label: last ? t('opt_finish') : t('btn_continue'), onClick: onNext }}
     >
       <div className="ob-appearance">
         <div className="ob-card stack">
@@ -907,7 +1030,7 @@ function OptionRow({ icon, title, sub, children }: { icon?: string; title: strin
   );
 }
 
-function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+function OptionsStep({ onBack, onDone }: { onBack?: () => void; onDone: () => void }) {
   const cfg = useView('cfg');
   const { cwd } = useView('chat');
   const sm = useView('scoutMote');
@@ -941,7 +1064,6 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
 
   const finish = async () => {
     await saveInstructions();
-    finishSetup(cfg, dreaming.on);
     onDone();
   };
 
@@ -1024,10 +1146,10 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
                 title={t('opt_games_where')}
                 sub={games.place === 'panel' ? t('opt_games_where_sub_panel') : t('opt_games_where_sub_float')}
               >
-                <select className="input select" value={games.place} onChange={(e) => setGames({ place: e.target.value as Games['place'] })}>
+                <Select className="input select" value={games.place} onChange={(e) => setGames({ place: e.target.value as Games['place'] })}>
                   <option value="float">{t('opt_games_float')}</option>
                   <option value="panel">{t('opt_games_panel')}</option>
-                </select>
+                </Select>
               </OptionRow>
             </>
           )}
@@ -1076,8 +1198,11 @@ function OptionsStep({ onBack, onDone }: { onBack: () => void; onDone: () => voi
 // ---------- Main Onboarding Container ----------
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
-  // 0 is the welcome; 1..STEPS.length are the steps.
-  const [step, setStep] = useState<number>(0);
+  const mode = useUi((u) => u.onboardingMode);
+  const [path, setPath] = useState<Path>('agent');
+  const steps = stepsFor(mode, path);
+  // 0 is the welcome (only in full setup); 1..steps.length are the steps.
+  const [step, setStep] = useState<number>(mode === 'full' ? 0 : 1);
   useState(() => { if (!hasSavedRail()) seedRail(DEFAULT_RAIL); return true; });
   const { t } = useTranslation();
   const cfg = useView('cfg');
@@ -1093,44 +1218,74 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     invoke<DetectedChat[]>('detect_external_chats').then(setDetected).catch(() => {});
   }, []);
 
-  if (step === 0) return <WelcomeIntro onStart={() => setStep(1)} onSkip={() => { finishSetup(cfg, dreaming); onDone(); }} />;
-  const current = STEPS[step - 1].id;
-  const back = () => setStep(step - 1);
-  const next = () => setStep(step + 1);
+  /** Leaving setup from its last step or the welcome's Skip. Lands on the Agent page when there's an account for it. */
+  const finish = () => {
+    finishSetup(cfg, dreaming);
+    if (mode === 'code' || (mode === 'full' && path !== 'agent')) markCodeSetupDone();
+    else if (mode === 'full') markCodeSetupPending();
+    ui.set({ page: mode === 'code' || !cfg.hasKey ? 'chat' : 'agent' });
+    onDone();
+  };
+
+  if (step === 0) return <WelcomeIntro onStart={() => setStep(1)} onSkip={finish} />;
+  const current = steps[Math.min(step, steps.length) - 1];
+  const isLast = step >= steps.length;
+  const first = step === 1;
+  // Opened from the Agent page or the Code tab, Back on the first step goes back to the app, changing nothing.
+  const back = !first ? () => setStep(step - 1) : mode !== 'full' ? onDone : undefined;
+  const next = () => (isLast ? finish() : setStep(step + 1));
+  // The agent needs an account: until they sign in, nothing past the sign-in step can be opened.
+  const needsAccount = mode === 'agent' || (mode === 'full' && path !== 'code');
+  const lockedAfter = needsAccount && !cfg.hasKey ? steps.indexOf('scout') + 1 : Infinity;
+  // Steps that are never first always have one before them.
+  const back1 = back ?? (() => setStep(1));
 
   return (
     <div className="ob-shell">
       <nav className="ob-steps" aria-label="Onboarding steps">
-        {STEPS.map((s, i) => (
-          <button
-            key={s.id}
-            type="button"
-            className={`ob-step${i + 1 === step ? ' active' : ''}${i + 1 < step ? ' done' : ''}`}
-            aria-current={i + 1 === step ? 'step' : undefined}
-            onClick={() => setStep(i + 1)}
-          >
-            <span className="ob-step-num">{i + 1 < step ? <Icon name="check" size={10} /> : i + 1}</span>
-            <span className="ob-step-label">{t(s.labelKey)}</span>
-          </button>
-        ))}
+        {steps.map((id, i) => {
+          const label = STEP_LABEL[id];
+          return (
+            <button
+              key={id}
+              type="button"
+              className={`ob-step${i + 1 === step ? ' active' : ''}${i + 1 < step ? ' done' : ''}`}
+              aria-current={i + 1 === step ? 'step' : undefined}
+              disabled={lockedAfter > 0 && i + 1 > lockedAfter}
+              onClick={() => setStep(i + 1)}
+            >
+              <span className="ob-step-num">{i + 1 < step ? <Icon name="check" size={10} /> : i + 1}</span>
+              <span className="ob-step-label">{label.startsWith('step_') ? t(label as TranslationKey) : label}</span>
+            </button>
+          );
+        })}
       </nav>
 
-      <StepCtx.Provider value={{ index: step, total: STEPS.length }}>
+      <StepCtx.Provider value={{ index: step, total: steps.length }}>
         {current === 'language' && <LanguageStep onNext={next} />}
+        {current === 'path' && <PathStep path={path === 'code' ? 'both' : path} onPick={setPath} onBack={back1} onNext={next} />}
+        {current === 'scout' && (
+          <ScoutLoginStep
+            onBack={back}
+            onNext={next}
+            required={needsAccount}
+            onGuest={mode === 'full' && path === 'both' ? () => { act('setGuest', { on: true }); setPath('code'); setStep(step + 1); } : undefined}
+          />
+        )}
+        {current === 'meet' && <MeetStep onBack={back} onNext={next} />}
         {current === 'special' && <SpecialStep onBack={back} onNext={next} />}
-        {current === 'scout' && <ScoutLoginStep onBack={back} onNext={next} />}
-        {current === 'providers' && <ProvidersStep onBack={back} onNext={next} />}
+        {current === 'providers' && <ProvidersStep onBack={back1} onNext={next} />}
         {current === 'project' && (
           <ProjectStep
             places={places}
             detected={detected}
             setDetected={setDetected}
-            onBack={back}
+            onBack={back1}
             onNext={next}
           />
         )}
-        {current === 'appearance' && <AppearanceStep onBack={back} onNext={next} />}
-        {current === 'options' && <OptionsStep onBack={back} onDone={onDone} />}
+        {current === 'appearance' && <AppearanceStep onBack={back1} onNext={next} last={isLast} />}
+        {current === 'options' && <OptionsStep onBack={back} onDone={finish} />}
       </StepCtx.Provider>
     </div>
   );

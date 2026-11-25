@@ -213,12 +213,9 @@ export function DockTabStrip() {
 
 function Tile({ icon, name, about, hint, onClick }: { icon: string; name: string; about: string; hint?: string; onClick: () => void }) {
   return (
-    <button type="button" className="newtab-tile" onClick={onClick}>
-      <span className="newtab-icon"><Icon name={icon} size={18} /></span>
-      <span className="stack" style={{ gap: 1, minWidth: 0 }}>
-        <b className="strong small">{name}</b>
-        <span className="tiny dim ellipsis">{about}</span>
-      </span>
+    <button type="button" className="newtab-tile" title={about} onClick={onClick}>
+      <span className="newtab-icon"><Icon name={icon} size={17} /></span>
+      <b className="strong small ellipsis grow">{name}</b>
       {hint && <kbd className="newtab-kbd tiny">{hint}</kbd>}
     </button>
   );
@@ -244,20 +241,38 @@ export function NewTabPage({ tab }: { tab: DockTab }) {
     all[(i + (e.key === 'ArrowDown' ? 1 : -1) + all.length) % all.length]?.focus();
     e.preventDefault();
   };
+  const [entOpen, setEntOpen] = useState(false);
   const tasks = useTasks();
   const shells = useShells(0, 2000);
   const running = tasks.filter((t) => !t.result);
   const runningShells = shells.filter((s) => s.running);
-  const kinds = KINDS.filter((k) => k.id !== 'games' || (games.on && games.place === 'panel'));
+  // Games lives in the Entertainment submenu, so it's left out of the grid.
+  const kinds = KINDS.filter((k) => k.id !== 'games');
+  const entertainment: { icon: string; name: string; about: string; run: () => void }[] = [
+    ...(games.on ? [{ icon: 'game', name: 'Games', about: 'Something to play while Scout works', run: () => (games.place === 'panel' ? navigate(tab, 'games') : openGame(games, true)) }] : []),
+    ...(music.on ? [{ icon: 'music', name: 'Music', about: 'The music player', run: () => openMusic() }] : []),
+    { icon: 'social', name: 'Social', about: 'Posts from Bluesky, Dev.to and Mastodon', run: () => ui.set({ page: 'social' }) },
+  ];
   return (
     <div className="dock-page newtab" onKeyDown={arrows}>
       <div className="newtab-inner">
         <b className="strong big newtab-head">What do you want to open?</b>
-        <div className="newtab-list">
+        <div className="newtab-grid">
           {kinds.map((k) => <Tile key={k.id} icon={k.icon} name={k.name} about={k.about} hint={k.shortcut} onClick={() => navigate(tab, k.id)} />)}
-          {games.on && games.place !== 'panel' && <Tile icon="game" name="Games" about="Opens the floating game card" onClick={() => openGame(games, true)} />}
-          {music.on && <Tile icon="music" name="Music" about="Opens the music player" onClick={() => openMusic()} />}
+          {entertainment.length > 0 && (
+            <button type="button" className="newtab-tile newtab-ent" aria-expanded={entOpen} aria-controls="newtab-ent-sub"
+              title="Games and music" onClick={() => setEntOpen(!entOpen)}>
+              <span className="newtab-icon"><Icon name="entertainment" size={17} /></span>
+              <b className="strong small ellipsis grow">Entertainment</b>
+              <span className="newtab-ent-chev"><Icon name="chevronRight" size={13} /></span>
+            </button>
+          )}
         </div>
+        {entOpen && entertainment.length > 0 && (
+          <div id="newtab-ent-sub" className="newtab-sub" role="group" aria-label="Entertainment">
+            {entertainment.map((it) => <Tile key={it.name} icon={it.icon} name={it.name} about={it.about} onClick={it.run} />)}
+          </div>
+        )}
         {(running.length > 0 || runningShells.length > 0) && <Section title="Background tasks">
           <div className="newtab-list">
             {[...running].reverse().map((t) => (

@@ -2,7 +2,7 @@
 //! rest ask for something and answer directly. Commands that wait (dialogs, the network) run off the main thread.
 
 use crate::agent::{PermissionAnswer, PlanAnswer, QuestionAnswer};
-use crate::config::{AgentRouter, Fallbacks, ModelRef};
+use crate::config::{AgentRouter, ModelRef};
 use crate::core::Core;
 use crate::{attach, dock, mcp_client, music, session, skills};
 use serde::Deserialize;
@@ -14,10 +14,48 @@ use tauri::{AppHandle, Runtime, State};
 
 type Shared<'a> = State<'a, Arc<Mutex<Core>>>;
 
+/// Commands too frequent to log each call: they'd bury everything else.
+const UNLOGGED: &[&str] = &[
+    "snapshot", "provider_icon", "window_ready", "background_shells", "display_path", "mention_search", "search_chats", "folder_list",
+    "usage_log", "dir_read", "file_read", "file_mtime", "files_list", "files_search", "terminal_suggestions", "terminal_list",
+    "terminal_write", "terminal_resize", "browser_bounds", "browser_status", "browser_find", "claude_setup_status", "changes_load",
+    "changes_diff", "delta_local_list", "delta_local_read", "music_list", "log_ui", "logs_list", "logs_read",
+];
+
+/// What the window asked for, in the log. Only the command's name, and an action's type: their arguments can hold
+/// messages, keys and file contents.
+fn log_invoke(command: &str, payload: &tauri::ipc::InvokeBody) {
+    if UNLOGGED.contains(&command) {
+        return;
+    }
+    if command == "act" {
+        if let tauri::ipc::InvokeBody::Json(v) = payload {
+            let kind = v.pointer("/action/type").and_then(Value::as_str).unwrap_or("?");
+            crate::logs::info("action", kind);
+            return;
+        }
+    }
+    crate::logs::info("command", command);
+}
+
 pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    let inner = generated();
+    move |invoke| {
+        log_invoke(invoke.message.command(), invoke.message.payload());
+        inner(invoke)
+    }
+}
+
+fn generated<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        log_ui,
+        logs_list,
+        logs_read,
+        logs_save,
+        logs_open_folder,
         snapshot,
         act,
+        provider_icon,
         send,
         unqueue,
         restart_to_update,
@@ -63,6 +101,8 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         file_read,
         file_save,
         file_mtime,
+        files_list,
+        files_search,
         terminal_prewarm,
         terminal_suggestions,
         terminal_list,
@@ -76,6 +116,7 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         delta_local_delete,
         delta_cloud,
         epsilon_cloud,
+        agent_cloud,
         music_list,
         music_upload,
         music_remove,
@@ -86,7 +127,58 @@ pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + 
         browser_go,
         browser_take_over,
         browser_status,
+        browser_tab_new,
+        browser_tab_select,
+        browser_tab_close,
+        browser_tab_reopen,
+        browser_tab_move,
+        browser_zoom,
+        browser_find,
+        browser_browse_page,
     ]
+}
+
+// Session logs (logs.rs), for Settings > Logs.
+
+/// Errors, warnings and crashes from the window, sent in batches.
+#[tauri::command(async)]
+fn log_ui(entries: Vec<(String, String)>) {
+    for (level, msg) in entries.iter().take(200) {
+        crate::logs::ui(level, msg);
+    }
+}
+
+#[tauri::command(async)]
+fn logs_list() -> Vec<crate::logs::Entry> {
+    crate::logs::list()
+}
+
+#[tauri::command(async)]
+fn logs_read(name: String) -> Result<String, String> {
+    crate::logs::read(&name)
+}
+
+/// Asks where to save a log, and copies it there. False when the dialog was closed.
+#[tauri::command(async)]
+fn logs_save(name: String) -> Result<bool, String> {
+    let text = crate::logs::read(&name)?;
+    let Some(path) = rfd::FileDialog::new().set_title("Save Scout's log").set_file_name(format!("scout-{name}")).add_filter("Log", &["log", "txt"]).save_file() else {
+        return Ok(false);
+    };
+    std::fs::write(&path, text).map_err(|e| format!("Couldn't save the log: {e}"))?;
+    crate::logs::info("logs", format!("Saved {name} to {}", path.display()));
+    Ok(true)
+}
+
+#[tauri::command(async)]
+fn logs_open_folder() {
+    let dir = crate::logs::dir();
+    let _ = std::fs::create_dir_all(&dir);
+    // Explorer opens the folder with the newest log selected.
+    match crate::logs::list().first() {
+        Some(e) => reveal_path(&dir.join(&e.name)),
+        None => reveal_path(&dir),
+    }
 }
 
 // The built-in browser (browser.rs). Async, so they run off the main thread: making its webview waits on the main thread.
@@ -113,6 +205,49 @@ async fn browser_status() -> Value {
 }
 
 #[tauri::command]
+async fn browser_tab_new(url: Option<String>) -> Result<u64, String> {
+    crate::browser::new_tab(url.as_deref())
+}
+
+#[tauri::command]
+async fn browser_tab_select(id: u64) {
+    crate::browser::select_tab(id);
+}
+
+#[tauri::command]
+async fn browser_tab_close(id: u64) {
+    crate::browser::close_tab(id);
+}
+
+#[tauri::command]
+async fn browser_tab_reopen() -> Result<(), String> {
+    crate::browser::reopen_tab()
+}
+
+#[tauri::command]
+async fn browser_tab_move(id: u64, to: usize) {
+    crate::browser::move_tab(id, to);
+}
+
+/// 1 is 100%.
+#[tauri::command]
+async fn browser_zoom(factor: f64) -> Result<(), String> {
+    crate::browser::set_zoom(factor)
+}
+
+/// Finds text in the page in front; says whether it's there.
+#[tauri::command]
+async fn browser_find(text: String, back: bool) -> Result<bool, String> {
+    crate::browser::find(&text, back)
+}
+
+/// The Browse page came on screen or went away: messages sent meanwhile are about the browser.
+#[tauri::command]
+async fn browser_browse_page(on: bool) {
+    crate::browser::set_browse(on);
+}
+
+#[tauri::command]
 fn snapshot(core: Shared) -> Value {
     core.lock().unwrap().snapshot()
 }
@@ -132,8 +267,6 @@ enum Action {
     Resend { at: usize, text: String },
     SendQueued { at: usize },
     RetryTurn { key: Option<String>, provider: Option<String> },
-    SetupFallbacks { failed: ModelRef, all: Vec<ModelRef>, own: Vec<ModelRef>, off: bool },
-    SetFallbacks { fallbacks: Fallbacks },
     SetAgentRouters { agent_routers: Vec<AgentRouter> },
     ChangeProject { dir: String },
     RenameProject { path: String, name: String },
@@ -166,9 +299,16 @@ enum Action {
     ReloadModels,
     LinkAdditional { id: String, key: Option<String> },
     UnlinkAdditional { id: String },
+    /// Adds a provider of the user's own, or changes one (`id` given). A missing `key` on a change keeps the saved one.
+    SaveCustomProvider { id: Option<String>, name: String, kind: crate::config::ApiKind, url: String, key: Option<String>, icon: Option<String> },
     SignIn { which: String },
     CancelSignIn { which: String },
     SignOutOf { which: String, uninstall: bool },
+    /// Codex, Claude Code, Grok Build, OpenCode or Copilot: another account, signed in to from here.
+    AddAccount { which: String },
+    /// One of those: which of its accounts is in use, by the id in `cfg.agentAccounts`.
+    SwitchAccount { which: String, id: String },
+    RemoveAccount { which: String, id: String },
     SetNotify { flash: bool, toast: bool },
     TestNotification,
     SetDiscord { presence: bool, project: bool },
@@ -199,6 +339,8 @@ enum Action {
     McpSetEnabled { name: String, on: bool },
     McpRemove { name: String },
     McpReconnect,
+    /// The user said yes to a server in mcp.json that was waiting for it.
+    McpAllow { name: String },
     McpSignIn { name: String },
     McpSignOut { name: String },
     McpCancelSignIn,
@@ -207,6 +349,8 @@ enum Action {
     DownloadUpdate,
     SetAutoUpdate { on: bool },
     SetAnalytics { on: bool },
+    /// Whether closing the window asks first.
+    SetConfirmClose { on: bool },
     RefreshSkills,
     /// Changes local model settings: any of backend, gpuLayers, context, reasoningBudget, tools, singleCall, shortPrompt.
     SetLocal { patch: Value },
@@ -232,15 +376,23 @@ fn permission_answer(answer: &str, feedback: Option<String>) -> PermissionAnswer
 
 #[tauri::command]
 fn act(core: Shared, action: Action) -> Result<(), String> {
+    let r = act_inner(core, action);
+    if let Err(e) = &r {
+        crate::logs::warn("action", format!("Refused: {e}"));
+    }
+    r
+}
+
+fn act_inner(core: Shared, action: Action) -> Result<(), String> {
     let mut c = core.lock().unwrap();
     // A Scout Enterprise team's members use the team's providers: they can't add their own, and can only sign in on this PC
     // to the ones the team allows.
     if let Some(t) = c.team() {
         let own = match &action {
-            Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SetGuest { on: true } | Action::LocalInstall { .. } | Action::LocalDownload { .. } | Action::LocalDownloadHf { .. } | Action::LocalSetup { .. } => true,
+            Action::AddOpenrouterKey { .. } | Action::SaveKilo { .. } | Action::LinkAdditional { .. } | Action::SaveCustomProvider { .. } | Action::SetGuest { on: true } | Action::LocalInstall { .. } | Action::LocalDownload { .. } | Action::LocalDownloadHf { .. } | Action::LocalSetup { .. } => true,
             Action::SaveNvidiaKey { key } | Action::SaveGrokKey { key } | Action::SaveHermesKey { key } | Action::SaveImageKey { key } => key.is_some(),
             Action::SetOpencode { on, .. } => *on && !t.acp.iter().any(|a| a == "opencode"),
-            Action::SignIn { which } => !t.acp.iter().any(|a| a == which),
+            Action::SignIn { which } | Action::AddAccount { which } => !t.acp.iter().any(|a| a == which),
             _ => false,
         };
         if own {
@@ -258,8 +410,6 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::Resend { at, text } => c.resend(at, text),
         Action::SendQueued { at } => c.send_queued(at),
         Action::RetryTurn { key, provider } => c.retry(key.zip(provider)),
-        Action::SetupFallbacks { failed, all, own, off } => c.setup_fallbacks(failed, all, own, off),
-        Action::SetFallbacks { fallbacks } => c.set_fallbacks(fallbacks),
         Action::SetAgentRouters { agent_routers } => c.set_agent_routers(agent_routers),
         Action::ChangeProject { dir } => c.change_project(dir),
         Action::RenameProject { path, name } => c.rename_project(&path, &name),
@@ -294,6 +444,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::ReloadModels => c.fetch_models(),
         Action::LinkAdditional { id, key } => c.link_additional(&id, key),
         Action::UnlinkAdditional { id } => c.unlink_additional(&id),
+        Action::SaveCustomProvider { id, name, kind, url, key, icon } => c.save_custom_provider(id, name, kind, url, key, icon)?,
         Action::SignIn { which } => match which.as_str() {
             "copilot" => c.copilot_sign_in(),
             "devin" => c.devin_sign_in(),
@@ -306,6 +457,10 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
             _ => {}
         },
         Action::CancelSignIn { which } => c.cancel_sign_in(&which),
+        Action::AddAccount { which } if crate::profiles::can_have_several(&which) => c.add_account(&which),
+        Action::SwitchAccount { which, id } if crate::profiles::can_have_several(&which) => c.switch_account(&which, &id),
+        Action::RemoveAccount { which, id } if crate::profiles::can_have_several(&which) => c.remove_account(&which, &id),
+        Action::AddAccount { .. } | Action::SwitchAccount { .. } | Action::RemoveAccount { .. } => {}
         Action::SignOutOf { which, uninstall } => match which.as_str() {
             "copilot" => c.copilot_sign_out(uninstall),
             "devin" => c.devin_sign_out(uninstall),
@@ -344,6 +499,12 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
             let found = mcp_client::hub().views().into_iter().find(|s| s.name == name);
             if let Some(mut cfg) = found.map(|s| s.cfg) {
                 cfg.disabled = !on;
+                // Turning a server on in Settings is the user's own OK for it.
+                if on {
+                    if let Err(e) = mcp_client::approve(&name, &cfg) {
+                        c.set_status(e);
+                    }
+                }
                 if let Err(e) = mcp_client::set(None, &name, Some(cfg)) {
                     c.set_status(e);
                 }
@@ -355,10 +516,16 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
                 c.set_status(e);
             } else {
                 crate::mcp_auth::forget(&name);
+                mcp_client::unapprove(&name);
             }
             mcp_client::hub().reload(&c.waker(), false);
         }
         Action::McpReconnect => mcp_client::hub().reload(&c.waker(), true),
+        Action::McpAllow { name } => {
+            if let Err(e) = mcp_client::hub().allow(&name, &c.waker()) {
+                c.set_status(e);
+            }
+        }
         Action::McpSignIn { name } => mcp_client::hub().sign_in(&name, &c.waker()),
         Action::McpSignOut { name } => mcp_client::hub().sign_out(&name, &c.waker()),
         Action::McpCancelSignIn => mcp_client::hub().cancel_sign_in(),
@@ -367,6 +534,7 @@ fn act(core: Shared, action: Action) -> Result<(), String> {
         Action::DownloadUpdate => c.updater().download_now(),
         Action::SetAutoUpdate { on } => c.set_auto_update(on),
         Action::SetAnalytics { on } => c.set_analytics(on),
+        Action::SetConfirmClose { on } => c.set_confirm_close(on),
         Action::RefreshSkills => c.refresh_skills(),
         Action::SetLocal { patch } => c.set_local(patch),
         Action::LocalInstall { backend } => c.local_install(backend),
@@ -395,6 +563,12 @@ fn local_add_file(core: Shared<'_>) -> Result<(), String> {
     let r = c.local_add_file(&path);
     c.wake();
     r
+}
+
+/// The icon to suggest for a custom provider at `address`: its site's favicon, as a data: URL. Off the core's lock.
+#[tauri::command(async)]
+fn provider_icon(address: String) -> Result<String, String> {
+    crate::favicon::suggest(&address)
 }
 
 /// The GGUF files in a Hugging Face repo, from a link or "owner/name", for Get more models. Off the core's lock.
@@ -435,6 +609,15 @@ fn restart_to_update<R: Runtime>(app: AppHandle<R>, core: Shared) {
         r
     };
     if restarted {
+        crate::logs::info("update", "Restarting into the new version.");
+        // If something holds up the exit (a shell, a sidecar, the webview), the old copy must still go: the new one is
+        // waiting for it, and users saw both stay open.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(6));
+            crate::logs::warn("exit", "Closing took over 6 seconds, so Scout ended itself.");
+            crate::logs::end();
+            std::process::exit(0);
+        });
         app.exit(0);
     }
 }
@@ -454,6 +637,7 @@ fn stop_background_shell(id: String) {
 #[tauri::command]
 fn window_ready<R: Runtime>(window: tauri::WebviewWindow<R>) {
     if !window.is_visible().unwrap_or(false) {
+        crate::logs::info("window", "The UI drew its first frame.");
         reveal_window(&window);
     }
 }
@@ -801,17 +985,31 @@ fn delta_cloud(core: Shared<'_>, method: String, path: String, body: Option<Valu
     crate::delta::cloud(&cfg, &method, &path, body)
 }
 
-/// Epsilon through the ScoutCode site (/api/epsilon/…): the account's cloud computers, repo tasks, and the short-lived
+/// Epsilon through the ScoutCode site (/api/epsilon/…): the account's cloud computers and the short-lived
 /// tokens the framed computer page asks for. The key stays here; the window only sees the answers.
 #[tauri::command(async)]
 fn epsilon_cloud(core: Shared<'_>, method: String, path: String, body: Option<Value>) -> Result<Value, String> {
-    let allowed = ["/api/epsilon/machines", "/api/epsilon/tasks", "/api/epsilon/token"];
+    let allowed = ["/api/epsilon/machines", "/api/epsilon/token"];
     if !allowed.iter().any(|p| path == *p || path.starts_with(&format!("{p}?"))) {
         return Err("Not an Epsilon path".into());
     }
     let cfg = core.lock().unwrap().scout_cfg();
     // Signing an agent in on the server can first download it there, and saving a computer as it stops takes a while.
     crate::delta::site_request(&cfg, &method, &path, body, 600, "Sign in to your ScoutCode account to use Epsilon.")
+}
+
+/// Agent, the home page: persistent agents kept on the ScoutCode site (src/pages/api/account/agents.ts).
+#[tauri::command]
+async fn agent_cloud(core: Shared<'_>, method: String, path: String, body: Option<Value>) -> Result<Value, String> {
+    let base = "/api/account/agents";
+    if !(path == base || path.starts_with(&format!("{base}?"))) {
+        return Err("Not an Agent path".into());
+    }
+    let cfg = core.lock().unwrap().scout_cfg();
+    // Off the main thread: attachments can take a while to upload.
+    tauri::async_runtime::spawn_blocking(move || crate::delta::site_request(&cfg, &method, &path, body, 120, "Sign in to your ScoutCode account to use Agent."))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // ---------- settings ----------
@@ -958,6 +1156,8 @@ fn mcp_save(core: Shared, form: McpForm) -> Result<(), String> {
         (c.url, c.headers) = Default::default();
     }
     let remote = !c.url.is_empty();
+    // Saving the form, with what it runs or connects to in view, is the user's OK for this server.
+    mcp_client::approve(&name, &c)?;
     mcp_client::set(form.editing.as_deref(), &name, Some(c))?;
     if let Some(old) = form.editing.as_deref().filter(|o| *o != name) {
         crate::mcp_auth::forget(old);
@@ -1022,6 +1222,18 @@ fn file_save(path: String, text: String, crlf: bool) -> Result<Option<u64>, Stri
 #[tauri::command]
 fn file_mtime(path: String) -> Option<u64> {
     dock::mtime(&path)
+}
+
+/// Mission Control's quick open: the project's files, relative to `root`.
+#[tauri::command(async)]
+fn files_list(root: String) -> Vec<String> {
+    dock::list_files(&root, 50_000)
+}
+
+/// Mission Control's search across the project's files.
+#[tauri::command(async)]
+fn files_search(root: String, query: String, case: bool, regex: bool) -> Result<Vec<dock::Hit>, String> {
+    dock::search(&root, &query, case, regex, 2_000)
 }
 
 #[tauri::command]

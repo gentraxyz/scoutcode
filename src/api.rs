@@ -217,7 +217,7 @@ fn auth<B>(req: ureq::RequestBuilder<B>, cfg: &Config) -> Result<ureq::RequestBu
     if cfg.is_guest() {
         return Ok(req.header("x-scoutcode-desktop-guest", "1"));
     }
-    if cfg.api_key.is_none() && crate::config::ADDITIONAL.iter().any(|a| !a.needs_key && a.url == cfg.base_url) {
+    if cfg.api_key.is_none() && crate::config::all_additional().iter().any(|a| !a.needs_key && a.url == cfg.base_url) {
         return Ok(req);
     }
     // llama-server on this PC takes no key.
@@ -225,13 +225,30 @@ fn auth<B>(req: ureq::RequestBuilder<B>, cfg: &Config) -> Result<ureq::RequestBu
         return Ok(req);
     }
     if !is_kilo(cfg) {
-        return Ok(req.header("Authorization", &format!("Bearer {}", key(cfg)?)));
+        let k = key(cfg)?;
+        let req = req.header("Authorization", &format!("Bearer {k}"));
+        // Anthropic's own endpoints (the model list) want its headers; its OpenAI-compatible chat takes either.
+        return Ok(if crate::config::is_anthropic(&cfg.base_url) { req.header("x-api-key", k).header("anthropic-version", ANTHROPIC_VERSION) } else { req });
     }
     let req = req.header("X-KiloCode-Version", env!("CARGO_PKG_VERSION"));
     Ok(match &cfg.api_key {
         Some(k) => req.header("Authorization", &format!("Bearer {k}")),
         None => req,
     })
+}
+
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// The most a reply may be on Anthropic's API, which needs a number. Older Claude models allow less.
+fn anthropic_max_tokens(model: &str) -> u64 {
+    let m = model.to_lowercase();
+    if m.starts_with("claude-3-5") || m.starts_with("claude-3.5") {
+        8_192
+    } else if m.starts_with("claude-3-") || m.starts_with("claude-instant") || m.starts_with("claude-2") {
+        4_096
+    } else {
+        32_000
+    }
 }
 
 fn header(res: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> {
@@ -700,15 +717,34 @@ fn additional_chat_model(id: &str) -> bool {
     !NOT_CHAT.iter().any(|w| id.contains(w))
 }
 
+/// The same for a provider the user added: any server, so only what's plainly not a chat model is left out.
+fn custom_chat_model(id: &str) -> bool {
+    const NOT_CHAT: [&str; 16] = ["embed", "whisper", "tts", "dall-e", "moderation", "davinci", "babbage", "sora", "realtime", "transcribe", "gpt-image", "rerank", "-audio", "-search", "diffusion", "imagen"];
+    let id = id.to_lowercase();
+    !NOT_CHAT.iter().any(|w| id.contains(w))
+}
+
+/// Anthropic's model list in the shape the others have: its names are `display_name`, and every Claude model takes
+/// tools and images.
+fn anthropic_listing(body: &Value) -> Value {
+    let data: Vec<Value> = body
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|l| l.iter().filter_map(|m| Some(json!({ "id": m.get("id")?.as_str()?, "name": m.get("display_name").and_then(Value::as_str), "tools": true, "vision": true }))).collect())
+        .unwrap_or_default();
+    json!({ "data": data })
+}
+
 /// The entries of an additional provider's model list that can run Scout. With no key on a free tier, they all cost nothing.
 fn additional_models(a: &crate::config::AdditionalProvider, keyed: bool, body: &Value) -> Vec<ModelInfo> {
     let free = !a.needs_key && !keyed;
+    let chat = if a.custom { custom_chat_model } else { additional_chat_model };
     body.get("data")
         .and_then(Value::as_array)
         .map(|list| {
             list.iter()
                 .filter_map(ModelInfo::from_json)
-                .filter(|m| additional_chat_model(&m.id))
+                .filter(|m| chat(&m.id))
                 .map(|m| {
                     // Google's ids start "models/", which chat doesn't need.
                     let id = m.id.strip_prefix("models/").unwrap_or(&m.id).to_string();
@@ -730,7 +766,14 @@ fn additional_models(a: &crate::config::AdditionalProvider, keyed: bool, body: &
 pub fn list_additional(cfg: &Config, a: &crate::config::AdditionalProvider) -> Result<Vec<ModelInfo>, ApiError> {
     let c = cfg.for_provider(a.id);
     let cohere = a.id == "cohere";
-    let url = if cohere { crate::config::COHERE_MODELS_URL.to_string() } else { format!("{}/models", c.base_url) };
+    let anthropic = a.kind == crate::config::ApiKind::Anthropic;
+    let url = if cohere {
+        crate::config::COHERE_MODELS_URL.to_string()
+    } else if anthropic {
+        format!("{}/models?limit=1000", c.base_url)
+    } else {
+        format!("{}/models", c.base_url)
+    };
     let res = auth(http().get(&url), &c)?.call().map_err(transport)?;
     if !res.status().is_success() {
         return Err(error_from(res));
@@ -738,6 +781,8 @@ pub fn list_additional(cfg: &Config, a: &crate::config::AdditionalProvider) -> R
     let body: Value = res.into_body().read_json().map_err(transport)?;
     let body = if cohere {
         cohere_listing(&body)
+    } else if anthropic {
+        anthropic_listing(&body)
     } else if a.id == "experiential" {
         experiential_listing(&body, &experiential_catalog(&c)?)
     } else {
@@ -1005,6 +1050,18 @@ mod tests {
         assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["google/gemini-2.5-flash"]);
         assert_eq!(listed[0].request_id("google"), "gemini-2.5-flash");
         assert_eq!(listed[0].request_id("scoutcode"), "google/gemini-2.5-flash");
+    }
+
+    #[test]
+    fn anthropic_lists_its_display_names_and_old_models_get_smaller_replies() {
+        let body = json!({ "data": [{ "id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5", "type": "model" }] });
+        let listed = anthropic_listing(&body);
+        let m = ModelInfo::from_json(&listed["data"][0]).unwrap();
+        assert_eq!((m.label().as_str(), m.tools, m.vision), ("Claude Sonnet 4.5", Some(true), Some(true)));
+        assert_eq!(anthropic_max_tokens("claude-3-haiku-20240307"), 4_096);
+        assert_eq!(anthropic_max_tokens("claude-3-5-sonnet-latest"), 8_192);
+        assert_eq!(anthropic_max_tokens("claude-opus-4-1"), 32_000);
+        assert!(custom_chat_model("gpt-5") && custom_chat_model("gemma3:12b") && !custom_chat_model("text-embedding-3-small") && !custom_chat_model("dall-e-3"));
     }
 
     #[test]
@@ -1671,11 +1728,11 @@ fn canonical_call(mut c: ToolCall) -> ToolCall {
 /// Streams one chat completion, collecting text, reasoning and tool calls as they arrive. Checks `cancel` between chunks.
 pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), cancel: &Arc<AtomicBool>) -> Result<StreamResult, ApiError> {
     let api_messages: Vec<Value> = req.messages.iter().map(|m| match m {
-        Message::Assistant { content, tool_calls, reasoning_content, .. } => {
+        // The reasoning is kept in the chat to show again, never sent back: some providers refuse it in a request.
+        Message::Assistant { content, tool_calls, .. } => {
             let mut obj = json!({ "role": "assistant" });
             if let Some(c) = content { obj["content"] = json!(c); }
             if let Some(t) = tool_calls { obj["tool_calls"] = json!(t); }
-            if let Some(r) = reasoning_content { obj["reasoning_content"] = json!(r); }
             obj
         }
         _ => serde_json::to_value(m).unwrap_or_default(),
@@ -1695,6 +1752,14 @@ pub fn stream_chat(cfg: &Config, req: ChatRequest, on: &mut dyn FnMut(Delta), ca
     }
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
+    }
+    // DeepSeek's models think by default, and the thinking counts against a small default output budget, so long
+    // replies and big tool calls were cut off ("hit the output limit"). Its API allows far more than this.
+    if cfg.base_url.contains("api.deepseek.com") {
+        body["max_tokens"] = json!(65_536);
+    }
+    if crate::config::is_anthropic(&cfg.base_url) {
+        body["max_tokens"] = json!(anthropic_max_tokens(&req.model));
     }
     // Cohere takes only "none" and "high", and refuses it on models that don't reason, so it's left to the model there.
     if let Some(e) = req.effort.filter(|_| cfg.base_url != crate::config::COHERE_URL) {

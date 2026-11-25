@@ -1,20 +1,18 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { act, invoke, projectDir, usd, type View } from './api';
-import { ui, useUi, useView } from './store';
+import { ui, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
 import { Hideable, useHidden } from './Hideable';
-import { CloudSessionRow, useCloudRows, useCloudSearch } from './Cloud';
 import { useListMotion } from './listMotion';
-import { newCloudChat } from './epsilon';
 
 const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
 const sameDir = (a: string, b: string) => norm(a) === norm(b);
 /** A worktree's chats are listed under the repository it was made from. */
 const sameProject = (path: string, cwd: string) => sameDir(path, projectDir(cwd));
 
-/** "New project": asks whether it's a folder on this PC (Scout's folder picker) or a repository in the cloud. */
+/** "New project": a folder on this PC, picked with Scout's folder picker. */
 export function addProject() {
-  ui.set({ newProject: 'ask' });
+  ui.set({ pickingFolder: true });
 }
 
 type SessionInfo = View['sessions'][number];
@@ -51,7 +49,7 @@ export function SessionRow({ s, current, project, dnd }: { s: SessionInfo; curre
       style={dnd?.style}
       onPointerDown={dnd?.onPointerDown}
     >
-      <button type="button" className="session-open" onClick={() => { ui.set({ page: 'chat', cloud: null }); act('openChat', { id: s.id }); }}>
+      <button type="button" className="session-open" onClick={() => { ui.set({ page: 'chat' }); act('openChat', { id: s.id }); }}>
         <span className="session-line">
           <span className="session-title ellipsis grow">{s.title}</span>
           <SessionDot s={s} />
@@ -117,10 +115,6 @@ function ChatList({ done }: { done: boolean }) {
   const chat = useView('chat');
   const projectName = useProjectName();
   const rows = sessions.filter((s) => !!s.done === done);
-  // Cloud chats sit among this PC's by when they were last active; only this PC's can be dragged into an order.
-  const cloudRows = useCloudRows(done);
-  const openCloud = useUi((u) => (u.page === 'chat' ? u.cloud?.taskId ?? null : null));
-  const inCloud = useUi((u) => !!u.cloud);
   const byId = new Map(rows.map((r) => [r.id, r]));
   const listRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -148,20 +142,6 @@ function ChatList({ done }: { done: boolean }) {
 
   const shown = order && order.length === rows.length && order.every((id) => byId.has(id)) ? order : rows.map((r) => r.id);
   const ids = drag ? drag.rows.map((r) => r.id) : shown;
-  // Where each cloud chat goes: above the first chat on this PC (in the order shown) that was last active before it.
-  // Placed from the order before any drag, so cloud chats stay put while one is dragged.
-  const cloudBefore = new Map<string, typeof cloudRows>();
-  let cloudAfter = cloudRows;
-  {
-    let i = 0;
-    for (const id of shown) {
-      const at = byId.get(id)?.updated ?? 0;
-      const start = i;
-      while (i < cloudRows.length && cloudRows[i].updatedAt >= at) i++;
-      if (i > start) cloudBefore.set(id, cloudRows.slice(start, i));
-    }
-    cloudAfter = cloudRows.slice(i);
-  }
   const next = drag ? dragOrder(drag) : null;
   // How far a chat has to move to reach its slot in the new order (the dragged one follows the pointer until the drop).
   const shift = (id: string): number => {
@@ -234,14 +214,11 @@ function ChatList({ done }: { done: boolean }) {
         const s = byId.get(id);
         if (!s) return null;
         const dragging = drag?.id === id;
-        // Cloud chats newer than this one go just above it, so both kinds sit together by when they were last active.
-        const before = cloudBefore.get(id) ?? [];
-        return [
-          ...before.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />),
+        return (
           <SessionRow
             key={id}
             s={s}
-            current={!inCloud && id === chat.id}
+            current={id === chat.id}
             project={projectName(s.cwd)}
             dnd={{
               dragging,
@@ -252,59 +229,13 @@ function ChatList({ done }: { done: boolean }) {
               },
               onPointerDown: (e) => onPointerDown(id, e),
             }}
-          />,
-        ];
+          />
+        );
       })}
-      {cloudAfter.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />)}
-      {rows.length === 0 && cloudRows.length === 0 && <div className="small dim no-chats">{done ? 'Nothing marked done yet.' : 'No chats yet. Start one above.'}</div>}
+      {rows.length === 0 && <div className="small dim no-chats">{done ? 'Nothing marked done yet.' : 'No chats yet. Start one above.'}</div>}
       {/* Rows that just left, fading out where they were. React never renders anything in here. */}
       <div ref={motion.ghosts} className="side-ghosts" aria-hidden />
     </div>
-  );
-}
-
-/** The project folders: start a chat in one, rename it, or add another. */
-function ProjectsMenu() {
-  const projects = useView('projects');
-  const chat = useView('chat');
-  const renaming = useUi((u) => u.renaming);
-  const [draft, setDraft] = useState('');
-  useEffect(() => {
-    const p = projects.find((x) => renaming && sameDir(x.path, renaming));
-    if (p) setDraft(p.name);
-  }, [renaming, projects]);
-  const commit = (path: string) => {
-    act('renameProject', { path, name: draft });
-    ui.set({ renaming: null });
-  };
-  return (
-    <Popover width={240} align="end" trigger={(open, toggle) => <IconButton icon="folder" tip="Projects: new chat in a folder" size={26} active={open} onClick={toggle} />}>
-      {(close) => (
-        <>
-          <div className="tiny dim projects-menu-label">New chat in…</div>
-          <div className="projects-menu">
-            {projects.map((p) => renaming && sameDir(renaming, p.path) ? (
-              <input key={p.path} className="input rename" autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => commit(p.path)} onKeyDown={(e) => {
-                if (e.key === 'Enter') e.currentTarget.blur();
-                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ui.set({ renaming: null }); }
-              }} />
-            ) : (
-              <div key={p.path} className={`project-row ${sameProject(p.path, chat.cwd) ? 'here' : ''}`} title={p.path}>
-                <button type="button" className="project-open" onClick={() => { close(); ui.set({ page: 'chat', cloud: null }); act('changeProject', { dir: p.path }); }}>
-                  <Icon name="folder" size={15} />
-                  <span className="ellipsis">{p.name}</span>
-                </button>
-                <IconButton icon="pencil" tip="Rename" size={24} className="row-more" onClick={() => ui.set({ renaming: p.path })} />
-                {/* The open project stays, so the chat on screen always has one. */}
-                {!sameProject(p.path, chat.cwd) && <IconButton icon="close" tip="Remove from list" size={24} className="row-more" onClick={() => act('removeProject', { path: p.path })} />}
-              </div>
-            ))}
-          </div>
-          <hr />
-          <MenuItem icon="folderPlus" onClick={() => { close(); addProject(); }}>New project…</MenuItem>
-        </>
-      )}
-    </Popover>
   );
 }
 
@@ -322,16 +253,12 @@ function SearchResults({ query }: { query: string }) {
   }, [q]);
   const found = hits?.q === q ? hits.ids : null;
   const rows = sessions.filter((s) => (found ? found.has(s.id) : s.title.toLowerCase().includes(q.toLowerCase())));
-  const cloudRows = useCloudSearch(q);
-  const openCloud = useUi((u) => (u.page === 'chat' ? u.cloud?.taskId ?? null : null));
-  const inCloud = useUi((u) => !!u.cloud);
   return (
     <>
       <div className="row side-label"><SectionLabel>Results</SectionLabel>{!found && <Spinner size={11} />}</div>
       <div className="side-scroll">
-        {cloudRows.map((t) => <CloudSessionRow key={`cloud-${t.id}`} t={t} current={t.id === openCloud} />)}
-        {rows.map((s) => <SessionRow key={s.id} s={s} current={!inCloud && s.id === chat.id} project={projectName(s.cwd)} />)}
-        {rows.length === 0 && cloudRows.length === 0 && found && <div className="small dim no-chats">No chats match.</div>}
+        {rows.map((s) => <SessionRow key={s.id} s={s} current={s.id === chat.id} project={projectName(s.cwd)} />)}
+        {rows.length === 0 && found && <div className="small dim no-chats">No chats match.</div>}
       </div>
     </>
   );
@@ -361,57 +288,71 @@ function DailyRewardBanner() {
   );
 }
 
-const WIDTH_KEY = 'scout:sidebarWidth';
-/** The search, kept while the sidebar is hidden (hiding it unmounts it). */
+/** The search, kept while the sidebar is unmounted (on another page). */
 let lastSearch = '';
+let lastSearchOpen = false;
 /** Whether the Done list is showing, kept the same way. */
 let lastShowDone = false;
 
-export function Sidebar() {
+/** The Code section of the sidebar: New chat, search and your chats. It sits under your agents on the home page and
+ *  fills the same column on the Code screen (see AgentSidebar). */
+export function CodeSection() {
   const [search, setSearchState] = useState(lastSearch);
   const setSearch = (s: string) => { lastSearch = s; setSearchState(s); };
-  // The width it was dragged to, across hiding it and restarts.
-  const [width, setWidthState] = useState(() => {
-    try {
-      const w = Number(localStorage.getItem(WIDTH_KEY));
-      return w >= 200 && w <= 420 ? w : 264;
-    } catch { return 264; }
-  });
-  const setWidth = (w: number) => {
-    setWidthState(w);
-    try { localStorage.setItem(WIDTH_KEY, String(w)); } catch {}
-  };
-  const searching = !!search.trim() && !useHidden().includes('side.search');
+  // The search box only shows once the search button is pressed (or Ctrl+K); Esc, the button or its X closes it.
+  const [searchOpen, setSearchOpenState] = useState(lastSearchOpen);
+  const setSearchOpen = (v: boolean) => { lastSearchOpen = v; setSearchOpenState(v); };
+  const closeSearch = () => { setSearch(''); setSearchOpen(false); };
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k' && ui.get().page === 'chat') {
+        e.preventDefault();
+        setSearchOpen(true);
+        requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.side-search input')?.focus());
+      }
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, []);
+  const hidden = useHidden();
+  const searching = !!search.trim() && !hidden.includes('side.search');
   const [showDone, setShowDoneState] = useState(lastShowDone);
   const setShowDone = (v: boolean) => { lastShowDone = v; setShowDoneState(v); };
-  const doneCount = useView('sessions').filter((s) => s.done).length + useCloudRows(true).length;
-  const inCloud = useUi((u) => !!u.cloud);
+  const doneCount = useView('sessions').filter((s) => s.done).length;
   return (
-    <aside className="sidebar" style={{ width }}>
+    <div className="side-code">
       <div className="side-head" data-tauri-drag-region>
-        <b className="brand" data-tauri-drag-region>Chats</b>
+        <SectionLabel>Code</SectionLabel>
         <span className="grow" data-tauri-drag-region />
-        <IconButton icon="sidebar" tip="Hide sidebar" onClick={() => ui.set({ sidebar: false })} />
+        <Hideable id="side.search">
+          <IconButton icon="search" tip="Search chats (Ctrl+K)" active={searchOpen} onClick={() => {
+            if (searchOpen) return closeSearch();
+            setSearchOpen(true);
+          }} />
+        </Hideable>
       </div>
-      <Hideable id="side.newChat"><button type="button" className="new-chat" title={inCloud ? 'A new cloud chat, in the same repository' : undefined} onClick={() => { if (inCloud) return newCloudChat(); ui.set({ page: 'chat' }); act('newChat'); }}>
+      <Hideable id="side.newChat"><button type="button" className="new-chat" onClick={() => { ui.set({ page: 'chat' }); act('newChat'); }}>
         <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
       </button></Hideable>
-      <Hideable id="side.search">
-      <div className="side-search">
-        <Icon name="search" />
-        <input placeholder="Search chats" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape' && search) { e.preventDefault(); e.stopPropagation(); setSearch(''); } }} />
-        {search && <IconButton icon="close" tip="Clear" size={24} onClick={() => setSearch('')} />}
-      </div>
-      </Hideable>
+      {searchOpen && !hidden.includes('side.search') && (
+        <div className="side-search">
+          <Icon name="search" />
+          <input
+            autoFocus
+            placeholder="Search chats"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSearch(); } }}
+          />
+          <IconButton icon="close" tip="Close search" size={24} onClick={closeSearch} />
+        </div>
+      )}
       {searching ? <SearchResults query={search} /> : (
         <>
           <div className="row side-label">
             {showDone
               ? <button type="button" className="side-back" onClick={() => setShowDone(false)}><Icon name="back" size={13} /><SectionLabel>Done</SectionLabel></button>
               : <SectionLabel>Recent</SectionLabel>}
-            <span className="grow" />
-            <ProjectsMenu />
-            <IconButton icon="folderPlus" tip="New project: a folder on this PC or a repository in the cloud" size={26} onClick={addProject} />
           </div>
           <ChatList key={showDone ? 'done' : 'recent'} done={showDone} />
           {!showDone && (
@@ -424,8 +365,7 @@ export function Sidebar() {
         </>
       )}
       <DailyRewardBanner />
-      <Resizer side="right" width={width} min={200} max={420} onChange={setWidth} />
-    </aside>
+    </div>
   );
 }
 

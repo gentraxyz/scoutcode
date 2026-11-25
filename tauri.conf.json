@@ -15,11 +15,11 @@
         "default-src": "'self'",
         "script-src": "'self' https://w.soundcloud.com",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data: https://*.ytimg.com https://*.ggpht.com https://*.sndcdn.com",
+        "img-src": "'self' data: https://*.ytimg.com https://*.ggpht.com https://*.sndcdn.com https://cdn.bsky.app https://video.bsky.app https://media2.dev.to https://files.mastodon.social https://mastodon.social",
         "media-src": "'self' blob: data: music: http://music.localhost",
         "font-src": "'self' data:",
         "frame-src": "https://w.soundcloud.com",
-        "connect-src": "ipc: http://ipc.localhost music: http://music.localhost wss://epsilon.scoutcode.dev https://epsilon.scoutcode.dev"
+        "connect-src": "ipc: http://ipc.localhost music: http://music.localhost wss://epsilon.scoutcode.dev https://epsilon.scoutcode.dev https://api.bsky.app https://dev.to https://mastodon.social"
       }
     }
   },

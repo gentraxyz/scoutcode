@@ -402,7 +402,8 @@ export function SaturnScene() {
     let raf = 0, last = 0;
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
-      if (now - last < FRAME_MS) return;
+      // Nothing to draw while the canvas is hidden (a page or panel in front of it).
+      if (now - last < FRAME_MS || canvas.offsetParent === null) return;
       last = now;
       draw(now);
     };

@@ -1,8 +1,8 @@
 // The sign-in pieces, which the first-run screen, the model menu and Settings all share.
-import { useState } from 'react';
-import { act } from './api';
+import { useEffect, useRef, useState } from 'react';
+import { act, invoke, type CustomProvider } from './api';
 import { core, useView } from './store';
-import { Link, Spinner } from './widgets';
+import { Link, Select, Spinner } from './widgets';
 import scoutClassic from '../../assets/icon.png';
 
 export const COPILOT_NOTE = "Uses your own GitHub account's Copilot plan, from this PC. Each request counts against that plan's allowance, so don't share an account or run it unattended at volume. Signing in downloads about 150 MB.";
@@ -202,20 +202,201 @@ export { AdditionalKey };
 const logos = import.meta.glob('../../assets/providers/*.svg', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;
 export function logo(id: string): string {
   const name = id === 'scout' ? 'scoutcode' : id;
-  return logos[`../../assets/providers/${name}.svg`] ?? (name === 'scoutcode' ? scoutClassic : '');
+  const own = logos[`../../assets/providers/${name}.svg`];
+  if (own) return own;
+  if (name === 'scoutcode') return scoutClassic;
+  if (id === CUSTOM_NEW) return letterIcon('+');
+  const custom = core.get()?.statics.additionalProviders.find((p) => p.id === id)?.custom;
+  return custom ? custom.icon ?? letterIcon(custom.name) : '';
+}
+
+const letters = new Map<string, string>();
+/** A custom provider without an icon: the first letter of its name on a colour picked from the name. */
+export function letterIcon(name: string): string {
+  const hit = letters.get(name);
+  if (hit) return hit;
+  const letter = (name.trim()[0] ?? '?').toUpperCase().replace(/[<>&"']/g, '?');
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="hsl(${h} 45% 42%)"/><text x="16" y="21.5" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" fill="#fff">${letter}</text></svg>`;
+  const url = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  letters.set(name, url);
+  return url;
 }
 
 /** Whether an unlinked provider is Free or Paid. */
-export function providerStatus(id: string): 'Free' | 'Paid' {
+export function providerStatus(id: string): 'Free' | 'Paid' | 'Your own' {
+  if (id === CUSTOM_NEW) return 'Your own';
   return ['claude', 'devin', 'grok', 'deepseek'].includes(id) ? 'Paid' : 'Free';
 }
 
+/** Settings' entry for adding a provider of the user's own. */
+export const CUSTOM_NEW = 'custom-new';
+
+const PRESETS: { label: string; name: string; kind: CustomProvider['kind']; url: string }[] = [
+  { label: 'OpenAI', name: 'OpenAI', kind: 'openai', url: 'https://api.openai.com/v1' },
+  { label: 'Anthropic', name: 'Anthropic', kind: 'anthropic', url: 'https://api.anthropic.com/v1' },
+  { label: 'Other', name: '', kind: 'openai', url: '' },
+];
+
+export const CUSTOM_NOTE = "Any service that speaks OpenAI's or Anthropic's API: OpenAI, Anthropic, Groq, Together, Mistral, or a server on this PC such as Ollama (http://localhost:11434/v1) or LM Studio. Its models bill that service's account, and its key is saved on this PC.";
+
+/** A picture the user chose, made small enough to keep with the settings. */
+function shrinkImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("That file couldn't be read."));
+    reader.onload = () => {
+      const data = String(reader.result);
+      if (file.type === 'image/svg+xml') {
+        if (data.length > 300_000) reject(new Error('That SVG is too big. Pick one under 200 KB.'));
+        else resolve(data);
+        return;
+      }
+      const img = new Image();
+      img.onerror = () => reject(new Error("That file isn't a picture Scout can show."));
+      img.onload = () => {
+        const size = 64;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d')!;
+        const scale = Math.min(size / img.width, size / img.height);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = data;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Adding a provider of the user's own, or changing one (`existing`). The icon is the site's favicon, found as the
+ * address is typed, unless the user picks a picture or the plain letter.
+ */
+export function CustomProviderForm({ existing, onDone }: { existing?: CustomProvider; onDone?: () => void }) {
+  const [name, setName] = useState(existing?.name ?? '');
+  const [kind, setKind] = useState<CustomProvider['kind']>(existing?.kind ?? 'openai');
+  const [url, setUrl] = useState(existing?.url ?? '');
+  const [key, setKey] = useState('');
+  const [icon, setIcon] = useState<string | null>(existing?.icon ?? null);
+  // 'site': follow the address's favicon; 'user': a picture they chose, or the letter, so it's left alone.
+  const [iconFrom, setIconFrom] = useState<'site' | 'user'>(existing ? 'user' : 'site');
+  const [looking, setLooking] = useState(false);
+  const [iconNote, setIconNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const file = useRef<HTMLInputElement>(null);
+  const asked = useRef(0);
+
+  const suggest = (address: string) => {
+    const n = ++asked.current;
+    if (!address.trim()) return;
+    setLooking(true);
+    setIconNote(null);
+    invoke<string>('provider_icon', { address: address.trim() })
+      .then((data) => { if (n === asked.current) { setIcon(data); setIconFrom('site'); } })
+      .catch((e) => { if (n === asked.current) setIconNote(String(e)); })
+      .finally(() => { if (n === asked.current) setLooking(false); });
+  };
+  // While the icon follows the site, it's looked up again once the address stops changing.
+  useEffect(() => {
+    if (iconFrom !== 'site' || !/^https?:\/\/[^/\s]+/i.test(url.trim())) return;
+    const t = window.setTimeout(() => suggest(url), 700);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, iconFrom]);
+
+  const preset = (p: typeof PRESETS[number]) => {
+    setKind(p.kind);
+    setUrl(p.url);
+    if (p.name || !name) setName(p.name);
+    setIconFrom('site');
+    if (!p.url) setIcon(null);
+  };
+  const choose = (f: File | undefined) => {
+    if (!f) return;
+    shrinkImage(f).then((data) => { setIcon(data); setIconFrom('user'); setIconNote(null); }, (e: Error) => setIconNote(e.message));
+  };
+  const save = () => {
+    setSaving(true);
+    setError(null);
+    invoke('act', { action: { type: 'saveCustomProvider', id: existing?.id ?? null, name, kind, url, key: key.trim() || null, icon } })
+      .then(() => {
+        setKey('');
+        if (!existing) { setName(''); setUrl(''); setIcon(null); setIconFrom('site'); }
+        onDone?.();
+      }, (e) => setError(String(e)))
+      .finally(() => setSaving(false));
+  };
+  const shown = icon ?? letterIcon(name || '?');
+  return (
+    <div className="stack">
+      {!existing && (
+        <div className="row wrap">
+          {PRESETS.map((p) => (
+            <button key={p.label} type="button" className={`button compact ${p.url === url && p.kind === kind ? 'primary' : ''}`} onClick={() => preset(p)}>{p.label}</button>
+          ))}
+        </div>
+      )}
+      <input className="input" placeholder="Name, e.g. Groq" value={name} onChange={(e) => setName(e.target.value)} />
+      <input className="input" placeholder="API address, e.g. https://api.groq.com/openai/v1" value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />
+      <label className="row small">
+        <span className="dim">Speaks</span>
+        <Select className="input select compact grow" aria-label="API" value={kind} onChange={(e) => setKind(e.target.value as CustomProvider['kind'])}>
+          <option value="openai">OpenAI's API (chat completions)</option>
+          <option value="anthropic">Anthropic's API</option>
+        </Select>
+      </label>
+      <input className="input" type="password" placeholder={existing ? 'New API key (leave empty to keep the saved one)' : 'API key (leave empty if it takes none)'} value={key} onChange={(e) => setKey(e.target.value)} />
+      <div className="row">
+        <img className="custom-icon" src={shown} alt="" />
+        <div className="grow min0 tiny dim">
+          {looking ? "Looking for the site's icon…" : iconNote ?? (iconFrom === 'site' && icon ? "The site's own icon." : icon ? 'Your picture.' : 'The first letter of its name.')}
+        </div>
+        <button type="button" className="button compact" disabled={!url.trim() || looking} title="Use the favicon of the site this address is on" onClick={() => { setIconFrom('site'); suggest(url); }}>Suggest</button>
+        <button type="button" className="button compact" onClick={() => file.current?.click()}>Choose…</button>
+        {icon && <button type="button" className="button compact" title="Show the first letter of its name instead" onClick={() => { setIcon(null); setIconFrom('user'); }}>Letter</button>}
+        <input ref={file} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/x-icon" hidden onChange={(e) => { choose(e.target.files?.[0]); e.target.value = ''; }} />
+      </div>
+      {error && <div className="small red">{error}</div>}
+      <div className="row end">
+        {onDone && existing && <button type="button" className="button" onClick={onDone}>Cancel</button>}
+        <button type="button" className="button primary" disabled={saving || !name.trim() || !url.trim()} onClick={save}>{saving ? 'Saving…' : existing ? 'Save changes' : 'Add provider'}</button>
+      </div>
+    </div>
+  );
+}
+
+/** A custom provider that's been added: what it is, and changing or removing it. */
+export function CustomProviderDetails({ p, masked }: { p: CustomProvider; masked: string | null }) {
+  const [editing, setEditing] = useState(false);
+  if (editing) return <CustomProviderForm existing={p} onDone={() => setEditing(false)} />;
+  return (
+    <div className="stack">
+      <div className="small dim">{p.kind === 'anthropic' ? "Anthropic's API" : "OpenAI's API"} at {p.url}</div>
+      <div className="small dim">{masked ? `Key ${masked}` : 'No key'}</div>
+      <div className="row">
+        <button type="button" className="button" onClick={() => setEditing(true)}>Edit</button>
+        <button type="button" className="button" onClick={() => act('unlinkAdditional', { id: p.id })}>Remove</button>
+      </div>
+    </div>
+  );
+}
+
 /** Every additional provider not linked yet, and how to link it. */
+/** Shown where OpenRouter or an additional provider is linked: their API-key models only run inside a custom agent. */
+export const AGENT_ONLY_NOTE = 'These models run on your own API key and can only be used in a custom agent: once linked, add them to a route under Custom agents (+ Add to route).';
+
 export function AdditionalOptions() {
   const { additional } = useView('cfg');
   const providers = core.get().statics.additionalProviders;
   return (
     <div className="stack">
+      <div className="small dim">{AGENT_ONLY_NOTE}</div>
       {providers.filter((a) => !additional.some((l) => l.id === a.id)).map((a) => {
         const status = providerStatus(a.id);
         return (
@@ -232,6 +413,15 @@ export function AdditionalOptions() {
           </div>
         );
       })}
+      <div className="provider-card">
+        <div className="row">
+          <img className="logo" src={letterIcon('+')} width={18} height={18} alt="" />
+          <b className="strong grow">Your own provider</b>
+          <span className="badge">OpenAI or Anthropic API</span>
+        </div>
+        <div className="small dim">{CUSTOM_NOTE}</div>
+        <CustomProviderForm />
+      </div>
     </div>
   );
 }

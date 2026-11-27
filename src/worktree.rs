@@ -12,6 +12,23 @@ pub fn in_repo(dir: &str) -> bool {
     !dir.is_empty() && Path::new(dir).ancestors().any(|a| a.join(".git").exists())
 }
 
+/// `in_repo`, remembered for a couple of seconds: the window's view asks on every update (many times a second while a
+/// reply streams), and each answer looks for `.git` in every folder up to the drive.
+pub fn in_repo_cached(dir: &str) -> bool {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static LAST: Mutex<Option<(String, bool, Instant)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    if let Some((d, v, at)) = &*last {
+        if d == dir && at.elapsed() < Duration::from_secs(2) {
+            return *v;
+        }
+    }
+    let v = in_repo(dir);
+    *last = Some((dir.to_string(), v, Instant::now()));
+    v
+}
+
 /// The folder a Scout worktree was made from, when `dir` is one (`<repo>/.scout/worktrees/<name>`).
 pub fn home_of(dir: &str) -> Option<String> {
     let p = Path::new(dir);

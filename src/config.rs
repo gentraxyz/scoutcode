@@ -336,6 +336,9 @@ pub struct Config {
     /// background. None until they choose, which the first run asks.
     pub notify_flash: Option<bool>,
     pub notify_toast: Option<bool>,
+    /// Desktop app only: a Windows notification when an agent sends a message while the window is in the background. On
+    /// unless they turn it off.
+    pub notify_agents: Option<bool>,
     /// Desktop app only: show "Using Scout" on the user's Discord profile. On unless they turn it off.
     pub discord_presence: bool,
     /// Desktop app only: include the open folder's name in that presence. Off until they turn it on.
@@ -349,8 +352,6 @@ pub struct Config {
     pub agent_routers: Vec<AgentRouter>,
     /// The agent gets a generate_image tool, which makes images on the user's own key. Off until turned on.
     pub experimental_images: bool,
-    /// The agent gets the `browser` tool, which turns on the built-in browser and its browser_* tools. Off until turned on.
-    pub browser_agent: bool,
     /// Whose key and API generate_image uses: "openrouter" (the saved OpenRouter key) or "openai" (`image_key`).
     pub image_provider: String,
     /// That provider's image model. None for its default.
@@ -370,9 +371,6 @@ pub struct Config {
     pub scout_mote: bool,
     /// Desktop app only: what ScoutMote calls this computer on the site, kept so it stays the same PC.
     pub scout_mote_id: Option<String>,
-    /// Desktop app only: Dreaming, which tidies memory from recent chats while Scout sits idle (see dream.rs). None until
-    /// the user chooses, which setup asks; off until then.
-    pub dreaming: Option<bool>,
     /// Desktop app only: the link that lets web chatbots (claude.ai and others) use Scout here. On unless turned off,
     /// and started again at every launch, so a restart or an update doesn't cut chatbots off.
     pub chatbot_link: bool,
@@ -733,13 +731,13 @@ pub fn load_config() -> Config {
         chat_order: s.get("desktopChatOrder").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         notify_flash: s.get("desktopFlash").and_then(Value::as_bool),
         notify_toast: s.get("desktopToast").and_then(Value::as_bool),
+        notify_agents: s.get("desktopAgentToast").and_then(Value::as_bool),
         discord_presence: s.get("discordPresence").and_then(Value::as_bool).unwrap_or(true),
         discord_project: s.get("discordProject").and_then(Value::as_bool).unwrap_or(false),
         auto_update: s.get("desktopAutoUpdate").and_then(Value::as_bool).unwrap_or(true),
         last_version: s.get("desktopLastVersion").and_then(Value::as_str).map(str::to_string),
         agent_routers: saved_agent_routers(&s),
         experimental_images: s.get("experimentalImages").and_then(Value::as_bool).unwrap_or(false),
-        browser_agent: s.get("browserAgent").and_then(Value::as_bool).unwrap_or(false),
         image_provider: Some(str_("imageProvider", "openrouter")).filter(|p| IMAGE_PROVIDERS.contains(&p.as_str())).unwrap_or_else(|| "openrouter".into()),
         image_model: s.get("imageModel").and_then(Value::as_str).filter(|m| !m.is_empty()).map(String::from),
         image_key: s.get("imageKey").and_then(Value::as_str).filter(|k| !k.is_empty()).map(String::from),
@@ -749,7 +747,6 @@ pub fn load_config() -> Config {
         team: s.get("team").and_then(|v| serde_json::from_value(v.clone()).ok()),
         scout_mote: s.get("scoutMote").and_then(Value::as_bool).unwrap_or(false),
         scout_mote_id: s.get("scoutMoteId").and_then(Value::as_str).filter(|v| !v.is_empty()).map(String::from),
-        dreaming: s.get("dreaming").and_then(Value::as_bool),
         chatbot_link: s.get("chatbotLink").and_then(Value::as_bool).unwrap_or(true),
         chatbot_link_mode: s.get("chatbotLinkMode").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or("default").to_string(),
         usage_analytics: s.get("usageAnalytics").and_then(Value::as_bool).unwrap_or(true),
@@ -894,7 +891,6 @@ impl Config {
         self.custom_providers = other.custom_providers.clone();
         self.agent_routers = other.agent_routers.clone();
         self.experimental_images = other.experimental_images;
-        self.browser_agent = other.browser_agent;
         self.image_provider = other.image_provider.clone();
         self.image_model = other.image_model.clone();
         self.image_key = other.image_key.clone();

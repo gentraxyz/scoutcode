@@ -11,7 +11,6 @@ import { HighlightStyle, LanguageDescription, syntaxHighlighting } from '@codemi
 import { languages } from '@codemirror/language-data';
 import { tags } from '@lezer/highlight';
 import { invoke, type DiffLines } from './api';
-import { BrowserTab } from './BrowserTab';
 import { GamesTab } from './Games';
 import { ReviewTab } from './ReviewTab';
 import { closeDockTab, DockTabStrip, isDockKey, isNewTab, isShellTab, isTaskTab, isTermTab, NewTabPage, setTermFolder, ShellTab, TaskTab } from './DockTabs';
@@ -751,7 +750,7 @@ export function Dock() {
   const picked = useUi((u) => u.dockTab);
   const tabs = useUi((u) => u.dockTabs);
   const tab = picked === 'games' && !gamesTab ? 'new' : picked;
-  // Whatever opens the panel on a page (a shortcut, a file link, the agent's browser) adds its tab to the strip.
+  // Whatever opens the panel on a page (a shortcut, a file link) adds its tab to the strip.
   useEffect(() => {
     if (!open) return;
     if (!tabs.includes(tab)) ui.set({ dockTabs: [...tabs, tab], dockTab: tab });
@@ -773,7 +772,6 @@ export function Dock() {
       {open && tab === 'changes' && <ChangesTab cwd={cwd} />}
       {open && tab === 'games' && <GamesTab />}
       {open && tab === 'review' && <ReviewTab />}
-      {open && tab === 'browser' && <BrowserTab />}
       {/* Kept mounted once used: it may hold unsaved edits. */}
       <div className="dock-keep" style={{ display: tab === 'files' ? undefined : 'none' }}><FilesTab cwd={cwd} /></div>
     </aside>

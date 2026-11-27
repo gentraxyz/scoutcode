@@ -9,26 +9,25 @@ import { ui, useCore, useUi, useView, type SettingsTab } from './store';
 import { BACKGROUNDS, ELEMENTS, MATERIALS, getMaterialError, setTheme, useTheme } from './theme';
 import { LOGOS, ScoutLogo, logoSvg } from './logo';
 import { ClaudeSetup } from './ClaudeSetup';
+import { AgentSettings } from './agent/Agent';
 import { LocalSetup, localStatus } from './Local';
 import { HIDEABLE, showAllUi, showUi, useHidden } from './Hideable';
 import { isFull, setUiLanguage, useUiLanguage, useTranslation, SUPPORTED_LANGUAGES } from './i18n';
 import { CodeBlock, CopyButton, Icon, Link, SectionLabel, Select, Spinner, Toggle } from './widgets';
-import { DreamEntry, DreamingNow } from './Dreams';
 import { ErrorBoundary } from './ErrorBoundary';
 
 const TABS: { id: SettingsTab; title: string; icon: string; group: string; keywords: string }[] = [
   { id: 'appearance', title: 'Appearance', icon: 'palette', group: 'General', keywords: 'appearance theme themes colors colours background dark black midnight forest mocha plum buttons look style language interface translation logo material glass mica hidden games game 2048 chess flappy bird scout dash runner play fun waiting music mp3 soundcloud audio song player' },
-  { id: 'preferences', title: 'Preferences', icon: 'sliders', group: 'General', keywords: 'preferences notifications alerts taskbar flash toast windows attention discord rich presence profile status share activity explore explorer sub-agent subagent search research free qwen save plan tokens limits cheaper scoutmote remote control browser web phone away online computer pc privacy analytics telemetry usage data tracking posthog statistics opt out close closing quit exit confirm ask' },
-  { id: 'instructions', title: 'Instructions', icon: 'chat', group: 'General', keywords: 'instructions project global rules preferences language russian english responses' },
-  { id: 'memory', title: 'Memory', icon: 'memory', group: 'General', keywords: 'memory remember project user profile facts context dreaming dream dreams idle away sleep tidy learn recent chats free model log undo' },
+  { id: 'preferences', title: 'Preferences', icon: 'sliders', group: 'General', keywords: 'preferences notifications alerts taskbar flash toast windows attention discord rich presence profile status share activity explore explorer sub-agent subagent search research free qwen save plan tokens limits cheaper scoutmote remote control browser web phone away online computer pc privacy analytics telemetry usage data tracking posthog statistics opt out close closing quit exit confirm ask language reply replies responses russian english' },
+  { id: 'agents', title: 'Agents', icon: 'chat', group: 'General', keywords: 'agents agent local access commands pc computer auto accept approve ask browser openrouter key memory epsilon' },
+  { id: 'memory', title: 'Memory', icon: 'memory', group: 'General', keywords: 'memory remember project user profile facts context' },
   { id: 'providers', title: 'Providers', icon: 'layers', group: 'Models', keywords: 'providers link unlink connect sign in sign out key claude code codex chatgpt anthropic openai copilot github openrouter nvidia opencode grok xai hermes nous devin kiro antigravity google gemini mistral vibe devstral kilo models local llama llama.cpp gguf gpu offload offline ollama tools small model' },
   { id: 'router', title: 'Custom agents', icon: 'route', group: 'Models', keywords: 'custom agents agent router routing route fallback fallbacks backup fails failed error retry jev rate limit 429 provider models intelligence tier' },
   { id: 'images', title: 'Image generation', icon: 'sparkle', group: 'Models', keywords: 'image images generation generate generator pictures art icons illustrations openrouter openai key byok gpt image gemini' },
-  { id: 'browser', title: 'Browser', icon: 'globe', group: 'Tools', keywords: 'browser built-in web browse website page click forms localhost test agent computer use webview automation' },
   { id: 'skills', title: 'Skills', icon: 'file', group: 'Tools', keywords: 'skills upload directory skills.sh install instructions @ mention' },
   { id: 'mcp', title: 'MCP servers', icon: 'terminal', group: 'Tools', keywords: 'mcp servers custom tools connect add command url http stdio integrations' },
   { id: 'chatbots', title: 'Chatbots', icon: 'chat', group: 'Tools', keywords: 'chatbots mcp connector link claude chatgpt cursor tools server' },
-  { id: 'account', title: 'Account', icon: 'user', group: 'Scout', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit' },
+  { id: 'account', title: 'Account', icon: 'user', group: 'Scout', keywords: 'account scoutcode sign in sign out login key username billing rewards daily streak claim referral referrals invite code bonus credit season scout points battle pass tiers scoutpass' },
   { id: 'updates', title: 'Updates', icon: 'download', group: 'Scout', keywords: 'updates version upgrade download restart release notes about' },
   { id: 'logs', title: 'Logs', icon: 'files', group: 'Scout', keywords: 'logs log crash crashed crashes error errors bug report debug diagnostics support copy save session' },
 ];
@@ -55,40 +54,25 @@ function Message({ m }: { m: [boolean, string] | null }) {
   return m ? <div className={`small ${m[0] ? 'muted' : 'red'}`}>{m[1]}</div> : null;
 }
 
-// ---------- instructions and memory ----------
+// ---------- reply language and memory ----------
 
 const SAVED = 'Saved. Applies from your next message, including in existing chats.';
 
-function Instructions() {
-  const { cwd } = useView('chat');
+/** The language Scout replies in, apart from the interface's. Saved as soon as it's picked. */
+function ReplyLanguage() {
   const languages = useCore((s) => s.statics.languages);
-  const [saved, setSaved] = useState({ global: '', project: '', language: 'auto' });
-  const [draft, setDraft] = useState(saved);
+  const [language, setLanguage] = useState<string | null>(null);
   const [message, setMessage] = useState<[boolean, string] | null>(null);
-  const [broken, setBroken] = useState(false);
-  const load = () => invoke<typeof saved>('instructions_load', { cwd }).then((p) => { setSaved(p); setDraft(p); setBroken(false); setMessage(null); }, (e) => { setBroken(true); setMessage([false, String(e)]); });
-  useEffect(() => { load(); }, [cwd]); // eslint-disable-line
-  const dirty = !broken && JSON.stringify(saved) !== JSON.stringify(draft);
+  useEffect(() => { invoke<string>('language_load').then(setLanguage, (e) => setMessage([false, String(e)])); }, []);
+  const pick = (next: string) => invoke('language_save', { language: next }).then(() => { setLanguage(next); setMessage([true, SAVED]); }, (e) => setMessage([false, String(e)]));
   return (
     <>
-      <Heading title="Instructions" sub="Save preferences across chats. Scout includes these rules in its context again after a long conversation is summarized." />
-      <SettingRow title="AI replies in" sub="Auto follows the conversation. Choose a language to keep replies and progress updates in that language, separately from the interface language.">
-        <Select className="input select" value={draft.language} onChange={(e) => setDraft({ ...draft, language: e.target.value })}>
+      <Part icon="chat" title="Language" sub="The language Scout replies in, separately from the interface language." />
+      <SettingRow title="AI replies in" sub="Auto follows the conversation. Choose a language to keep replies and progress updates in that language.">
+        <Select className="input select" value={language ?? 'auto'} onChange={(e) => pick(e.target.value)}>
           {languages.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
         </Select>
       </SettingRow>
-      <SectionLabel>All projects</SectionLabel>
-      <p className="small dim">General preferences for every desktop chat on this computer.</p>
-      <textarea className="input" rows={5} placeholder="For example: Keep explanations concise and explain changes before running commands." value={draft.global} onChange={(e) => setDraft({ ...draft, global: e.target.value })} />
-      <SectionLabel>This project</SectionLabel>
-      <p className="tiny dim">{cwd}</p>
-      <p className="small dim">Applies to every chat in this folder. Specific project rules override general preferences. Existing SCOUT.md and AGENTS.md files also apply.</p>
-      <textarea className="input" rows={6} placeholder="For example: Use pnpm, keep the existing component style, and run pnpm test after changes." value={draft.project} onChange={(e) => setDraft({ ...draft, project: e.target.value })} />
-      <div className="row save-row">
-        <button type="button" className="button primary" disabled={!dirty} onClick={() => invoke('instructions_save', { cwd, ...draft }).then(() => { setSaved(draft); setMessage([true, SAVED]); }, (e) => setMessage([false, String(e)]))}>Save instructions</button>
-        <button type="button" className="button" onClick={load}>Reload saved</button>
-        {dirty && <span className="small dim">Unsaved changes</span>}
-      </div>
       <Message m={message} />
     </>
   );
@@ -129,32 +113,6 @@ function Memory() {
         {dirty && <span className="small dim">Unsaved changes</span>}
       </div>
       <Message m={message} />
-      <Dreaming />
-    </>
-  );
-}
-
-function Dreaming() {
-  const cfg = useView('cfg');
-  const d = useView('dreaming');
-  const on = d.on === true;
-  const next = d.last ? new Date(d.last + 24 * 60 * 60_000) : null;
-  return (
-    <>
-      <Part title="Dreaming" sub="While you're away, Scout reads your last two days of chats and tidies your memory: it keeps what will still be true in a month, like your stack, style, commands and decisions, and never what you're in the middle of." />
-      <SettingRow title="Dream while I'm away" sub="Starts after 20 minutes without using Scout, at most once a day, while no chat is working. Uses ScoutCode's free Dreaming model, and each request counts toward your free requests.">
-        <Toggle label="Dream while I'm away" on={on} onChange={(v) => act('setDreaming', { on: v })} />
-      </SettingRow>
-      {!cfg.hasKey && !cfg.guest && <div className="small red">Dreaming runs on ScoutCode: sign in, or use its free models without an account, in Settings &gt; Account.</div>}
-      {!d.model && <div className="small dim">ScoutCode hasn't set a Dreaming model yet, so Scout won't dream for now.</div>}
-      <SettingRow title="Dream now" sub={d.last ? `Last dream ${new Date(d.last).toLocaleString()}.${on && next && next.getTime() > Date.now() ? ` Next one after ${next.toLocaleString()}, once you're away.` : ''}` : 'No dreams yet.'}>
-        <button type="button" className="button" disabled={d.running || !d.model} onClick={() => act('dreamNow')}>{d.running ? 'Dreaming…' : 'Dream now'}</button>
-      </SettingRow>
-      <DreamingNow />
-      {d.message && <Message m={[d.message.ok, d.message.text]} />}
-      <SectionLabel>Dream Log</SectionLabel>
-      {d.log.length === 0 && <p className="small dim">What each dream changed shows up here, with an Undo.</p>}
-      <div className="stack">{d.log.map((x) => <DreamEntry key={x.id} d={x} />)}</div>
     </>
   );
 }
@@ -168,6 +126,7 @@ function Notifications() {
       <Part title="Notifications" sub="When Scout finishes, or needs an answer, while its window is in the background." />
       <SettingRow title="Flash the taskbar button" sub="Scout's button blinks until you switch back to it."><Toggle label="Flash the taskbar button" on={flash} onChange={(on) => act('setNotify', { flash: on, toast })} /></SettingRow>
       <SettingRow title="Windows notification" sub="A notification in the corner of the screen says what Scout needs."><Toggle label="Windows notification" on={toast} onChange={(on) => act('setNotify', { flash, toast: on })} /></SettingRow>
+      <SettingRow title="Messages from agents" sub="A notification when one of your agents sends you a message. The taskbar button shows how many are unread."><Toggle label="Messages from agents" on={cfg.notifyAgents ?? true} onChange={(on) => act('setAgentNotify', { on })} /></SettingRow>
       <SettingRow title="Try it" sub="Shows a notification now, whatever is chosen above."><button type="button" className="button" onClick={() => act('testNotification')}>Send a test</button></SettingRow>
     </>
   );
@@ -234,7 +193,7 @@ function Appearance() {
         <Select
           className="input select"
           value={uiLanguage}
-          // Only the interface: the language Scout replies in is its own setting, under Instructions.
+          // Only the interface: the language Scout replies in is its own setting, under Preferences.
           onChange={(e) => setUiLanguage(e.target.value)}
         >
           <optgroup label={t('settings_optgroup_full')}>
@@ -424,22 +383,6 @@ function Images() {
   );
 }
 
-/** The built-in browser in the side panel, and whether Scout's agent may use it. */
-function BrowserSettings() {
-  const { browserAgent } = useView('cfg');
-  return (
-    <>
-      <Heading title="Browser" sub="Scout has a web browser of its own, in the side panel (the globe in the top bar). You can browse in it yourself, and sign-ins stay between restarts." />
-      <SettingRow title="Let Scout use the browser" sub="Scout can then open sites, click, fill in forms and read pages, such as to test the web app you're building. You watch it in the panel and can take over at any time. Before it submits, buys, sends or deletes something, it asks you, unless the chat has full access. Applies from your next message.">
-        <Toggle label="Let Scout use the browser" on={browserAgent} onChange={(on) => act('setBrowserAgent', { on })} />
-      </SettingRow>
-      <SettingRow title="Open the browser" sub="Shows it in the side panel.">
-        <button type="button" className="button" onClick={() => ui.set({ settings: null, page: 'chat', dockOpen: true, dockTab: 'browser' })}>Open</button>
-      </SettingRow>
-    </>
-  );
-}
-
 /** Games and music: extras for while Scout works, set with how the window looks. */
 function Extras() {
   const cfg = useView('cfg');
@@ -472,6 +415,15 @@ function Extras() {
       <SettingRow title="Music" sub="Listen to your own MP3s or SoundCloud while Scout works. Open it with the music button at the top of the window. Music keeps playing when you close the card.">
         <Toggle label="Music" on={music.on} onChange={(on) => setMusic({ on })} />
       </SettingRow>
+    </>
+  );
+}
+
+function AgentsPage() {
+  return (
+    <>
+      <Heading title="Agents" sub="How your agents run commands and reach this PC, your OpenRouter key, and what they remember about you." />
+      <AgentSettings />
     </>
   );
 }
@@ -614,7 +566,9 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
   const ref = info.referrals;
   const referred = Array.isArray(ref?.referred) ? ref.referred : [];
   const dl = info.discordLink;
-  if (!dr && !ref && !dl) return null;
+  const season = info.season;
+  const ver = info.verification;
+  if (!dr && !ref && !dl && !season && !ver) return null;
   const site = baseUrl.replace(/\/v1\/?$/, '');
   const redeem = () => {
     const trimmed = code.trim();
@@ -627,6 +581,22 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
   };
   return (
     <>
+      {ver && !ver.verified && (
+        <SettingRow
+          title={`Verify your account · Get your full credit`}
+          sub={`Until you verify, you get ${Math.round(ver.unverifiedShare * 100)}% of the weekly desktop credit and free-model requests. Link a Discord, Google or GitHub account (Discord and GitHub at least ${ver.minAgeDays} days old), or run /link in our Discord server.`}
+        >
+          <button type="button" className="button primary" onClick={() => openExternal(`${site}/account#verify`)}>Verify in browser</button>
+        </SettingRow>
+      )}
+      {season && (
+        <SettingRow
+          title={season.season ? `Scout Season · ${season.season.name} · Tier ${season.season.tier}` : 'Scout Season'}
+          sub={`${num(season.points).toLocaleString()} points this season, ${num(season.total).toLocaleString()} in total. Earn Scout Points with daily rewards, prompts, referrals and more to unlock the Season's rewards.${season.claimable ? ` ${season.claimable} ready to claim.` : ''}`}
+        >
+          <button type="button" className={`button ${season.claimable ? 'primary' : ''}`} onClick={() => ui.set({ seasonOpen: true, settings: null, usageOpen: false })}>Open Season</button>
+        </SettingRow>
+      )}
       {dr && (
         <SettingRow
           title={dr.streak > 0 ? `Daily login reward · ${dr.streak}-day streak` : 'Daily login reward'}
@@ -715,7 +685,7 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
             </SettingRow>
           ) : (
             <SettingRow
-              title="Link Discord account · Earn $0.25"
+              title="Link Discord account · Verify and earn $0.25"
               sub={
                 dl.code ? (
                   <>
@@ -734,7 +704,7 @@ function RewardsSection({ info, busy }: { info: UsageInfo; busy: boolean }) {
                   </>
                 ) : (
                   <>
-                    Link your Discord account once to earn {usd(dl.reward ?? 0.25)} added to your permanent balance. Generate a code and run /link on{' '}
+                    Link your Discord account once to verify your account and earn {usd(dl.reward ?? 0.25)} added to your permanent balance. The Discord account has to be at least {ver?.minAgeDays ?? 30} days old. Generate a code and run /link on{' '}
                     <a
                       className="link"
                       href={DISCORD_INVITE_URL}
@@ -882,9 +852,43 @@ function Usage() {
   );
 }
 
-/** Usage as a page of its own, off the side rail. */
-export function UsagePage() {
-  return <div className="usage-page"><div className="settings-page"><Usage /></div></div>;
+/** Usage: a popup in the middle of the window, like Settings. Closed with its X, Esc, or a click outside it. */
+export function UsagePopup() {
+  const open = useUi((u) => u.usageOpen);
+  const close = () => ui.set({ usageOpen: false });
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => {
+      // A dialog opened from here closes first (this popup's own backdrop doesn't count).
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.modal-back:not(.usage-backdrop)')) return;
+      e.preventDefault();
+      close();
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [open]); // eslint-disable-line
+  if (!open) return null;
+  return (
+    <div className="modal-back usage-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+      <div className="modal settings settings-modal usage-modal" role="dialog" aria-modal aria-label="Usage">
+        <header className="settings-bar">
+          <Icon name="chart" size={15} />
+          <b className="chat-title">Usage</b>
+          <span className="grow" />
+          <span className="tiny dim usage-exit-hint">Press <kbd>Esc</kbd> or click outside to close</span>
+          <button type="button" className="settings-close" onClick={close} title="Close (Esc)" aria-label="Close usage"><Icon name="close" size={14} /></button>
+        </header>
+        <div className="settings-scroll">
+          <div className="settings-page">
+            <ErrorBoundary what="The Usage page"><Usage /></ErrorBoundary>
+            <div className="usage-exit-foot">
+              <button type="button" className="button" onClick={close}>Done</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ---------- account ----------
@@ -1556,7 +1560,8 @@ function Closing() {
 function Preferences() {
   return (
     <>
-      <Heading title="Preferences" sub="How Scout lets you know, what it shares, and the helpers that run beside it." />
+      <Heading title="Preferences" sub="The language Scout replies in, how it lets you know, what it shares, and the helpers that run beside it." />
+      <ReplyLanguage />
       <Notifications />
       <Closing />
       <Discord />
@@ -1569,16 +1574,16 @@ function Preferences() {
 
 const GROUPS = ['General', 'Models', 'Tools', 'Scout'];
 
-/** Settings: the whole window, with its sections grouped down the left and the open one on the right. */
-export function Settings({ windowButtons }: { windowButtons?: ReactNode }) {
+/** Settings: a popup in the middle of the window, with its sections grouped down the left and the open one on the right. */
+export function Settings() {
   const tab = useUi((u) => u.settings);
   const [search, setSearch] = useState('');
   const close = () => { ui.set({ settings: null }); setSearch(''); };
   useEffect(() => {
     if (!tab) return;
     const key = (e: KeyboardEvent) => {
-      // A dialog opened from here closes first.
-      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.modal-back')) return;
+      // A dialog opened from here closes first (this popup's own backdrop doesn't count).
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.modal-back:not(.settings-backdrop)')) return;
       e.preventDefault();
       close();
     };
@@ -1591,12 +1596,12 @@ export function Settings({ windowButtons }: { windowButtons?: ReactNode }) {
   const shown = TABS.filter((t) => q.every((w) => `${t.title.toLowerCase()} ${t.keywords}`.includes(w)));
   const current = TABS.find((t) => t.id === tab);
   return (
-    <div className="settings settings-screen" role="dialog" aria-modal aria-label="Settings">
-      <header className="settings-bar" data-tauri-drag-region>
-        <button type="button" className="settings-back" onClick={close} title="Back to Scout (Esc)"><Icon name="back" size={15} />Back</button>
-        <b className="chat-title" data-tauri-drag-region>Settings{current ? ` · ${current.title}` : ''}</b>
-        <span className="grow" data-tauri-drag-region />
-        {windowButtons}
+    <div className="modal-back settings-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+    <div className="modal settings settings-modal" role="dialog" aria-modal aria-label="Settings">
+      <header className="settings-bar">
+        <b className="chat-title">Settings{current ? ` · ${current.title}` : ''}</b>
+        <span className="grow" />
+        <button type="button" className="settings-close" onClick={close} title="Close (Esc)" aria-label="Close settings"><Icon name="close" size={14} /></button>
       </header>
       <div className="settings-body">
         <nav className="settings-nav">
@@ -1622,12 +1627,11 @@ export function Settings({ windowButtons }: { windowButtons?: ReactNode }) {
             <ErrorBoundary what={current ? `The ${current.title} page` : 'This page'}>
             {tab === 'appearance' && <Appearance />}
             {tab === 'preferences' && <Preferences />}
-            {tab === 'instructions' && <Instructions />}
+            {tab === 'agents' && <AgentsPage />}
             {tab === 'memory' && <Memory />}
             {tab === 'providers' && <Providers />}
             {tab === 'router' && <AgentRouterPage />}
             {tab === 'images' && <Images />}
-            {tab === 'browser' && <BrowserSettings />}
             {tab === 'skills' && <Skills />}
             {tab === 'mcp' && <Mcp />}
             {tab === 'chatbots' && <Chatbots />}
@@ -1638,6 +1642,7 @@ export function Settings({ windowButtons }: { windowButtons?: ReactNode }) {
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }

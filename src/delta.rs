@@ -100,10 +100,11 @@ pub fn site_request(cfg: &Config, method: &str, path: &str, body: Option<Value>,
     }
     .map_err(|e| format!("Could not reach ScoutCode: {e}"))?;
     let status = res.status().as_u16();
+    let human = crate::api::human_check(&res);
     let data: Value = res.into_body().read_json().unwrap_or(Value::Null);
     if status >= 400 {
         let msg = data["error"].as_str().map(String::from).unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(msg);
+        return Err(msg + human.as_deref().unwrap_or(""));
     }
     Ok(data)
 }

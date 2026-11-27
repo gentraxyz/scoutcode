@@ -90,8 +90,28 @@ export type UsageInfo = {
   cliResetsAt: string | null; cliWindow: (Plan & { resetsAt: string | null }) | null;
   bankedMoney: { amount: number; expiresAt: string }[]; bankedResets: { expiresAt: string }[];
   dailyReward?: DailyReward | null; referrals?: Referrals | null; discordLink?: DiscordLink | null;
+  /** Scout Points and the Scout Season. Missing from older servers. */
+  season?: SeasonInfo | null;
+  /** Unverified accounts get `unverifiedShare` of the desktop credit and free requests until they link Discord, Google or GitHub. Missing from older servers. */
+  verification?: { verified: boolean; share: number; unverifiedShare: number; minAgeDays: number } | null;
+  /** Every season, for admins. */
+  seasons?: AdminSeasons | null;
   users: ManagedUser[];
 };
+export type PointSource = 'daily' | 'firstPrompt' | 'dailyPrompt' | 'referral' | 'referred' | 'discord';
+export type SeasonReward = { kind: 'balance'; amount: number } | { kind: 'scoutpass'; days: number };
+export type SeasonTier = { points: number; free: SeasonReward | null; pass: SeasonReward | null };
+export type SeasonTierState = SeasonTier & { unlocked: boolean; claimed: boolean; claimedPass: boolean };
+/** Where the account stands on Scout Points and the season running now. */
+export type SeasonInfo = {
+  points: number; total: number; scoutPass: boolean; scoutPassForever: boolean; scoutPassUntil: string | null; claimable: number;
+  season: { id: string; name: string; startsAt: string; endsAt: string; tier: number; nextPoints: number | null; tiers: SeasonTierState[] } | null;
+  next: { name: string; startsAt: string } | null;
+  earn: { id: PointSource; label: string; points: number }[];
+  recent: { at: string; source: string; label: string; points: number; note?: string }[];
+};
+export type AdminSeason = { id: string; name: string; startsAt: string; endsAt: string; tiers: SeasonTier[]; points: Record<PointSource, number>; players: number };
+export type AdminSeasons = { sources: { id: PointSource; label: string; points: number }[]; currentId: string | null; list: AdminSeason[] };
 /** One of a provider's limits, as it last said: what's left of how much, and when it resets (ms since 1970). */
 export type QuotaMeter = { label: string; left: number | null; limit: number | null; unit: 'requests' | 'tokens' | 'credits' | 'USD' | '%'; resetsAt: number | null; note: string | null };
 /** What a provider (or one of its keys) last said about its limits, heard at `at` (ms since 1970). */
@@ -165,15 +185,17 @@ export function gb(bytes: number): string {
 /** The Scout Enterprise team the account is in: the providers it runs through the server, and the ones on this PC it allows. */
 export type Team = { name: string; role: string; providers: string[]; acp: string[] };
 
+/** One message in the Code agent's chat. "started" is a Code Agent it started: `chat` is its id. */
+export type CodeAgentMsg = { id: number; role: 'user' | 'agent' | 'started' | 'notice' | 'error'; text: string; chat?: string; at: number };
+
 export type View = {
   cfg: {
     loginNeeded: boolean; team: Team | null; hasKey: boolean; guest: boolean; browserSignIn: boolean; username: string | null; baseUrl: string; openrouterKeys: { name: string; masked: string }[];
     nvidiaKey: string | null; kiloKey: string | null; kilo: boolean; copilot: boolean; copilotUser: string | null; devin: boolean; kiro: boolean; antigravity: boolean; vibe: boolean; codex: boolean; claude: boolean; opencode: boolean; opencodeSignedIn: boolean; grokSignedIn: boolean; grokKey: string | null; hermesSignedIn: boolean; hermesKey: string | null;
-    additional: { id: string; masked: string | null }[]; customProviders: CustomProvider[]; agentAccounts: Record<AccountProvider, AgentAccounts>; notifyFlash: boolean | null; notifyToast: boolean | null; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; confirmClose: boolean; autoCompactTokens: number; agentRouters: AgentRouter[]; experimentalImages: boolean; browserAgent: boolean; image: { provider: string; model: string | null; key: string | null }; explore: Explore; games: Games; music: Music; local: LocalSettings;
+    additional: { id: string; masked: string | null }[]; customProviders: CustomProvider[]; agentAccounts: Record<AccountProvider, AgentAccounts>; notifyFlash: boolean | null; notifyToast: boolean | null; notifyAgents: boolean; discordPresence: boolean; discordProject: boolean; autoUpdate: boolean; usageAnalytics: boolean; confirmClose: boolean; autoCompactTokens: number; agentRouters: AgentRouter[]; experimentalImages: boolean; image: { provider: string; model: string | null; key: string | null }; explore: Explore; games: Games; music: Music; local: LocalSettings;
   };
   local: LocalView;
   review: ReviewView;
-  dreaming: import('./Dreams').DreamingView;
   mode: string;
   model: { id: string; provider: string; key: string; short: string };
   effort: string;
@@ -199,6 +221,8 @@ export type View = {
   sessions: { id: string; cwd: string; title: string; ago: string; updated?: number; running: boolean; waiting: boolean; unread: boolean; errored: boolean; done?: boolean }[];
   projects: { name: string; path: string }[];
   chat: { id: string | null; cwd: string; project: string; title: string; epoch: number; git?: boolean; inWorktree?: boolean; worktree?: boolean };
+  /** The Code agent at the top of the Agents list (gui/src/code_agent.rs): its chat, kept on this PC. */
+  codeAgent: { messages: CodeAgentMsg[]; busy: boolean; status: string; started: string[] };
   filesEpoch: number;
   focusEpoch: number;
   login: {

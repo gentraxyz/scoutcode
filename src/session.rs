@@ -5,6 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -132,30 +133,64 @@ pub fn load_checkpoints<T: serde::de::DeserializeOwned>(id: &str) -> Option<Vec<
     serde_json::from_slice(&std::fs::read(checkpoints_file(id)).ok()?).ok()
 }
 
-/// Ids of the saved chats whose title or text contains `q`, ignoring case. Reads every file, so run it off the UI
-/// thread.
+/// Ids of the saved chats whose title or text contains `q`, ignoring case. Only the files that changed since the last
+/// search are read (the rest are remembered), but run it off the UI thread.
 pub fn search_sessions(q: &str) -> Vec<String> {
     let q = q.to_lowercase();
+    let mut cache = SEARCH.lock().unwrap();
+    let mut seen = HashMap::with_capacity(cache.len());
     let mut out = vec![];
     for e in std::fs::read_dir(dir()).into_iter().flatten().flatten() {
         let p = e.path();
         if p.extension().is_none_or(|x| x != "json") {
             continue;
         }
-        let Ok(s) = std::fs::read(&p).map(|b| serde_json::from_slice::<Session>(&b)) else { continue };
-        let Ok(s) = s else { continue };
-        let hit = s.title.to_lowercase().contains(&q)
-            || s.messages.iter().any(|m| match m {
-                Message::User { content } => crate::attach::split(&content.text()).0.to_lowercase().contains(&q),
-                Message::Assistant { content: Some(c), .. } => c.to_lowercase().contains(&q),
-                _ => false,
-            });
-        if hit {
-            out.push(s.id);
+        let Ok(m) = e.metadata() else { continue };
+        let st = stamp(&m);
+        let name = e.file_name().to_string_lossy().into_owned();
+        let entry = match cache.remove(&name) {
+            Some(c) if c.0 == st => c,
+            _ => {
+                let Ok(s) = std::fs::read(&p).map(|b| serde_json::from_slice::<Session>(&b)) else { continue };
+                let Ok(s) = s else { continue };
+                (st, s.id.clone(), searchable(&s))
+            }
+        };
+        if entry.2.contains(&q) {
+            out.push(entry.1.clone());
         }
+        seen.insert(name, entry);
     }
+    *cache = seen;
     out
 }
+
+/// What a search looks through in a chat, lowercased: its title, what the user wrote and what Scout answered.
+fn searchable(s: &Session) -> String {
+    let mut text = s.title.to_lowercase();
+    for m in &s.messages {
+        let part = match m {
+            Message::User { content } => crate::attach::split(&content.text()).0.to_lowercase(),
+            Message::Assistant { content: Some(c), .. } => c.to_lowercase(),
+            _ => continue,
+        };
+        // A separator no query has, so a match can't span two messages.
+        text.push('\0');
+        text.push_str(&part);
+    }
+    text
+}
+
+/// A chat file's size and last write (in nanoseconds), to tell whether what was read from it before still holds.
+type Stamp = (u64, u64);
+
+fn stamp(m: &std::fs::Metadata) -> Stamp {
+    let t = m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64);
+    (m.len(), t)
+}
+
+/// The searchable text of each chat file, by file name, with the file's stamp and the chat's id.
+static SEARCH: std::sync::LazyLock<Mutex<HashMap<String, (Stamp, String, String)>>> = std::sync::LazyLock::new(Default::default);
 
 #[derive(Clone, Debug)]
 pub struct SessionInfo {
@@ -206,21 +241,69 @@ pub fn save_generated_title(id: &str, title: &str) {
     }
 }
 
+/// What the sidebar needs from a chat file, as of the file's size and last write.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+struct Indexed {
+    len: u64,
+    modified: u64,
+    id: String,
+    cwd: String,
+    title: String,
+    updated: u64,
+    errored: bool,
+}
+
+/// The heads of the chat files, by file name. Kept in memory and in sessions-index.json, so listing the chats (at start,
+/// after every turn, on every chat switch) reads only the files that changed instead of every chat in full.
+static INDEX: Mutex<Option<HashMap<String, Indexed>>> = Mutex::new(None);
+
 /// Every saved session in every folder, newest first.
 pub fn list_sessions() -> Vec<SessionInfo> {
-    let mut out = vec![];
     let titles = generated_titles();
-    for e in std::fs::read_dir(dir()).into_iter().flatten().flatten() {
+    let mut out = heads(&dir(), &home().join("sessions-index.json"), &mut INDEX.lock().unwrap());
+    for s in &mut out {
+        if let Some(t) = titles.get(&s.id) {
+            s.title = t.clone();
+        }
+    }
+    out
+}
+
+fn heads(dir: &Path, index_file: &Path, cache: &mut Option<HashMap<String, Indexed>>) -> Vec<SessionInfo> {
+    let old = cache.take().unwrap_or_else(|| std::fs::read(index_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default());
+    let mut new = HashMap::with_capacity(old.len());
+    // A file written in the last few seconds is read again even when its stamp matches: on a file system with a coarse
+    // clock (FAT's two seconds), a quick second save of the same size would look unchanged.
+    let recent = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64).saturating_sub(3_000_000_000);
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let p = e.path();
         if p.extension().is_none_or(|x| x != "json") {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&p) else { continue };
-        let Ok(h) = serde_json::from_slice::<Head>(&bytes) else { continue };
-        let title = titles.get(&h.id).cloned().unwrap_or(h.title);
-        out.push(SessionInfo { id: h.id, cwd: h.cwd, title, updated: h.updated, errored: h.errored });
+        let Ok(m) = e.metadata() else { continue };
+        let (len, modified) = stamp(&m);
+        let name = e.file_name().to_string_lossy().into_owned();
+        let h = match old.get(&name) {
+            Some(h) if h.len == len && h.modified == modified && modified < recent => h.clone(),
+            _ => {
+                let Ok(bytes) = std::fs::read(&p) else { continue };
+                let Ok(h) = serde_json::from_slice::<Head>(&bytes) else { continue };
+                Indexed { len, modified, id: h.id, cwd: h.cwd, title: h.title, updated: h.updated, errored: h.errored }
+            }
+        };
+        new.insert(name, h);
     }
-    out.sort_by(|a, b| b.updated.cmp(&a.updated));
+    if new != old {
+        if let Ok(text) = serde_json::to_vec(&new) {
+            let tmp = index_file.with_extension("json.tmp");
+            if std::fs::write(&tmp, text).is_ok() {
+                let _ = std::fs::rename(&tmp, index_file);
+            }
+        }
+    }
+    let mut out: Vec<SessionInfo> = new.values().map(|h| SessionInfo { id: h.id.clone(), cwd: h.cwd.clone(), title: h.title.clone(), updated: h.updated, errored: h.errored }).collect();
+    out.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| b.id.cmp(&a.id)));
+    *cache = Some(new);
     out
 }
 
@@ -514,6 +597,39 @@ pub fn import_external_from(claude_root: &Path, codex_root: &Path, sessions_dir:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_chats_from_the_index_and_follows_changes() {
+        let base = std::env::temp_dir().join(format!("scout-index-{}", now_ms()));
+        let sessions = base.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let index = base.join("sessions-index.json");
+        let write = |id: &str, title: &str, updated: u64| {
+            let body = serde_json::json!({"id": id, "cwd": "C:\\dev", "created": 1, "updated": updated, "title": title, "model": "m", "messages": [], "totals": Totals::default()});
+            std::fs::write(sessions.join(format!("{id}.json")), body.to_string()).unwrap();
+        };
+        write("a", "first", 10);
+        write("b", "second", 20);
+        let mut cache = None;
+        let ids = |v: Vec<SessionInfo>| v.into_iter().map(|s| (s.id, s.title)).collect::<Vec<_>>();
+        assert_eq!(ids(heads(&sessions, &index, &mut cache)), [("b".into(), "second".into()), ("a".into(), "first".into())]);
+        assert!(index.exists());
+
+        // A file that changed is read again; a removed one goes; what's on disk is read when nothing is in memory.
+        write("a", "first, renamed", 30);
+        std::fs::remove_file(sessions.join("b.json")).unwrap();
+        assert_eq!(ids(heads(&sessions, &index, &mut cache)), [("a".into(), "first, renamed".into())]);
+        let mut fresh = None;
+        assert_eq!(ids(heads(&sessions, &index, &mut fresh)), [("a".into(), "first, renamed".into())]);
+
+        // An entry whose stamp doesn't match the file is read again.
+        let mut stale = cache.clone();
+        let e = stale.as_mut().unwrap().get_mut("a.json").unwrap();
+        e.modified = 1;
+        e.title = "from the index".into();
+        assert_eq!(ids(heads(&sessions, &index, &mut stale)), [("a".into(), "first, renamed".into())]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn detects_and_imports_claude_and_codex_chats() {

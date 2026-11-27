@@ -125,8 +125,6 @@ pub enum Ev {
     Team(Option<crate::config::Team>),
     /// The account's limits for Settings > Usage, and what to say when it follows a change.
     Usage(Result<crate::api::UsageInfo, String>, Option<String>),
-    /// A dream ended: how many memory changes it made, or why it failed.
-    Dreamed(Result<usize, String>),
     /// The account's limits, from the 30-second refresh.
     UsagePolled(Result<crate::api::UsageInfo, String>),
     LoginUrl(String),
@@ -136,6 +134,8 @@ pub enum Ev {
     Link(crate::mcp::LinkEvent),
     /// From ScoutMote, which lets the website drive this Scout.
     Remote(crate::remote::RemoteEvent),
+    /// From the Code agent's thread (code_agent.rs).
+    CodeAgent(crate::code_agent::CodeEv),
     /// An event from the worker of one chat, which may not be the one on screen.
     ForChat(u64, Box<Ev>),
 }
@@ -446,7 +446,7 @@ pub struct Agent {
     unsent: Option<Content>,
     last_request_at: Option<Instant>,
     sys: Option<(String, EditTool, String, Option<String>, Message)>,
-    preferences: crate::instructions::Preferences,
+    preferences: crate::language::Preferences,
     /// The tool list for the edit tool it was built for.
     specs: (EditTool, Vec<Value>),
     read_only_specs: Vec<Value>,
@@ -629,7 +629,7 @@ impl Agent {
 
     /// Reload at turn boundaries; the prompt stays byte-identical within a turn until compaction or a model change.
     fn reload_instructions(&mut self) -> Result<(), ApiError> {
-        self.preferences = crate::instructions::Preferences::load().map_err(|e| ApiError { message: format!("{e} Open Settings > Instructions to review it."), status: 0, retry_after: None, aborted: false })?;
+        self.preferences = crate::language::Preferences::load().map_err(|e| ApiError { message: format!("{e} Choose it again in Settings > Preferences."), status: 0, retry_after: None, aborted: false })?;
         self.sys = None;
         Ok(())
     }
@@ -882,16 +882,7 @@ impl Agent {
         if self.cfg.experimental_images {
             all.push(tools::image_spec());
         }
-        // A message from the Browse page turns the browser on for the chat, whatever Settings > Browser says.
-        let browsed = crate::browser::browsed(&self.session.messages);
-        if self.cfg.browser_agent || browsed {
-            all.push(crate::browser::activation_spec());
-        }
         all.extend(crate::mcp_client::hub().specs());
-        // Last, so turning the browser on only adds to the end of the list, and only once per chat.
-        if browsed || self.cfg.browser_agent && crate::browser::active(&self.session.messages) {
-            all.extend(crate::browser::specs());
-        }
         all
     }
 
@@ -970,32 +961,6 @@ impl Agent {
             }
         }
         answer
-    }
-
-    /// A browser action that would submit, buy, send or delete something: the user's OK first, outside full access.
-    /// None when it may go ahead, or the result that says it was denied.
-    fn ask_browser(&mut self, name: &str, what: String, h: &Hooks) -> Option<ToolResult> {
-        let mode = self.shared.mode();
-        if mode == "yolo" {
-            return None;
-        }
-        let fb = if mode == "plan" {
-            self.read_only_note.to_string()
-        } else {
-            let (tx, rx) = channel();
-            let reason = Some("It may submit, buy, send or delete something on the website.".to_string());
-            h.send(Ev::AskPermission(PermissionRequest { tool: name.to_string(), label: what, preview: None, prefix: None, reason }, tx));
-            match rx.recv().unwrap_or(PermissionAnswer::Deny(String::new())) {
-                PermissionAnswer::Deny(fb) => fb,
-                _ => return None,
-            }
-        };
-        Some(ToolResult {
-            output: format!("The user denied this browser action.{}", if fb.is_empty() { " Do not retry it unchanged; ask the user how to proceed.".to_string() } else { format!(" They said: {fb}") }),
-            is_error: true,
-            summary: Some("denied".into()),
-            display: Some(Display::Text(denied_display(name, &fb))),
-        })
     }
 
     pub fn run_tool(&mut self, call: &ToolCall, h: &Hooks) -> ToolResult {
@@ -1090,24 +1055,6 @@ impl Agent {
             result.display = Some(Display::Agent { steps, answer });
             return result;
         }
-        if crate::browser::is_tool(name) {
-            let browsed = crate::browser::browsed(&self.session.messages);
-            if !self.cfg.browser_agent && !browsed {
-                return ToolResult::err("The built-in browser is off for agents. The user can turn it on in Settings > Browser.", "off");
-            }
-            if name != "browser" && !browsed && !crate::browser::active(&self.session.messages) {
-                return ToolResult::err("Call browser first to turn the browser on.", "not on");
-            }
-            // browser_eval is asked about like a command, below; the rest only when they'd submit, buy, send or delete.
-            if name != "browser_eval" {
-                if let Some(what) = crate::browser::risky(name, args) {
-                    if let Some(denied) = self.ask_browser(name, what, h) {
-                        return denied;
-                    }
-                }
-                return crate::browser::run(name, args, &self.shared.cancel);
-            }
-        }
 
         // Memory edited with the ordinary file tools gets update_memory's check too.
         if tools::permission(name) == Permission::Edit && name != "update_memory" {
@@ -1145,9 +1092,6 @@ impl Agent {
         }
         if tools::is_mcp(name) {
             return crate::mcp_client::hub().call(name, args, &self.shared.cancel);
-        }
-        if name == "browser_eval" {
-            return crate::browser::run(name, args, &self.shared.cancel);
         }
         if name == "web_search" {
             return tools::web_search(&self.cfg, args).unwrap_or_else(|e| ToolResult::err(e.clone(), e.chars().take(100).collect::<String>()));
@@ -1414,10 +1358,10 @@ impl Agent {
         }
         let model = self.shared.model.lock().unwrap().clone();
         let cwd = self.session.cwd.clone();
-        // Devin has its own system prompt, and Scout's describes tools it doesn't have. The user's saved instructions and memory still count.
+        // Devin has its own system prompt, and Scout's describes tools it doesn't have. The user's reply language and memory still count.
         let (_, mut text_in) = crate::copilot::as_prompt(messages);
         if main {
-            text_in = format!("<saved_instructions>\n{}</saved_instructions>\n\n{}\n{text_in}", self.preferences.prompt(&cwd), crate::memory::prompt_for_own_tools(&cwd));
+            text_in = format!("<response_language>\n{}</response_language>\n\n{}\n{text_in}", self.preferences.prompt(), crate::memory::prompt_for_own_tools(&cwd));
         }
         let run = crate::devin::Run::start(&model, &cwd, &self.shared.mode(), text_in, crate::copilot::newest_images(messages), !main).map_err(fail)?;
         if main {
@@ -1651,10 +1595,10 @@ impl Agent {
         let model = self.shared.model.lock().unwrap().clone();
         let effort = self.shared.effort.lock().unwrap().clone();
         let cwd = self.session.cwd.clone();
-        // It has its own system prompt, and Scout's describes tools it doesn't have. The user's saved instructions and memory still count.
+        // It has its own system prompt, and Scout's describes tools it doesn't have. The user's reply language and memory still count.
         let (_, mut text_in) = crate::copilot::as_prompt(messages);
         if main {
-            text_in = format!("<saved_instructions>\n{}</saved_instructions>\n\n{}\n{text_in}", self.preferences.prompt(&cwd), crate::memory::prompt_for_own_tools(&cwd));
+            text_in = format!("<response_language>\n{}</response_language>\n\n{}\n{text_in}", self.preferences.prompt(), crate::memory::prompt_for_own_tools(&cwd));
             // Claude Code has it in its system prompt (see `claude::turn_meta`); Codex can only be told here.
             if tool == "codex" && crate::explore::enabled() {
                 text_in = format!("<explore_tool>\n{}\n</explore_tool>\n\n{text_in}", crate::explore::GUIDE);
@@ -2179,17 +2123,6 @@ impl Agent {
             self.compact("", h)?;
         }
         self.checkpoint(input.text());
-        let mut input = input;
-        // Sent from the Browse page: the agent hears so, and what's open there.
-        if let Some(note) = crate::browser::browse_note() {
-            match &mut input {
-                Content::Text(t) => t.push_str(&note),
-                Content::Parts(p) => match p.iter_mut().find_map(|x| x.get_mut("text")) {
-                    Some(Value::String(t)) => t.push_str(&note),
-                    _ => p.push(json!({"type":"text","text":note})),
-                },
-            }
-        }
         self.session.messages.push(Message::User { content: input });
         self.unsent = None;
         save_session(&mut self.session);

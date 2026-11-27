@@ -5,8 +5,6 @@ import { act, invoke, openExternal, restartBlocker } from './api';
 import { AsciiBackdrop } from './AsciiBackdrop';
 import { Composer, PermissionBody } from './Composer';
 import { handleDockKeys, isTermTab, newDockTab, openDockTab, useAutoTaskTabs, useTasks } from './DockTabs';
-import { FloatingGame } from './Games';
-import { FloatingMusic } from './Music';
 // First-run setup is big (its own scene and every provider's steps) and most launches never show it.
 const Onboarding = lazy(() => import('./Onboarding').then((m) => ({ default: m.Onboarding })));
 // Pages and the panel load the first time they're opened, so a launch only parses and holds the chat.
@@ -26,22 +24,27 @@ function named<K extends string, M extends Record<K, ComponentType<any>>>(load: 
 }
 const Dock = named(() => import('./Dock'), 'Dock');
 const Settings = named(() => import('./Settings'), 'Settings');
-const UsagePage = named(() => import('./Settings'), 'UsagePage');
+const UsagePopup = named(() => import('./Settings'), 'UsagePopup');
+const SeasonPopup = named(() => import('./Season'), 'SeasonPopup');
 const MissionControl = named(() => import('./MissionControl'), 'MissionControl');
 const SocialPage = named(() => import('./Social'), 'SocialPage');
+const FloatingGame = named(() => import('./Games'), 'FloatingGame');
+const FloatingMusic = named(() => import('./Music'), 'FloatingMusic');
 // Agent is the home page, so it's in the first bundle.
 import { AgentPage, AgentSidebar } from './agent/Agent';
+import { CodeAgentPage } from './agent/CodeAgent';
 import { useAgentSync } from './agent/store';
 import { CodeSetupPrompt } from './CodeSetupPrompt';
 import { Hideable, HideMenu } from './Hideable';
+import { openChatSearch } from './Sidebar';
 import { core, focusComposer, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Markdown, Transcript } from './Transcript';
 import { AccountMenu } from './AccountMenu';
 import { ErrorBoundary } from './ErrorBoundary';
 import { FolderPicker } from './FolderPicker';
 import { UsageAlert } from './UsageAlert';
+import { VerifyAlert } from './VerifyAlert';
 import { Icon, IconButton, Modal, Spinner } from './widgets';
-import { useActivityPing } from './Dreams';
 
 const appWindow = getCurrentWindow();
 
@@ -158,7 +161,7 @@ function PanelButton() {
   const running = useTasks().some((t) => !t.result);
   return (
     <span className="panel-button">
-      <IconButton icon="panel" tip={dockOpen ? 'Close the panel' : 'Open the panel: terminal, browser, files and more'} active={dockOpen} onClick={togglePanel} />
+      <IconButton icon="panel" tip={dockOpen ? 'Close the panel' : 'Open the panel: terminal, files and more'} active={dockOpen} onClick={togglePanel} />
       {running && !dockOpen && <span className="panel-button-dot" title="A sub-agent is working" />}
     </span>
   );
@@ -281,22 +284,24 @@ function DoneButton() {
 function TopBar() {
   const chat = useView('chat');
   const page = useUi((u) => u.page);
-  if (page === 'agent') {
+  if (page === 'agent' || page === 'code') {
     return (
       <header className="top-bar" data-tauri-drag-region>
         <span className="grow" data-tauri-drag-region />
-        <AccountMenu />
         <UpdatePill />
         <WindowButtons />
       </header>
     );
   }
-  // Usage and Social have no chats sidebar (the rail gets you back), so no button to show it either.
-  if (page === 'usage' || page === 'social') {
+  // Social has no chats sidebar, so Back returns to the page it was opened from.
+  if (page === 'social') {
     return (
       <header className="top-bar" data-tauri-drag-region>
-        <Icon name={page === 'social' ? 'social' : 'chart'} size={15} />
-        <b className="chat-title inbox-title" data-tauri-drag-region>{page === 'social' ? 'Social' : 'Usage'}</b>
+        <button type="button" className="button compact back-to-code" title="Back" onClick={() => ui.set({ page: ui.get().socialFrom })}>
+          <Icon name="back" size={13} />Back
+        </button>
+        <Icon name="social" size={15} />
+        <b className="chat-title inbox-title" data-tauri-drag-region>Social</b>
         <span className="grow" data-tauri-drag-region />
         <AccountMenu />
         <UpdatePill />
@@ -320,9 +325,12 @@ function TopBar() {
   }
   return (
     <header className="top-bar" data-tauri-drag-region>
+      {/* A Code Agent's chat: back to the Code agent, whose page lists them all. */}
+      <button type="button" className="button compact back-to-code" title="Back to the Code agent" onClick={() => ui.set({ page: 'code' })}>
+        <Icon name="back" size={13} />Code
+      </button>
       <b className="chat-title ellipsis" data-tauri-drag-region>{chat.title}</b>
       <span className="grow" data-tauri-drag-region />
-      <AccountMenu />
       <DoneButton />
       <UpdatePill />
       <Hideable id="top.panel"><PanelButton /></Hideable>
@@ -486,7 +494,7 @@ function PageLoading() {
   return <div className="page-loading"><Spinner size={18} /></div>;
 }
 
-const PAGE_NAMES: Record<string, string> = { agent: 'Agent', chat: 'Code', usage: 'The Usage page', mission: 'IDE', social: 'Social' };
+const PAGE_NAMES: Record<string, string> = { agent: 'Agent', code: 'The Code agent', chat: 'This Code Agent', mission: 'IDE', social: 'Social' };
 
 /** The window's own shortcuts. The terminal and the editor want most keys for themselves. */
 function useShortcuts() {
@@ -494,8 +502,13 @@ function useShortcuts() {
     const key = (e: KeyboardEvent) => {
       // Mission Control has its own keys (see MissionControl.tsx).
       if (ui.get().page === 'mission') return;
-      // Usage has no chat on screen: only Ctrl+N, which makes one.
-      if (ui.get().page === 'usage' || ui.get().page === 'agent') {
+      // Ctrl+K searches the chats, which are listed on the Code screen (its own search handles the key there). A terminal keeps it.
+      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k' && ui.get().page !== 'code' && !document.activeElement?.closest('.dock')) {
+        e.preventDefault();
+        return openChatSearch();
+      }
+      // These pages have no chat on screen: only Ctrl+N, which makes one.
+      if (ui.get().page === 'agent' || ui.get().page === 'code') {
         if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
           e.preventDefault();
           ui.set({ page: 'chat' });
@@ -525,7 +538,7 @@ function useShortcuts() {
         return act('cycleMode');
       }
       // Esc closes whatever is open on top before it stops Scout.
-      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().pickingFiles) {
+      if (e.key === 'Escape' && !e.defaultPrevented && !ui.get().settings && !ui.get().usageOpen && !ui.get().seasonOpen && !ui.get().deleting && !ui.get().pickingFolder && !ui.get().pickingFiles) {
         return act('stop');
       }
     };
@@ -551,6 +564,15 @@ export function App() {
   const settingsOpen = useUi((u) => !!u.settings);
   const [settingsUsed, setSettingsUsed] = useState(false);
   useEffect(() => { if (settingsOpen) setSettingsUsed(true); }, [settingsOpen]);
+  // The game and the music player (and their games and SoundCloud code) load the first time one is opened.
+  const gameOpen = useUi((u) => u.gameOpen);
+  const [gameUsed, setGameUsed] = useState(false);
+  useEffect(() => { if (gameOpen) setGameUsed(true); }, [gameOpen]);
+  const musicOpen = useUi((u) => u.musicOpen);
+  const [musicUsed, setMusicUsed] = useState(false);
+  useEffect(() => { if (musicOpen) setMusicUsed(true); }, [musicOpen]);
+  const usageOpen = useUi((u) => u.usageOpen);
+  const seasonOpen = useUi((u) => u.seasonOpen);
   // Their code is fetched once the window is idle, so the first open slides in at once. Nothing is mounted until then:
   // no terminal, editor or shell is started for a panel that's never opened.
   useEffect(() => {
@@ -561,7 +583,6 @@ export function App() {
   }, []);
   useAgentSync();
   useAutoTaskTabs();
-  useActivityPing();
   useCloseGuard();
   useEffect(() => {
     const offs = [
@@ -575,11 +596,6 @@ export function App() {
       }),
       listen('drop-hover', () => ui.set({ dropping: true })),
       listen('drop-leave', () => ui.set({ dropping: false })),
-      // Scout opened a page in the built-in browser: the panel shows it, so the user sees what it does.
-      listen('browser-show', () => {
-        const u = ui.get();
-        if (u.page === 'chat' && !(u.dockOpen && u.dockTab === 'browser')) ui.set({ dockOpen: true, dockTab: 'browser' });
-      }),
     ];
     // Links never navigate the window; anything that gets past their own handlers stops here.
     const click = (e: MouseEvent) => {
@@ -605,7 +621,7 @@ export function App() {
   if (!team && (loginNeeded || onboarding)) return <><Login onDone={() => ui.set({ onboarding: false, onboardingMode: 'full' })} /><CloseDialog /></>;
   return (
     <div className="app">
-      {(page === 'chat' || page === 'agent') && <ErrorBoundary what="The chats list"><AgentSidebar /></ErrorBoundary>}
+      {(page === 'chat' || page === 'agent' || page === 'code') && <ErrorBoundary what="The chats list"><AgentSidebar /></ErrorBoundary>}
       <div className="main">
         <TopBar />
         {/* Kept mounted once opened, so its tabs' shells and edits survive a trip back to the agents. */}
@@ -614,7 +630,7 @@ export function App() {
             window keeps working: the rail still gets you to another page. */}
         <ErrorBoundary key={page} what={PAGE_NAMES[page] ?? 'This page'}>
           <Suspense fallback={<PageLoading />}>
-          {page === 'mission' ? null : page === 'usage' ? <UsagePage /> : page === 'social' ? <SocialPage /> : page === 'agent' ? <AgentPage /> : (
+          {page === 'mission' ? null : page === 'social' ? <SocialPage /> : page === 'agent' ? <AgentPage /> : page === 'code' ? <CodeAgentPage /> : (
             <div className="main-body">
               <div className={`chat ${fresh ? 'fresh' : ''}`}>
                 {fresh && <AsciiBackdrop />}
@@ -629,9 +645,11 @@ export function App() {
           </Suspense>
         </ErrorBoundary>
       </div>
-      <ErrorBoundary what="The game"><FloatingGame /></ErrorBoundary>
-      <ErrorBoundary what="The music player"><FloatingMusic /></ErrorBoundary>
-      {(settingsUsed || settingsOpen) && <Suspense fallback={null}><Settings windowButtons={<WindowButtons />} /></Suspense>}
+      {(gameUsed || gameOpen) && <ErrorBoundary what="The game"><Suspense fallback={null}><FloatingGame /></Suspense></ErrorBoundary>}
+      {(musicUsed || musicOpen) && <ErrorBoundary what="The music player"><Suspense fallback={null}><FloatingMusic /></Suspense></ErrorBoundary>}
+      {(settingsUsed || settingsOpen) && <Suspense fallback={null}><Settings /></Suspense>}
+      {usageOpen && <Suspense fallback={null}><UsagePopup /></Suspense>}
+      {seasonOpen && <Suspense fallback={null}><SeasonPopup /></Suspense>}
       <DeleteDialog />
       <CloseDialog />
       <UncensoredDialog />
@@ -641,7 +659,7 @@ export function App() {
       <McpApproval />
       <WhatsNew />
       <UpdateCard />
-      <UsageAlert />
+      <div className="corner-alerts"><UsageAlert /><VerifyAlert /></div>
       {dropping && <div className="drop-overlay"><div><Icon name="paperclip" /> Drop files to attach them</div></div>}
     </div>
   );

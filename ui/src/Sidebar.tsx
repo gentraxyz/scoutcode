@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { act, invoke, projectDir, usd, type View } from './api';
 import { ui, useView } from './store';
 import { Icon, IconButton, MenuItem, Popover, SectionLabel, Spinner } from './widgets';
@@ -24,7 +24,7 @@ export function useProjectName() {
 }
 
 /** How a chat is doing, as a small mark after its title. Nothing done yet shows no mark; the first that applies wins. */
-function SessionDot({ s }: { s: SessionInfo }) {
+export function SessionDot({ s }: { s: SessionInfo }) {
   const state = s.waiting ? 'asking' : s.running ? 'working' : s.errored ? 'error' : s.unread ? 'unread' : 'idle';
   if (state === 'idle') return null;
   const label = { asking: 'Scout needs your answer', working: 'Scout is working', error: 'The last turn ended in an error', unread: 'Finished, not opened yet' }[state];
@@ -39,7 +39,18 @@ type RowDnd = {
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
 };
 
-export function SessionRow({ s, current, project, dnd }: { s: SessionInfo; current: boolean; project: string; dnd?: RowDnd }) {
+type RowProps = { s: SessionInfo; current: boolean; project: string; dnd?: RowDnd };
+
+/** Rows are drawn again only when what they show changed: the list is sent again every second (each "12s ago"), and
+ *  hundreds of chats would all redraw. `dnd.onPointerDown` reads only refs, so an older one is as good as a new one. */
+const sameRow = (a: RowProps, b: RowProps) => {
+  const keys = Object.keys(b.s) as (keyof SessionInfo)[];
+  return a.current === b.current && a.project === b.project && keys.length === Object.keys(a.s).length && keys.every((k) => a.s[k] === b.s[k])
+    && a.dnd?.dragging === b.dnd?.dragging && a.dnd?.style.transform === b.dnd?.style.transform
+    && a.dnd?.style.transition === b.dnd?.style.transition && a.dnd?.style.zIndex === b.dnd?.style.zIndex;
+};
+
+export const SessionRow = memo(function SessionRow({ s, current, project, dnd }: RowProps) {
   const busy = s.running || s.waiting;
   return (
     <div
@@ -77,7 +88,7 @@ export function SessionRow({ s, current, project, dnd }: { s: SessionInfo; curre
       </span>
     </div>
   );
-}
+}, sameRow);
 
 /** A chat being dragged: where every chat sat when the drag began, and how far the pointer has moved. */
 type Drag = {
@@ -272,7 +283,7 @@ function DailyRewardBanner() {
   if (!hasKey || !dr?.canClaim) return null;
   return (
     <div className="daily-reward-bar">
-      <button type="button" className="daily-reward-info grow min0" onClick={() => ui.set({ page: 'usage' })} title="Open Usage & rewards">
+      <button type="button" className="daily-reward-info grow min0" onClick={() => ui.set({ usageOpen: true })} title="Open Usage & rewards">
         <div className="strong small ellipsis">Daily reward · Day {dr.nextDay}</div>
         <div className="tiny dim ellipsis">+{usd(dr.amount)} to your balance</div>
       </button>
@@ -288,15 +299,37 @@ function DailyRewardBanner() {
   );
 }
 
+/** Shown in the sidebar when a Scout Season reward is unlocked and not claimed yet. */
+function SeasonRewardBanner() {
+  const { hasKey } = useView('cfg');
+  const season = useView('usage').info?.season;
+  if (!hasKey || !season?.season || !season.claimable) return null;
+  return (
+    <div className="daily-reward-bar">
+      <button type="button" className="daily-reward-info grow min0" onClick={() => ui.set({ seasonOpen: true })} title="Open the Scout Season">
+        <div className="strong small ellipsis">{season.season.name} · Tier {season.season.tier}</div>
+        <div className="tiny dim ellipsis">{season.claimable === 1 ? 'A reward is' : `${season.claimable} rewards are`} ready to claim</div>
+      </button>
+      <button type="button" className="button primary compact" onClick={() => ui.set({ seasonOpen: true })}>Open</button>
+    </div>
+  );
+}
+
 /** The search, kept while the sidebar is unmounted (on another page). */
 let lastSearch = '';
 let lastSearchOpen = false;
 /** Whether the Done list is showing, kept the same way. */
 let lastShowDone = false;
 
+/** Ctrl+K from another page: opens the Code screen, where the chats are listed, with the search already open. */
+export function openChatSearch() {
+  lastSearchOpen = true;
+  ui.set({ page: 'code' });
+}
+
 /** The Code section of the sidebar: New chat, search and your chats. It sits under your agents on the home page and
  *  fills the same column on the Code screen (see AgentSidebar). */
-export function CodeSection() {
+export function CodeSection({ label = 'Code', newLabel = 'New chat' }: { label?: string; newLabel?: string } = {}) {
   const [search, setSearchState] = useState(lastSearch);
   const setSearch = (s: string) => { lastSearch = s; setSearchState(s); };
   // The search box only shows once the search button is pressed (or Ctrl+K); Esc, the button or its X closes it.
@@ -305,7 +338,7 @@ export function CodeSection() {
   const closeSearch = () => { setSearch(''); setSearchOpen(false); };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k' && ui.get().page === 'chat') {
+      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k' && ui.get().page === 'code') {
         e.preventDefault();
         setSearchOpen(true);
         requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.side-search input')?.focus());
@@ -322,7 +355,7 @@ export function CodeSection() {
   return (
     <div className="side-code">
       <div className="side-head" data-tauri-drag-region>
-        <SectionLabel>Code</SectionLabel>
+        <SectionLabel>{label}</SectionLabel>
         <span className="grow" data-tauri-drag-region />
         <Hideable id="side.search">
           <IconButton icon="search" tip="Search chats (Ctrl+K)" active={searchOpen} onClick={() => {
@@ -332,7 +365,7 @@ export function CodeSection() {
         </Hideable>
       </div>
       <Hideable id="side.newChat"><button type="button" className="new-chat" onClick={() => { ui.set({ page: 'chat' }); act('newChat'); }}>
-        <Icon name="plus" /><span className="grow">New chat</span><span className="tiny dim">Ctrl+N</span>
+        <Icon name="plus" /><span className="grow">{newLabel}</span><span className="tiny dim">Ctrl+N</span>
       </button></Hideable>
       {searchOpen && !hidden.includes('side.search') && (
         <div className="side-search">
@@ -365,6 +398,7 @@ export function CodeSection() {
         </>
       )}
       <DailyRewardBanner />
+      <SeasonRewardBanner />
     </div>
   );
 }

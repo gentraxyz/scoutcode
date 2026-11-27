@@ -6,12 +6,16 @@
 // site holds it until something changes, so replies show up the moment they're written. A site without long-polling
 // (no `rev` in its answers) is polled instead. Elsewhere only the list is fetched, slowly, for the rail's unread badge.
 //
+// A new message from an agent shows a Windows notification while the window is in the background (Rust's agent_alert),
+// and the unread count is the badge in the corner of the taskbar button.
+//
 // Sending is optimistic: the message shows at once and the agent starts "typing"; it's only marked if it failed.
 import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
-import { invoke } from '../api';
-import { createStore, useUi, useView } from '../store';
+import { act, invoke } from '../api';
+import { createStore, ui, useUi, useView } from '../store';
 
-export type Shape = 'blob' | 'circle' | 'square' | 'triangle' | 'hexagon' | 'star' | 'diamond' | 'ghost';
+/** 'code' is the built-in Code agent's own shape: it's not in AGENT_SHAPES, so no other agent can pick it. */
+export type Shape = 'blob' | 'circle' | 'square' | 'triangle' | 'hexagon' | 'star' | 'diamond' | 'ghost' | 'code';
 export type Status = 'idle' | 'thinking' | 'working' | 'waiting' | 'sleeping' | 'blocked' | 'error';
 
 export type Agent = {
@@ -25,13 +29,21 @@ export type Agent = {
   activity: string | null;
   activityKind: string | null;
   wakeAt: string | null;
-  mcp: { id: string; name: string; url: string; local?: boolean; connected: boolean }[];
+  mcp: App[];
   /** How many timers, alarms and recurring tasks it has. */
   schedules?: number;
   unread: number;
   last: { role: string; text: string; at: string } | null;
   createdAt: string;
 };
+
+/** A connected app (an MCP server). `needs`: what the user still has to type in (an access token, API keys). */
+export type App = { id: string; name: string; url: string; local?: boolean; connected: boolean; needs?: string[] };
+/** Who a connection is for in Connect to Apps: one agent (its id), or all of them. */
+export type AppTarget = 'all' | string;
+export type SecretField = { key: string; label: string; hint?: string; optional?: boolean };
+/** What connecting led to: ready, a sign-in page (opened in the browser), or values to type in. */
+export type ConnectAnswer = ({ kind: 'connected'; text: string } | { kind: 'signin'; url: string } | { kind: 'secret'; fields: SecretField[] }) & { app?: App };
 
 export type Card =
   /** An action the agent marked risky (its `reason` is the card's text), held until the user answers. */
@@ -44,7 +56,7 @@ export type Card =
   /** A timer, alarm or recurring task going off. */
   | { kind: 'alarm'; schedule: string; type: 'timer' | 'alarm' | 'repeat'; task?: string | null }
   | { kind: 'local'; command: string; answer?: 'approve' | 'deny' }
-  | { kind: 'permission'; setting: 'codeAccess' | 'localAccess' }
+  | { kind: 'permission'; setting: 'localAccess' }
   | { kind: 'auth'; name: string; url: string; answer?: string }
   | { kind: 'open'; url: string }
   | { kind: 'notice' }
@@ -64,7 +76,7 @@ export type Message = {
 export type AgentFile = { id: string; name: string; type: string; size: number; created_at?: string };
 /** null: not chosen yet (the first command asks). 'ask': every command. 'auto': only the ones the agent marks risky. */
 export type CommandMode = 'ask' | 'auto' | null;
-export type Prefs = { codeAccess: boolean; localAccess: boolean; commandMode?: CommandMode; pcMode?: CommandMode; timezone?: string | null };
+export type Prefs = { localAccess: boolean; commandMode?: CommandMode; pcMode?: CommandMode; timezone?: string | null };
 
 export type Schedule = {
   id: string;
@@ -105,16 +117,23 @@ export const agentStore = createStore({
   list: null as Agent[] | null,
   error: null as string | null,
   max: 10,
-  prefs: { codeAccess: true, localAccess: false, commandMode: null, pcMode: null } as Prefs,
+  prefs: { localAccess: false, commandMode: null, pcMode: null } as Prefs,
   /** The schedules panel is open for this agent. */
   schedulesFor: null as string | null,
   model: null as string | null,
   openrouter: false,
   selected: null as string | null,
+  /** The newest message id of each chat the user has seen on screen (window in front, on this page, chat open). Loading
+   *  a chat marks it read on the site even with the window in the background, so what came after this still counts as
+   *  unread here. */
+  viewed: {} as Record<string, number>,
   chats: {} as Record<string, Chat>,
   /** The create/edit dialog: a new agent, or the id of the one being edited. */
   editing: null as 'new' | string | null,
-  settingsOpen: false,
+  /** The account's apps, which every agent can use (Connect to Apps). */
+  apps: [] as App[],
+  /** Connect to Apps is open, showing all agents or one. */
+  appsFor: null as AppTarget | null,
 });
 
 export function useAgents<T>(pick: (s: ReturnType<typeof agentStore.get>) => T): T {
@@ -180,7 +199,8 @@ const cacheKey = () => `agent.cache.v1.${owner}`;
 function hydrate(username: string | null) {
   if (owner === username) return;
   owner = username;
-  agentStore.set({ list: null, chats: {}, selected: null, error: null });
+  notified = null;
+  agentStore.set({ list: null, chats: {}, selected: null, error: null, viewed: {} });
   if (!username) return;
   try {
     const c = JSON.parse(localStorage.getItem(cacheKey()) ?? 'null');
@@ -218,7 +238,7 @@ agentStore.subscribe(saveSoon);
 
 // ---------------------------------------------------------------- loading
 
-type ListAnswer = { agents: Agent[]; rev?: number; max: number; prefs: Prefs; model: string | null; openrouter: boolean };
+type ListAnswer = { agents: Agent[]; rev?: number; max: number; prefs: Prefs; model: string | null; openrouter: boolean; apps?: App[] };
 type ChatAnswer = { agent: Agent; messages: Message[]; files?: AgentFile[]; rev?: number; more?: boolean };
 
 function applyList(r: ListAnswer) {
@@ -229,12 +249,14 @@ function applyList(r: ListAnswer) {
     r.agents.map((a) => {
       const p = prev.get(a.id);
       const last = p?.last && (!a.last || p.last.at > a.last.at) ? p.last : a.last;
-      // The open chat's unread count is zero: it's being read.
-      return { ...a, last, unread: a.id === s.selected ? 0 : a.unread };
+      // The open chat's unread count is zero while it's on screen: it's being read.
+      return { ...a, last, unread: a.id === s.selected && viewing() ? 0 : a.unread };
     }),
   );
   const selected = s.selected && agents.some((a) => a.id === s.selected) ? s.selected : agents[0]?.id ?? null;
-  agentStore.set({ list: agents, max: r.max, prefs: r.prefs, model: r.model, openrouter: r.openrouter, error: null, selected });
+  agentStore.set({ list: agents, max: r.max, prefs: r.prefs, model: r.model, openrouter: r.openrouter, apps: r.apps ?? [], error: null, selected });
+  const first = !notified;
+  for (const a of agents) if (a.last) consider(a, a.last, first);
 }
 
 export async function loadAgents(since = 0): Promise<ListAnswer | null> {
@@ -258,8 +280,11 @@ export async function loadChat(id: string, full = false, since = 0): Promise<Cha
   try {
     const r = await call<ChatAnswer>('GET', `${PATH}?${q}`);
     setChat(id, (c) => ({ ...c, messages: merge(c.messages, r.messages, !after), files: r.files ?? c.files, error: null, more: r.more ?? c.more }));
-    patchListed(id, (a) => ({ ...r.agent, unread: 0, last: a.last }));
+    patchListed(id, (a) => ({ ...r.agent, unread: viewing() ? 0 : a.unread, last: a.last }));
+    markViewed();
     bumpLast(id, r.messages);
+    const a = agentStore.get().list?.find((x) => x.id === id);
+    if (a && notified) for (const m of r.messages) consider(a, { role: m.role, text: m.text, at: m.created_at, kind: m.data && 'kind' in m.data ? m.data.kind : undefined });
     return r;
   } catch (e) {
     setChat(id, (c) => ({ ...c, error: message(e) }));
@@ -371,6 +396,26 @@ export async function answerSecret(id: string, msg: number, values: Record<strin
   void loadChat(id, true);
 }
 
+// ---------------------------------------------------------------- Connect to Apps
+
+/** Connects an app for `target`: a remote server ({ name, url, auth? }) or one run on the agents' computers ({ name, command, env_needed }). */
+export async function connectApp(target: AppTarget, app: { name: string; url?: string; auth?: 'token'; header?: string; command?: string; env_needed?: string[] }): Promise<ConnectAnswer> {
+  const r = await post<ConnectAnswer>('app_connect', { agent: target, ...app });
+  void loadAgents();
+  return r;
+}
+
+export async function appSecret(target: AppTarget, server: string, values: Record<string, string>): Promise<App> {
+  const r = await post<{ app: App }>('app_secret', { agent: target, server, values });
+  void loadAgents();
+  return r.app;
+}
+
+export async function disconnectApp(target: AppTarget, server: string): Promise<void> {
+  await post('app_disconnect', { agent: target, server });
+  await loadAgents();
+}
+
 /** This PC's time zone, sent with each message so alarms and "every day at 9" use the user's own clock. */
 export function localTz(): string | undefined {
   try {
@@ -428,6 +473,75 @@ export async function setOpenRouterKey(key: string | null): Promise<void> {
 export const loadMemory = () => call<Memory>('GET', `${PATH}?memory=1`);
 export const saveMemory = (saved: string, text: string) => post<{ memory: Memory }>('memory', { saved, text }).then((r) => r.memory);
 
+// ---------------------------------------------------------------- notifications
+
+/** The open chat is on screen: the window is in front and on this page. */
+const viewing = () => document.hasFocus() && ui.get().page === 'agent';
+
+/** Notes the open chat as seen up to its newest message, when it's on screen. */
+function markViewed() {
+  const s = agentStore.get();
+  const id = s.selected;
+  if (!id || !viewing()) return;
+  const top = lastRealId(s.chats[id]);
+  const listed = s.list?.find((a) => a.id === id);
+  if (s.viewed[id] !== top) agentStore.set({ viewed: { ...s.viewed, [id]: top } });
+  if (listed?.unread) patchListed(id, (a) => ({ ...a, unread: 0 }));
+}
+
+/** Messages from the agent in a chat after the newest one seen on screen. */
+function unseen(s: ReturnType<typeof agentStore.get>, id: string): number {
+  const v = s.viewed[id];
+  if (v === undefined) return 0;
+  return s.chats[id]?.messages.filter((m) => m.id > v && m.role !== 'user').length ?? 0;
+}
+
+/** The newest message of each agent already notified (or seen), by its time. null until the site's first answer, whose
+ *  messages are only noted: the badge counts what came while Scout was closed, without a notification for each. */
+let notified: Map<string, string> | null = null;
+
+/** Notifies about a message from an agent if it's newer than the last one and the user isn't looking at its chat. Cards
+ *  notify when they need the user; what the agent did along the way (activity) doesn't. */
+function consider(a: Agent, m: { role: string; text: string; at: string; kind?: Card['kind'] }, quiet = false) {
+  notified ??= new Map();
+  const seen = notified.get(a.id);
+  if (seen && seen >= m.at) return;
+  notified.set(a.id, m.at);
+  const worth = m.role === 'agent' || (m.role === 'card' && !!m.kind && m.kind !== 'activity' && m.kind !== 'notice');
+  const looking = viewing() && agentStore.get().selected === a.id;
+  if (quiet || !worth || looking || !m.text.trim()) return;
+  act('agentAlert', { title: a.name, body: m.text.replace(/\s+/g, ' ').trim() });
+}
+
+/** The unread count in the corner of the taskbar button, Discord style but white. */
+function useTaskbarBadge() {
+  const unread = useAgentUnread();
+  useEffect(() => {
+    const label = unread <= 0 ? '' : unread > 9 ? '9+' : String(unread);
+    if (!label) return void invoke('set_badge', { rgba: null, size: 0 }).catch(() => {});
+    const size = 32;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    // A faint edge, so it still shows on a light taskbar.
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.stroke();
+    ctx.fillStyle = '#111111';
+    ctx.font = `bold ${label.length > 1 ? 17 : 21}px "Segoe UI", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, size / 2, size / 2 + 1);
+    const rgba = Array.from(ctx.getImageData(0, 0, size, size).data);
+    invoke('set_badge', { rgba, size }).catch((e) => console.error('set_badge', e));
+  }, [unread]);
+}
+
 // ---------------------------------------------------------------- staying fresh
 
 /** Keeps the agents fresh: long-polled while the page is open, slowly elsewhere for the badge. */
@@ -438,6 +552,14 @@ export function useAgentSync() {
 
   // What this PC kept from last time shows before anything is fetched.
   useLayoutEffect(() => hydrate(hasKey ? username ?? null : null), [hasKey, username]);
+  useTaskbarBadge();
+
+  // Coming back to the window, or to the chat, reads it.
+  useEffect(() => {
+    markViewed();
+    window.addEventListener('focus', markViewed);
+    return () => window.removeEventListener('focus', markViewed);
+  }, [onPage, selected]);
 
   useEffect(() => {
     if (!hasKey) return;
@@ -445,19 +567,17 @@ export function useAgentSync() {
     void (async () => {
       let rev = 0;
       while (live) {
-        if (document.hidden && rev) {
-          await sleep(2000);
-          continue;
-        }
-        const r = await loadAgents(onPage ? rev : 0);
+        // A hidden window still checks now and then, for notifications and the taskbar badge.
+        const watching = onPage && !document.hidden;
+        const r = await loadAgents(watching ? rev : 0);
         if (!live) return;
-        if (onPage && r?.rev) {
+        if (watching && r?.rev) {
           rev = r.rev;
           continue;
         }
-        // Not on the page, an older site, or it failed: plain polling.
+        // Not on the page, hidden, an older site, or it failed: plain polling.
         rev = 0;
-        await sleep(onPage ? (r ? 4000 : 6000) : 30_000);
+        await sleep(watching ? (r ? 4000 : 6000) : 15_000);
       }
     })();
     return () => {
@@ -496,7 +616,7 @@ export function useAgentSync() {
 }
 
 export function useAgentUnread(): number {
-  return useAgents((s) => s.list?.reduce((n, a) => n + a.unread, 0) ?? 0);
+  return useAgents((s) => s.list?.reduce((n, a) => n + Math.max(a.unread, unseen(s, a.id)), 0) ?? 0);
 }
 
 export const STATUS_TEXT: Record<Status, string> = {

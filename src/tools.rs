@@ -410,7 +410,7 @@ pub fn recover_calls(content: &str, reasoning: &str, tools: &[Value]) -> Option<
 }
 
 pub fn known(name: &str) -> bool {
-    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "web_search" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory" | "generate_image") || crate::browser::is_tool(name)
+    matches!(name, "view" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "list_dir" | "glob" | "grep" | "bash" | "shell_output" | "kill_shell" | "web_fetch" | "web_search" | "todo_write" | "task" | "present_plan" | "ask_questions" | "update_memory" | "generate_image")
 }
 
 /// Only offered when Settings > Image generation turns it on: makes an image on the user's own key.
@@ -426,8 +426,7 @@ pub fn image_spec() -> Value {
 pub fn permission(name: &str) -> Permission {
     match name {
         "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "update_memory" | "generate_image" => Permission::Edit,
-        // Runs any script in whatever site is open. The browser's other tools ask only for risky actions (agent.rs).
-        "bash" | "browser_eval" => Permission::Exec,
+        "bash" => Permission::Exec,
         // Anything could be behind one, so it's asked about like a command.
         n if is_mcp(n) => Permission::Exec,
         _ => Permission::Read,
@@ -494,7 +493,6 @@ pub fn label(name: &str, a: &Value) -> String {
             }
         }
         n if is_mcp(n) => a.to_string().chars().take(160).collect(),
-        n if crate::browser::is_tool(n) => crate::browser::label(n, a),
         _ => String::new(),
     }
 }

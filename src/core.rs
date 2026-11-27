@@ -309,16 +309,12 @@ pub struct Core {
     seq: u64,
     /// ScoutMote, while it's on.
     remote: Option<crate::remote::Remote>,
+    /// The Code agent at the top of the Agents list, which starts Code Agents (the chats here) for the user.
+    code: crate::code_agent::CodeAgent,
     remote_status: String,
     remote_online: bool,
     /// When what's on screen was last handed to ScoutMote.
     remote_published: Option<std::time::Instant>,
-    /// When the user last touched the window, in milliseconds since 1970, for Dreaming's idle timer.
-    last_input: u64,
-    /// The dream running now, to stop it as the app closes.
-    dreaming: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// What the last dream or undo said, for Settings.
-    dream_message: Option<(bool, String)>,
 }
 
 fn project_name(cwd: &str) -> String {
@@ -821,12 +817,10 @@ impl Core {
             sent: HashMap::new(),
             seq: 0,
             remote: None,
+            code: crate::code_agent::CodeAgent::load(),
             remote_status: String::new(),
             remote_online: false,
             remote_published: None,
-            last_input: crate::session::now_ms(),
-            dreaming: None,
-            dream_message: None,
         };
         core.enter_project(&cwd);
         core.update_discord();
@@ -988,8 +982,6 @@ impl Core {
             Ev::GrokModelsError(Some(e)) => warn("grok", e),
             Ev::AdditionalErrors(errs) if !errs.is_empty() => warn("providers", errs.join("\n")),
             Ev::Usage(Err(e), _) | Ev::UsagePolled(Err(e)) => warn("usage", e),
-            Ev::Dreamed(Ok(n)) => info("dream", format!("Dream made {n} memory changes.")),
-            Ev::Dreamed(Err(e)) => warn("dream", e),
             Ev::Login(Ok(_)) => info("account", "Signed in."),
             Ev::Login(Err(e)) => warn("account", format!("Sign-in failed: {e}")),
             Ev::LocalModel(m, _) => info("local", format!("Local model downloaded: {}", m.id)),
@@ -1205,10 +1197,14 @@ impl Core {
                 if !stopped && !out_of_credit && !self.chat.queue.is_empty() {
                     let next = self.chat.queue.remove(0);
                     self.submit(next);
-                } else if let Some(e) = error {
-                    self.alert("Scout stopped with an error", &e);
-                } else if !stopped {
-                    self.alert("Scout is done", &self.chat_title());
+                } else {
+                    if let Some(e) = &error {
+                        self.alert("Scout stopped with an error", e);
+                    } else if !stopped {
+                        self.alert("Scout is done", &self.chat_title());
+                    }
+                    // A Code Agent the Code agent started: it hears how it went, and tells the user.
+                    self.code_chat_finished(stopped, error.as_deref());
                 }
             }
             // The chosen model's list, ahead of the rest. A newer fetch under way has its own.
@@ -1263,7 +1259,6 @@ impl Core {
                     Err(e) => self.usage.message = Some((false, e)),
                 }
             }
-            Ev::Dreamed(r) => self.dreamed(r),
             // A refresh in the background only ever updates the numbers.
             Ev::UsagePolled(r) => {
                 self.usage.busy = false;
@@ -1323,6 +1318,7 @@ impl Core {
             }
             Ev::Remote(crate::remote::RemoteEvent::Command(c)) => self.remote_command(&c),
             Ev::Remote(crate::remote::RemoteEvent::Ended(s)) => self.stop_remote(&s),
+            Ev::CodeAgent(e) => self.code_event(e),
             Ev::Link(crate::mcp::LinkEvent::Ask(req, reply)) => {
                 let what = req.label.lines().next().unwrap_or("").to_string();
                 self.alert("A chatbot wants to use Scout", &what);
@@ -3312,12 +3308,6 @@ impl Core {
         self.cfg.agent_routers.iter().find(|r| r.id == run.from.key).map(|r| r.name.clone())
     }
 
-    /// Whether the agent may use the built-in browser. Applies from the next message, when the agent takes the settings.
-    pub fn set_browser_agent(&mut self, on: bool) {
-        self.cfg.browser_agent = on;
-        config::save_one("browserAgent", json!(on));
-    }
-
     /// Image generation: whether the agent gets generate_image, whose key it runs on, and which of that provider's
     /// image models it uses. Applies from the next message, when the agent takes the settings.
     pub fn set_images(&mut self, on: bool, provider: Option<String>, model: Option<String>) {
@@ -3411,88 +3401,23 @@ impl Core {
         config::save_config(m);
     }
 
-    // ---------- Dreaming ----------
-
-    /// The user touched the window.
-    pub fn activity(&mut self) {
-        self.last_input = crate::session::now_ms();
+    pub fn set_agent_notify(&mut self, on: bool) {
+        self.cfg.notify_agents = Some(on);
+        config::save_one("desktopAgentToast", json!(on));
     }
 
-    pub fn set_dreaming(&mut self, on: bool) {
-        self.cfg.dreaming = Some(on);
-        config::save_one("dreaming", json!(on));
-        if !on {
-            if let Some(c) = &self.dreaming {
-                c.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-    }
-
-    /// For the timer: dreams when it's on, the window has gone untouched long enough, no chat is working, and a day has
-    /// passed since the last dream.
-    pub fn dream_tick(&mut self) {
-        let now = crate::session::now_ms();
-        if self.cfg.dreaming != Some(true) || self.dreaming.is_some() || now.saturating_sub(self.last_input) < crate::dream::IDLE_MS || !crate::dream::due(now) {
+    /// A message from one of the account's agents: a Windows notification and a flash, as chosen, unless the window is in front.
+    pub fn agent_alert(&self, title: &str, body: &str) {
+        let Some(window) = self.handle.get_webview_window("main") else { return };
+        if window.is_focused().unwrap_or(true) {
             return;
         }
-        if std::iter::once(&self.chat).chain(&self.background).any(|c| c.running) {
-            return;
+        if self.cfg.notify_flash.unwrap_or(true) {
+            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
         }
-        self.start_dream();
-    }
-
-    /// Settings' Dream now: skips the idle wait and the day between dreams.
-    pub fn dream_now(&mut self) {
-        if self.dreaming.is_none() {
-            self.start_dream();
+        if self.cfg.notify_agents.unwrap_or(true) {
+            crate::notify::toast(title, &body.chars().take(200).collect::<String>());
         }
-    }
-
-    fn start_dream(&mut self) {
-        if self.cfg.api_key.is_none() && !self.cfg.is_guest() {
-            self.dream_message = Some((false, "Dreaming needs ScoutCode: sign in, or use its free models without an account.".into()));
-            return;
-        }
-        if crate::dream::model().is_none() {
-            self.dream_message = Some((false, "Dreaming isn't available right now: no Dreaming model is set on ScoutCode.".into()));
-            return;
-        }
-        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.dreaming = Some(cancel.clone());
-        self.dream_message = None;
-        let cfg = self.cfg.for_provider("scoutcode");
-        let h = self.hooks.clone();
-        std::thread::spawn(move || {
-            let d = crate::dream::run(&cfg, &cancel);
-            h.send(Ev::Dreamed(match d.error {
-                Some(e) => Err(e),
-                None => Ok(d.changes.len()),
-            }));
-        });
-    }
-
-    fn dreamed(&mut self, r: Result<usize, String>) {
-        self.dreaming = None;
-        self.dream_message = Some(match r {
-            Ok(0) => (true, "Dreamed, and found nothing lasting to change.".into()),
-            Ok(n) => (true, format!("Dreamed: {n} memory {}. See the Dream Log.", if n == 1 { "change" } else { "changes" })),
-            Err(e) => (false, format!("The dream stopped: {e}")),
-        });
-        self.files_epoch += 1;
-    }
-
-    pub fn dream_undo(&mut self, id: &str) {
-        self.dream_message = Some(match crate::dream::undo(id) {
-            Ok(()) => (true, "Undone: memory is back as it was before that dream.".into()),
-            Err(e) => (false, e),
-        });
-        self.files_epoch += 1;
-    }
-
-    pub fn dream_seen(&mut self, id: &str) {
-        crate::dream::mark_seen(id);
-        // The log isn't in the core, so nudge the view to send it again.
-        self.sent.remove("dreaming");
     }
 
     /// Asks the server for the account's limits, after making a change when `change` says what to send and say.
@@ -3991,6 +3916,7 @@ impl Core {
                 "agentAccounts": agent_accounts,
                 "notifyFlash": cfg.notify_flash,
                 "notifyToast": cfg.notify_toast,
+                "notifyAgents": cfg.notify_agents.unwrap_or(true),
                 "discordPresence": cfg.discord_presence,
                 "discordProject": cfg.discord_project,
                 "autoUpdate": cfg.auto_update,
@@ -3999,7 +3925,6 @@ impl Core {
                 "autoCompactTokens": cfg.auto_compact_tokens,
                 "agentRouters": cfg.agent_routers,
                 "experimentalImages": cfg.experimental_images,
-                "browserAgent": cfg.browser_agent,
                 "image": { "provider": cfg.image_provider, "model": cfg.image_model, "key": cfg.image_key.as_deref().map(mask_key) },
                 "explore": { "on": cfg.explore.on, "models": cfg.explore.models },
                 "games": cfg.games,
@@ -4007,13 +3932,6 @@ impl Core {
                 "local": cfg.local,
             })),
             ("local", crate::local::view(&cfg.local)),
-            ("dreaming", {
-                let mut v = crate::dream::view();
-                v["on"] = json!(cfg.dreaming);
-                v["running"] = json!(self.dreaming.is_some());
-                v["message"] = json!(self.dream_message.as_ref().map(|(ok, m)| json!({ "ok": ok, "text": m })));
-                v
-            }),
             ("review", crate::review::view(&self.chat.session_id)),
             ("mode", json!(self.chat.shared.mode())),
             ("model", if let Some(id) = (self.chat.provider == "router").then(|| self.chat.model.clone()).or_else(|| self.chat.fallback.as_ref().filter(|r| r.is_router).map(|r| r.from.key.clone())) {
@@ -4053,8 +3971,9 @@ impl Core {
             ("projects", json!(self.projects)),
             ("chat", json!({
                 "id": self.chat.session_id, "cwd": self.chat.cwd, "project": self.project_label(), "title": self.chat_title(), "epoch": self.chat_epoch,
-                "git": crate::worktree::in_repo(&self.chat.cwd), "inWorktree": crate::worktree::home_of(&self.chat.cwd).is_some(), "worktree": self.worktree,
+                "git": crate::worktree::in_repo_cached(&self.chat.cwd), "inWorktree": crate::worktree::home_of(&self.chat.cwd).is_some(), "worktree": self.worktree,
             })),
+            ("codeAgent", self.code.view()),
             ("filesEpoch", json!(self.files_epoch)),
             ("focusEpoch", json!(self.focus_epoch)),
             ("login", json!({
@@ -4148,7 +4067,7 @@ impl Core {
             "additionalProviders": config::ADDITIONAL.iter().map(|a| json!({ "id": a.id, "name": a.name, "needsKey": a.needs_key, "note": a.note, "keyUrl": a.key_url, "keyLink": a.key_link, "keyHint": a.key_hint })).collect::<Vec<_>>(),
             "kiloWarning": config::KILO_WARNING,
             "plans": { "copilot": crate::copilot::PLAN_URL, "devin": crate::devin::PLAN_URL, "kiro": crate::kiro::PLAN_URL, "antigravity": crate::antigravity::PLAN_URL, "vibe": crate::vibe::PLAN_URL, "codex": crate::codex::PLAN_URL, "claude": crate::claude::PLAN_URL, "opencode": crate::opencode::PLAN_URL, "grok": crate::grok::PLAN_URL, "hermes": crate::hermes::PLAN_URL },
-            "languages": crate::instructions::LANGUAGES,
+            "languages": crate::language::LANGUAGES,
             "exe": std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "Scout.exe".into()),
         })
     }
@@ -4167,7 +4086,6 @@ pub fn pump(core: Arc<Mutex<Core>>, rx: Receiver<Ev>, wake: Receiver<()>) {
             let mut core = core.lock().unwrap();
             core.usage_poll();
             core.quota_poll();
-            core.dream_tick();
         }
         match wake.recv_timeout(Duration::from_secs(1)) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {}
@@ -4182,6 +4100,228 @@ pub fn pump(core: Arc<Mutex<Core>>, rx: Receiver<Ev>, wake: Receiver<()>) {
             core.flush();
         }
         std::thread::sleep(Duration::from_millis(16));
+    }
+}
+
+// ---------- the Code agent (code_agent.rs): its tools run here, where the chats are ----------
+
+/// The first `n` characters, with "…" when there was more.
+fn clip(s: &str, n: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    format!("{}…", s.chars().take(n).collect::<String>())
+}
+
+impl Core {
+    fn code_system(&self) -> String {
+        let model = if self.chat.provider == "router" {
+            self.cfg.agent_router(&self.chat.model).map(|r| format!("{} (custom agent)", r.name)).unwrap_or_else(|| self.chat.model.clone())
+        } else {
+            format!("{} on {}", crate::api::short_id(&self.chat.model), self.chat.provider)
+        };
+        crate::code_agent::system_prompt(&self.chat.cwd, &model, &self.chat.shared.mode())
+    }
+
+    pub fn code_send(&mut self, text: String) -> bool {
+        let (system, cfg, hooks) = (self.code_system(), self.cfg.clone(), self.hooks.clone());
+        self.code.send(text, system, &cfg, &hooks)
+    }
+
+    pub fn code_stop(&mut self) {
+        self.code.stop();
+    }
+
+    pub fn code_clear(&mut self) {
+        self.code.clear();
+    }
+
+    /// The Code agent was opened: the first time, it says what it does and that the chats here are its Code Agents.
+    pub fn code_welcome(&mut self) {
+        let n = self.sessions.len();
+        self.code.welcome(n);
+    }
+
+    fn code_event(&mut self, e: crate::code_agent::CodeEv) {
+        use crate::code_agent::CodeEv;
+        match e {
+            CodeEv::Said(t) => self.code.said(t),
+            CodeEv::Status(s) => self.code.status = s,
+            CodeEv::Tool { name, args, reply } => {
+                self.code.status = match name.as_str() {
+                    "start_code_agent" => "Starting a Code Agent…",
+                    "message_code_agent" => "Messaging a Code Agent…",
+                    "stop_code_agent" => "Stopping a Code Agent…",
+                    _ => "Checking on the Code Agents…",
+                }
+                .into();
+                let out = self.code_tool(&name, &args);
+                let _ = reply.send(out);
+            }
+            CodeEv::Done(added, r) => {
+                if let Some(events) = self.code.done(added, r) {
+                    let (system, cfg, hooks) = (self.code_system(), self.cfg.clone(), self.hooks.clone());
+                    self.code.resume_with(events, system, &cfg, &hooks);
+                }
+            }
+        }
+    }
+
+    fn live_chat(&self, id: &str) -> Option<&Chat> {
+        std::iter::once(&self.chat).chain(&self.background).find(|c| c.session_id == id)
+    }
+
+    fn code_state(&self, id: &str) -> &'static str {
+        match self.live_chat(id) {
+            Some(c) if c.waiting() => "waiting for the user to answer it",
+            Some(c) if c.running => "working",
+            _ => "idle",
+        }
+    }
+
+    /// Its last assistant messages, newest last.
+    fn code_last_words(&self, id: &str, n: usize) -> Vec<String> {
+        let mut out: Vec<String> = match self.live_chat(id) {
+            Some(c) => c
+                .items
+                .iter()
+                .filter_map(|i| match &i.kind {
+                    ItemKind::Assistant { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+                    ItemKind::Error(e) => Some(format!("[Error] {e}")),
+                    _ => None,
+                })
+                .collect(),
+            None => session::load_session(id)
+                .map(|s| {
+                    s.messages
+                        .iter()
+                        .filter_map(|m| match m {
+                            Message::Assistant { content: Some(t), .. } if !t.trim().is_empty() => Some(t.clone()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let skip = out.len().saturating_sub(n);
+        out.drain(..skip);
+        out
+    }
+
+    fn code_known(&self, id: &str) -> bool {
+        self.live_chat(id).is_some() || self.sessions.iter().any(|s| s.id == id)
+    }
+
+    fn code_tool(&mut self, name: &str, args: &Value) -> String {
+        let s = |k: &str| args[k].as_str().map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+        let id = s("id").unwrap_or_default();
+        let unknown = format!("There's no Code Agent {id}. Call list_code_agents to see their ids.");
+        match name {
+            "start_code_agent" => {
+                let Some(task) = s("task") else { return "start_code_agent needs the task.".into() };
+                let dir = self.chat.cwd.clone();
+                if !std::path::Path::new(&dir).is_dir() {
+                    return format!("The folder {dir} isn't there. Ask the user to pick a folder in the message box.");
+                }
+                // A chat that's working carries on behind the new one.
+                if !self.chat.items.is_empty() || self.chat.running {
+                    self.change_project(dir);
+                }
+                if !self.send(task.clone(), vec![], false) {
+                    return "The Code Agent didn't start: the app didn't take the task. Ask the user to check the model picked in the message box.".into();
+                }
+                let id = self.chat.session_id.clone();
+                self.code.note_started(&id, &clip(task.lines().next().unwrap_or(""), 90));
+                format!("Started Code Agent {id}. You'll get an [Event] when it finishes its turn.")
+            }
+            "list_code_agents" => {
+                let limit = args["limit"].as_u64().unwrap_or(15).clamp(1, 50) as usize;
+                let rows: Vec<String> = self
+                    .sessions_in_order()
+                    .into_iter()
+                    .take(limit)
+                    .map(|c| {
+                        let mine = if self.code.started().iter().any(|x| *x == c.id) { " · started by you" } else { "" };
+                        format!("- {} · \"{}\" · {} · {} · {}{mine}", c.id, clip(&c.title, 80), c.cwd, self.code_state(&c.id), session::ago(c.updated))
+                    })
+                    .collect();
+                if rows.is_empty() { "No Code Agents yet.".into() } else { rows.join("\n") }
+            }
+            "read_code_agent" => {
+                if !self.code_known(&id) {
+                    return unknown;
+                }
+                let title = self.sessions.iter().find(|c| c.id == id).map(|c| c.title.clone()).unwrap_or_default();
+                let mut out = format!("Code Agent {id} \"{}\": {}.", clip(&title, 80), self.code_state(&id));
+                if let Some(c) = self.live_chat(&id) {
+                    if let Some(p) = &c.permission {
+                        out.push_str(&format!("\nIt's asking the user to allow: {}", clip(&p.req.label, 300)));
+                    }
+                    if c.questions.is_some() {
+                        out.push_str("\nIt asked the user questions, waiting in its chat.");
+                    }
+                    if !c.status.is_empty() {
+                        out.push_str(&format!("\nNow: {}", c.status));
+                    }
+                }
+                let words = self.code_last_words(&id, 3);
+                if words.is_empty() {
+                    out.push_str("\nIt hasn't said anything yet.");
+                } else {
+                    out.push_str("\nIts latest messages:");
+                    for w in words {
+                        out.push_str(&format!("\n---\n{}", clip(&w, 2500)));
+                    }
+                }
+                out
+            }
+            "message_code_agent" => {
+                let Some(text) = s("message") else { return "message_code_agent needs the message.".into() };
+                if !self.code_known(&id) {
+                    return unknown;
+                }
+                if self.chat.session_id != id {
+                    self.open_chat(&id);
+                }
+                let working = self.chat.running;
+                if !self.send(text, vec![], false) {
+                    return "It didn't take the message.".into();
+                }
+                if working { "Queued: it gets it once it finishes what it's doing.".into() } else { "Sent. You'll get an [Event] when it finishes.".into() }
+            }
+            "stop_code_agent" => {
+                if !self.code_known(&id) {
+                    return unknown;
+                }
+                if !self.live_chat(&id).is_some_and(|c| c.running) {
+                    return "It isn't working.".into();
+                }
+                if self.chat.session_id != id {
+                    self.open_chat(&id);
+                }
+                self.stop();
+                "Stopped.".into()
+            }
+            _ => format!("There's no tool {name}."),
+        }
+    }
+
+    /// The chat on screen (or being handled behind) finished a turn: if the Code agent started it, it hears how it went.
+    fn code_chat_finished(&mut self, stopped: bool, error: Option<&str>) {
+        let id = self.chat.session_id.clone();
+        // One the user stopped needs no report.
+        if stopped || !self.code.started().iter().any(|c| *c == id) {
+            return;
+        }
+        let how = match error {
+            Some(e) => format!("stopped with an error: {}", clip(e, 400)),
+            None => "finished its turn".into(),
+        };
+        let last = self.code_last_words(&id, 1).pop().map(|w| clip(&w, 2500)).unwrap_or_else(|| "(nothing)".into());
+        let summary = format!("Code Agent {id} (\"{}\") {how}. Its last message:\n{last}", clip(&self.chat_title(), 80));
+        let (system, cfg, hooks) = (self.code_system(), self.cfg.clone(), self.hooks.clone());
+        self.code.chat_finished(summary, system, &cfg, &hooks);
     }
 }
 
@@ -4267,12 +4407,12 @@ mod tests {
             chat_order: vec![],
             notify_flash: None,
             notify_toast: None,
+            notify_agents: None,
             discord_presence: false,
             discord_project: false,
             auto_update: false,
             last_version: None,
             experimental_images: false,
-            browser_agent: false,
             image_provider: "openrouter".into(),
             image_model: None,
             image_key: None,
@@ -4282,7 +4422,6 @@ mod tests {
             team: None,
             scout_mote: false,
             scout_mote_id: None,
-            dreaming: None,
             chatbot_link: false,
             chatbot_link_mode: "default".into(),
             usage_analytics: false,

@@ -7,7 +7,8 @@ import { openExternal } from '../api';
 import { ui, useUi, useView } from '../store';
 import { Markdown } from '../Transcript';
 import { ScoutLogo } from '../logo';
-import { CodeSection } from '../Sidebar';
+import { CodeAgentItem } from './CodeAgent';
+import { SidebarFoot } from './ConnectApps';
 import { Icon, IconButton, Modal, Spinner, Toggle } from '../widgets';
 import { AGENT_COLORS, AGENT_SHAPES, Avatar } from './Avatar';
 import {
@@ -44,6 +45,7 @@ import {
   type NewSchedule,
   type Schedule,
 } from './store';
+import { SentAt } from './SentAt';
 import './agent.css';
 
 const when = (iso: string) => {
@@ -65,7 +67,6 @@ export function AgentPage() {
   const error = useAgents((s) => s.error);
   const selected = useAgents((s) => s.selected);
   const editing = useAgents((s) => s.editing);
-  const settingsOpen = useAgents((s) => s.settingsOpen);
   const schedulesFor = useAgents((s) => s.schedulesFor);
   const agent = list?.find((a) => a.id === selected) ?? null;
   const scheduled = list?.find((a) => a.id === schedulesFor) ?? null;
@@ -99,20 +100,20 @@ export function AgentPage() {
         )}
       </section>
       {editing && <Editor id={editing} />}
-      {settingsOpen && <AgentSettings />}
       {scheduled && <Schedules agent={scheduled} />}
     </div>
   );
 }
 
-/** The left column on the home page and the Code screen: your agents on top, then the Code section (New chat and
- *  your coding chats). Signed out, there are no agents, so only the Code section shows. */
+/** The left column on the Agent pages and in a Code Agent's chat: your agents, then the Code agent last (its Code Agents are on
+ *  the right of its page). Signed out, there are no agents, so only the Code agent shows. At its foot: Connect to Apps, the
+ *  account menu and the usage button (SidebarFoot), which the top bar doesn't show where this column is. */
 export function AgentSidebar() {
   const { hasKey } = useView('cfg');
   return (
     <aside className="agent-list">
-      {hasKey ? <AgentList /> : <div className="agent-block"><AgentsHead /></div>}
-      <CodeSection />
+      {hasKey ? <AgentList /> : <div className="agent-block"><AgentsHead /><div className="agent-list-items"><CodeAgentNav /></div></div>}
+      <SidebarFoot />
     </aside>
   );
 }
@@ -139,7 +140,6 @@ function AgentList() {
     <div className="agent-block">
       <AgentsHead>
         <span className="grow" />
-        <IconButton icon="gear" tip="Agent settings" size={26} onClick={() => agentStore.set({ settingsOpen: true })} />
         <IconButton icon="plus" tip={list.length >= max ? `You can have up to ${max} agents` : 'New agent'} size={26} disabled={list.length >= max} onClick={() => agentStore.set({ editing: 'new' })} />
       </AgentsHead>
       <div className="agent-list-items">
@@ -153,6 +153,7 @@ function AgentList() {
             {a.unread > 0 && a.id !== selected && <span className="agent-unread">{a.unread > 9 ? '9+' : a.unread}</span>}
           </button>
         ))}
+        <CodeAgentNav />
       </div>
     </div>
   );
@@ -318,10 +319,11 @@ const MessageView = memo(function MessageView({ m, agentId, first }: { m: Messag
     const failed = m.local?.state === 'failed';
     return (
       <div className={`agent-msg user ${failed ? 'failed' : ''}`}>
-        <div className="agent-bubble-user" title={m.local ? undefined : when(m.created_at)}>
+        <div className="agent-bubble-user">
           {m.text}
           {files.length > 0 && <div className="agent-files">{files.map((f) => <span key={f.id} className="agent-file"><Icon name="paperclip" size={11} />{f.name}</span>)}</div>}
         </div>
+        {!m.local && <SentAt at={m.created_at} />}
         {failed && (
           <div className="agent-unsent tiny">
             <span title={m.local?.error}>Didn’t send{m.local?.error ? `: ${m.local.error}` : ''}</span>
@@ -334,9 +336,10 @@ const MessageView = memo(function MessageView({ m, agentId, first }: { m: Messag
   }
   if (m.role === 'card' && m.data && 'kind' in m.data && m.data.kind === 'activity') {
     return (
-      <div id={`agent-msg-${m.id}`} className="agent-activity" title={when(m.created_at)}>
-        <Icon name="code" size={12} />
+      <div id={`agent-msg-${m.id}`} className="agent-activity">
+        <Icon name={m.data.tool === 'message_agent' || m.data.tool === 'agent_message' ? 'chat' : 'code'} size={12} />
         <span>{m.text}</span>
+        <SentAt at={m.created_at} />
       </div>
     );
   }
@@ -346,7 +349,7 @@ const MessageView = memo(function MessageView({ m, agentId, first }: { m: Messag
   const others = files.filter((f) => !isImage(f));
   // Stacked like a text thread: what it sent first, then its words under it, never side by side.
   return (
-    <div className={`agent-msg agent ${first ? 'first' : ''}`} title={when(m.created_at)}>
+    <div className={`agent-msg agent ${first ? 'first' : ''}`}>
       {images.length > 0 && (
         <div className={`agent-gallery n${Math.min(images.length, 4)}`}>
           {images.map((f) => <SentImage key={f.id} agentId={agentId} f={f} />)}
@@ -358,6 +361,7 @@ const MessageView = memo(function MessageView({ m, agentId, first }: { m: Messag
           <Markdown text={m.text} />
         </div>
       )}
+      <SentAt at={m.created_at} />
     </div>
   );
 });
@@ -534,7 +538,7 @@ function CardView({ m, agentId }: { m: Message; agentId: string }) {
     }
   };
   const answered = 'answer' in card ? card.answer : undefined;
-  if (card.kind === 'permission') return <PermissionCard setting={card.setting} text={m.text} />;
+  if (card.kind === 'permission') return card.setting === 'localAccess' ? <PermissionCard setting={card.setting} text={m.text} /> : null;
   if (card.kind === 'alarm') return <AlarmCard m={m} card={card} />;
   if (card.kind === 'secret') return <SecretCard m={m} card={card} agentId={agentId} />;
   if (card.kind === 'command' || (card.kind === 'approval' && card.risky)) {
@@ -689,10 +693,10 @@ function AlarmCard({ m, card }: { m: Message; card: Extract<Card, { kind: 'alarm
 }
 
 /** The popup for a tool the user hasn't allowed yet: a card in the chat with the switch right in it. */
-function PermissionCard({ setting, text }: { setting: 'codeAccess' | 'localAccess'; text: string }) {
+function PermissionCard({ setting, text }: { setting: 'localAccess'; text: string }) {
   const on = useAgents((s) => s.prefs[setting]);
-  const what = setting === 'codeAccess' ? 'Code agent access' : 'Local access';
-  const why = setting === 'codeAccess' ? 'Lets your agents see, start and manage your ScoutCode coding tasks.' : 'Lets your agents run commands on this PC and open pages in your browser. Commands ask you first unless you choose Auto-accept in Agent settings.';
+  const what = 'Local access';
+  const why = 'Lets your agents run commands on this PC and open pages in your browser. Commands ask you first unless you choose Auto-accept in Settings.';
   return (
     <div className="agent-card kind-permission">
       <div className="agent-card-head"><Icon name="lock" size={14} /><span>{text}</span></div>
@@ -851,7 +855,8 @@ function Editor({ id }: { id: string }) {
   );
 }
 
-function AgentSettings() {
+/** Agent settings, on the Agents page of Settings. */
+export function AgentSettings() {
   const prefs = useAgents((s) => s.prefs);
   const openrouter = useAgents((s) => s.openrouter);
   const [key, setKey] = useState('');
@@ -870,8 +875,7 @@ function AgentSettings() {
     }
   };
   return (
-    <Modal onClose={() => agentStore.set({ settingsOpen: false })} className="agent-settings">
-      <h2>Agent settings</h2>
+    <>
       <div className="agent-setting">
         <div>
           <b>Local access</b>
@@ -902,7 +906,7 @@ function AgentSettings() {
       </div>
       <MemorySetting />
       <p className="tiny dim">Each agent has its own Epsilon computer, which uses your Epsilon credits only while it runs.</p>
-    </Modal>
+    </>
   );
 }
 
@@ -1227,4 +1231,10 @@ function MemorySetting() {
       )}
     </div>
   );
+}
+
+/** The Code agent's row: picked on its page and in its Code Agents' chats. */
+function CodeAgentNav() {
+  const on = useUi((u) => u.page === 'code' || u.page === 'chat');
+  return <CodeAgentItem on={on} />;
 }

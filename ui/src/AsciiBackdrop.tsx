@@ -54,10 +54,29 @@ export function AsciiBackdrop() {
     let rgb = '237 237 237';
     let ripples: { x: number; y: number; start: number }[] = [];
 
+    // Every letter drawn once, in the theme's color, into a strip that frames copy from: thousands of fillText calls
+    // a frame (each one shaping text) were most of the screen's work.
+    const atlas = document.createElement('canvas');
+    const actx = atlas.getContext('2d')!;
+    let aw = 1, ah = 1;
+    const drawAtlas = () => {
+      aw = Math.ceil(CELL_W * dpr);
+      ah = Math.ceil(CELL_H * dpr);
+      atlas.width = aw * CHARS.length;
+      atlas.height = ah;
+      actx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      actx.clearRect(0, 0, atlas.width, atlas.height);
+      actx.font = FONT;
+      actx.textBaseline = 'top';
+      actx.fillStyle = `rgb(${rgb})`;
+      for (let c = 0; c < CHARS.length; c++) actx.fillText(CHARS[c], (c * aw) / dpr, 0);
+    };
+
     const readColor = () => {
       const hex = themeColor('strong') || '#ededed';
       const n = parseInt(hex.replace('#', '').slice(0, 6), 16);
       if (!Number.isNaN(n)) rgb = `${(n >> 16) & 255} ${(n >> 8) & 255} ${n & 255}`;
+      drawAtlas();
     };
 
     const resize = () => {
@@ -76,8 +95,6 @@ export function AsciiBackdrop() {
     const draw = (t: number) => {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cols * CELL_W, rows * CELL_H);
-      ctx.font = FONT;
-      ctx.textBaseline = 'top';
       // A handful of letters change each frame, so the field shimmers a little.
       for (let k = Math.ceil(grid.length / 220); k > 0; k--) grid[Math.floor(Math.random() * grid.length)] = Math.floor(Math.random() * CHARS.length);
       const s = t / 1000;
@@ -119,9 +136,10 @@ export function AsciiBackdrop() {
       for (let l = 0; l < LEVELS; l++) {
         const cells = buckets[l];
         if (!cells.length) continue;
-        ctx.fillStyle = `rgb(${rgb} / ${(0.035 + (l / (LEVELS - 1)) * 0.15).toFixed(3)})`;
-        for (const i of cells) ctx.fillText(CHARS[grid[i]], (i % cols) * CELL_W, Math.floor(i / cols) * CELL_H);
+        ctx.globalAlpha = 0.035 + (l / (LEVELS - 1)) * 0.15;
+        for (const i of cells) ctx.drawImage(atlas, grid[i] * aw, 0, aw, ah, (i % cols) * CELL_W, Math.floor(i / cols) * CELL_H, aw / dpr, ah / dpr);
       }
+      ctx.globalAlpha = 1;
     };
 
     resize();

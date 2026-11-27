@@ -1,8 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { act, openExternal, type AgentStep, type Item, type ModelRef } from './api';
 import { logo } from './Accounts';
+import { markdownBlocks } from './markdownBlocks';
 import { ModelPicker, useModelName } from './ModelMenu';
 import { core, focusComposer, ui, useCore, useUi, useView } from './store';
 import { CodeBlock, CopyIconButton, Icon, IconButton, MenuItem, Modal, Popover, ShowDisplay, Spinner } from './widgets';
@@ -15,7 +16,6 @@ export function toolTitle(name: string): string {
   const titles: Record<string, string> = {
     view: 'Read', write_file: 'Write', edit_file: 'Edit', multi_edit: 'Edit', apply_patch: 'Patch', list_dir: 'List', glob: 'Find', grep: 'Search', bash: 'Run',
     shell_output: 'Output', kill_shell: 'Stop', web_fetch: 'Fetch', web_search: 'Web search', todo_write: 'Todos', task: 'Task', present_plan: 'Plan', ask_questions: 'Ask', update_memory: 'Memory', generate_image: 'Image',
-    browser: 'Browser', browser_navigate: 'Open', browser_snapshot: 'Read page', browser_click: 'Click', browser_type: 'Type', browser_select: 'Pick', browser_press: 'Press', browser_scroll: 'Scroll', browser_wait: 'Wait', browser_eval: 'Page script',
     claude: 'Claude Code', codex: 'Codex', kiro: 'Kiro', antigravity: 'Antigravity', vibe: 'Mistral Vibe', opencode: 'OpenCode', grok: 'Grok Build',
   };
   return titles[name] ?? name.replace(/^mcp__/, '');
@@ -72,38 +72,43 @@ function FileLink({ target, title, children }: { target: { path: string; line: n
 /** Keeps file paths in links (react-markdown would drop "main.rs:42" as an unknown protocol), but never script URLs. */
 const keepUrl = (url: string) => (/^\s*(javascript|vbscript|data):/i.test(url) ? '' : url);
 
-export function Markdown({ text }: { text: string }) {
+const PLUGINS = [remarkGfm];
+
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const cwd = useView('chat').cwd;
-  return (
-    <div className="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={keepUrl}
-        components={{
-          a: ({ href, children }) => {
-            const target = href ? fileTarget(href, cwd) : null;
-            if (target) return <FileLink target={target} title={href!}>{children}</FileLink>;
-            return <a className="link" href={href} onClick={(e) => { e.preventDefault(); if (href && WEB.test(href)) openExternal(href); }}>{children}</a>;
-          },
-          // A path in backticks opens too. Code blocks have a language class, or go through `pre` below.
-          code: ({ className, children }) => {
-            const t = typeof children === 'string' ? children.trim() : null;
-            const target = !className && t && PATH_LIKE.test(t) ? fileTarget(t, cwd) : null;
-            if (target) return <FileLink target={target} title={t!}><code>{children}</code></FileLink>;
-            return <code className={className}>{children}</code>;
-          },
-          // Replies don't get to fetch things: an image shows as the link it is.
-          img: ({ src, alt }) => (typeof src === 'string' ? <a className="link" href={src} onClick={(e) => { e.preventDefault(); openExternal(src); }}>{alt || src}</a> : <>{alt}</>),
-          pre: ({ children }) => {
-            const code = children as { props?: { children?: unknown } };
-            return <CodeBlock code={String(code?.props?.children ?? '').replace(/\n$/, '')} />;
-          },
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
+  // Drawing a long reply can wait behind typing and scrolling.
+  const shown = useDeferredValue(text);
+  const blocks = useMemo(() => markdownBlocks(shown), [shown]);
+  return <div className="markdown">{blocks.map((b, i) => <MarkdownBlock key={i} text={b} cwd={cwd} />)}</div>;
+});
+
+const MarkdownBlock = memo(function MarkdownBlock({ text, cwd }: { text: string; cwd: string }) {
+  // The same components every time: new ones each render would remount every link and code block in the reply.
+  const components = useMemo(() => markdownComponents(cwd), [cwd]);
+  return <ReactMarkdown remarkPlugins={PLUGINS} urlTransform={keepUrl} components={components}>{text}</ReactMarkdown>;
+});
+
+function markdownComponents(cwd: string): Components {
+  return {
+    a: ({ href, children }) => {
+      const target = href ? fileTarget(href, cwd) : null;
+      if (target) return <FileLink target={target} title={href!}>{children}</FileLink>;
+      return <a className="link" href={href} onClick={(e) => { e.preventDefault(); if (href && WEB.test(href)) openExternal(href); }}>{children}</a>;
+    },
+    // A path in backticks opens too. Code blocks have a language class, or go through `pre` below.
+    code: ({ className, children }) => {
+      const t = typeof children === 'string' ? children.trim() : null;
+      const target = !className && t && PATH_LIKE.test(t) ? fileTarget(t, cwd) : null;
+      if (target) return <FileLink target={target} title={t!}><code>{children}</code></FileLink>;
+      return <code className={className}>{children}</code>;
+    },
+    // Replies don't get to fetch things: an image shows as the link it is.
+    img: ({ src, alt }) => (typeof src === 'string' ? <a className="link" href={src} onClick={(e) => { e.preventDefault(); openExternal(src); }}>{alt || src}</a> : <>{alt}</>),
+    pre: ({ children }) => {
+      const code = children as { props?: { children?: unknown } };
+      return <CodeBlock code={String(code?.props?.children ?? '').replace(/\n$/, '')} />;
+    },
+  };
 }
 
 function FileChip({ path }: { path: string }) {
@@ -333,7 +338,7 @@ function OutOfCredit({ item }: { item: { id: number; text: string } }) {
             <div className="credit-actions">
               <button type="button" className="button primary" onClick={() => retry()}>Try again</button>
               <ModelPicker label="Choose another model" onPick={retry} />
-              <button type="button" className="button" onClick={() => ui.set({ page: 'usage' })}>See usage</button>
+              <button type="button" className="button" onClick={() => ui.set({ usageOpen: true })}>See usage</button>
             </div>
             {free.length > 0 && (
               <div className="credit-actions">
@@ -538,19 +543,21 @@ function EmptyState() {
   );
 }
 
-type Mark = { at: number; id: number; user: boolean; text: string };
+type Mark = { at: number; id: number; user: boolean };
+
+const markText = (it: Item | undefined) => (it?.kind === 'user' ? it.text || it.files.map((f) => f.split(/[\\/]/).pop()).join(', ') : it?.kind === 'assistant' ? it.text : '');
 
 /** Stands in for the scrollbar: a tick for each message down the right edge, the one being read lit. Pointing at a tick
  *  shows the start of its message, and clicking goes to it. */
 const MessageRail = memo(function MessageRail({ items, scroller, reveal }: { items: Item[]; scroller: RefObject<HTMLDivElement | null>; reveal: (at: number, block: ScrollLogicalPosition) => void }) {
-  const marks = useMemo(() => {
-    const out: Mark[] = [];
-    items.forEach((it, at) => {
-      if (it.kind === 'user') out.push({ at, id: it.id, user: true, text: it.text || it.files.map((f) => f.split(/[\\/]/).pop()).join(', ') });
-      else if (it.kind === 'assistant' && it.text.trim()) out.push({ at, id: it.id, user: false, text: it.text });
-    });
-    return out;
-  }, [items]);
+  const all: Mark[] = [];
+  items.forEach((it, at) => {
+    if (it.kind === 'user' || (it.kind === 'assistant' && it.text.trim())) all.push({ at, id: it.id, user: it.kind === 'user' });
+  });
+  // The same marks while a reply streams in, so finding the one being read (which measures every message) runs when a
+  // message is added, not for every word.
+  const key = all.map((m) => `${m.at}:${m.id}`).join();
+  const marks = useMemo(() => all, [key]); // eslint-disable-line
   const [current, setCurrent] = useState(-1);
   const [peek, setPeek] = useState<{ mark: Mark; top: number } | null>(null);
   const rail = useRef<HTMLDivElement>(null);
@@ -595,7 +602,7 @@ const MessageRail = memo(function MessageRail({ items, scroller, reveal }: { ite
           key={m.id}
           type="button"
           className={`msg-tick ${m.user ? 'user' : ''} ${n === current ? 'on' : ''}`}
-          aria-label={`Go to ${m.user ? 'your message' : "Scout's reply"}: ${m.text.slice(0, 80)}`}
+          aria-label={`Go to ${m.user ? 'your message' : "Scout's reply"}: ${markText(items[m.at]).slice(0, 80)}`}
           onMouseEnter={(e) => setPeek({ mark: m, top: e.currentTarget.offsetTop + e.currentTarget.offsetHeight / 2 })}
           onFocus={(e) => setPeek({ mark: m, top: e.currentTarget.offsetTop + e.currentTarget.offsetHeight / 2 })}
           onBlur={() => setPeek(null)}
@@ -605,7 +612,7 @@ const MessageRail = memo(function MessageRail({ items, scroller, reveal }: { ite
       {peek && (
         <div className="msg-peek" style={{ top: Math.max(0, Math.min(peek.top, (rail.current?.clientHeight ?? 0))) }}>
           <div className="msg-peek-who small"><b className="strong">{peek.mark.user ? 'You' : 'Scout'}</b></div>
-          <div className="msg-peek-text">{peek.mark.text.trim().slice(0, 400)}</div>
+          <div className="msg-peek-text">{markText(items[peek.mark.at]).trim().slice(0, 400)}</div>
         </div>
       )}
     </div>

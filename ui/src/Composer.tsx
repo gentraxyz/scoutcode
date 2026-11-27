@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { act, fixed, invoke, num, usd, type Permission } from './api';
 import { ModelChip } from './ModelMenu';
-import { FreeQuotaChip, meterText, PlanLimits, usePlanLimit, usedShare } from './Quota';
+import { FreeLimits, meterText, PlanLimits, useFreeLimit, usePlanLimit, usedShare } from './Quota';
 import { Markdown } from './Transcript';
 import { ui, useCore, useUi, useView } from './store';
 import { CodeBlock, Icon, IconButton, Popover, ShowDisplay, Spinner, TodoList } from './widgets';
@@ -254,12 +254,18 @@ function InputBox() {
     if (cwd.current !== chat.cwd) ui.set({ attachments: [] });
     cwd.current = chat.cwd;
   }, [chat.cwd]);
+  // Like Agent's box: one round pill while the prompt fits on a line, with the buttons beside it. Once it wraps the
+  // prompt takes its own row above the buttons, and stays there until the box is cleared, so it never flips back and
+  // forth while typing.
+  const [tall, setTall] = useState(false);
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
     el.style.height = 'auto';
+    if (!input) { if (tall) setTall(false); }
+    else if (!tall && (input.includes('\n') || el.scrollHeight > 36)) setTall(true);
     el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
-  }, [input]);
+  }, [input, tall]);
   useEffect(() => {
     if (!mention) return setPicks([]);
     let stale = false;
@@ -372,7 +378,7 @@ function InputBox() {
 
   const ready = !!input.trim() || attachments.length > 0;
   return (
-    <div className={`input-box ${running ? 'working' : ''}`}>
+    <div className={`input-box ${running ? 'working' : ''} ${tall ? 'tall' : ''}`}>
       {attachments.length > 0 && (
         <div className="chips">
           {attachments.map((f) => (
@@ -386,7 +392,7 @@ function InputBox() {
       <textarea
         ref={box}
         className="prompt"
-        rows={2}
+        rows={1}
         value={input}
         placeholder={running ? 'Scout is working… type to queue a message' : 'Ask Scout to build, fix or explain something'}
         onChange={(e) => { historyPos.current = null; ui.set({ input: e.target.value }); requestAnimationFrame(updateMention); }}
@@ -422,10 +428,8 @@ function InputBox() {
       )}
       <div className="row composer-controls">
         <button type="button" className="round attach" title="Attach files (or drop them on the window, or type @)" aria-label="Attach files" onClick={() => ui.set({ pickingFiles: true })}><Icon name="plus" /></button>
-        <ComposerSettings />
-        <span className="grow" />
+        <span className="composer-gap" />
         <ModelChip />
-        <FreeQuotaChip />
         <UsageRing />
         {(ready || !running) && (
           <button type="button" className={`round send ${ready ? 'ready' : ''}`} disabled={!ready} aria-label="Send" title={running ? 'Queue (Enter) · Ctrl+click or Ctrl+Enter to send it now' : undefined} onClick={(e) => send(e.ctrlKey)}><Icon name="arrowUp" /></button>
@@ -444,30 +448,34 @@ function UsageRing() {
   // A plan with limits (Claude, Codex, Grok): how much of the window closest to running out is used. Otherwise the
   // share of the funds this session has spent, grey until the server reports a balance.
   const plan = usePlanLimit();
+  // A free model's limits (ScoutCode's daily requests, and so on) show here too: the ring turns yellow once less than a tenth is left.
+  const free = useFreeLimit();
   const b = typeof totals.balance === 'number' && Number.isFinite(totals.balance) ? totals.balance : undefined;
   const cost = num(totals.cost);
   const ctx = num(context);
-  const frac = plan ? usedShare(plan.top) : b !== undefined && b >= 0 && cost + b > 0 ? Math.min(1, cost / (cost + b)) : 0;
+  const frac = plan ? usedShare(plan.top) : free ? usedShare(free.top) : b !== undefined && b >= 0 && cost + b > 0 ? Math.min(1, cost / (cost + b)) : 0;
   const low = plan !== null && frac >= 0.9;
+  const warn = !plan && free !== null && frac >= 0.9;
   const c = 2 * Math.PI * 6;
   const limit = Math.max(1, autoCompactTokens);
-  if (!plan && !started && b === undefined) return null;
+  if (!plan && !free && !started && b === undefined) return null;
   const rows: [string, string][] = [
     ['Cost', `$${fixed(cost, 4)}`], ['Requests', String(num(totals.requests))], ['Prompt tokens', `${num(totals.promptTokens)} (${num(totals.cachedTokens)} cached)`],
     ['Completion tokens', String(num(totals.completionTokens))], ['Context', `${fixed(ctx / 1000, 1)}k tokens · ${fixed(Math.min(100, (ctx / limit) * 100), 0)}% of auto-compact`],
   ];
   return (
     <Popover align="end" side="top" width={280} trigger={(_, toggle) => (
-      <button type="button" className="usage-ring" title={plan ? `${plan.top.label}: ${meterText(plan.top)}` : 'Usage this session'} aria-label="Usage" onClick={() => { if (plan) act('quotaRefresh'); toggle(); }}>
+      <button type="button" className={`usage-ring ${warn ? 'warn' : ''}`} title={plan ? `${plan.top.label}: ${meterText(plan.top)}` : free ? `${free.top.label}: ${meterText(free.top)}` : 'Usage this session'} aria-label="Usage" onClick={() => { if (plan || free) act('quotaRefresh'); toggle(); }}>
         <svg width={16} height={16} viewBox="0 0 16 16">
           <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className="ring-track" />
-          {frac > 0 && <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className={`ring-fill ${low ? 'low' : ''}`} strokeDasharray={`${frac * c} ${c}`} transform="rotate(-90 8 8)" />}
+          {frac > 0 && <circle cx={8} cy={8} r={6} fill="none" strokeWidth={2.5} className={`ring-fill ${low ? 'low' : warn ? 'warn' : ''}`} strokeDasharray={`${frac * c} ${c}`} transform="rotate(-90 8 8)" />}
         </svg>
       </button>
     )}>
-      {() => (
+      {(close) => (
         <div className="stack pad">
           {plan && <PlanLimits snapshots={plan.snapshots} />}
+          {!plan && free && <FreeLimits snapshots={free.snapshots} close={close} />}
           {b !== undefined && <div className="stat-row wide-key"><span className="small dim">Balance</span><span className="small">{usd(b)}</span></div>}
           {started && <b className="strong">Usage this session</b>}
           {started && rows.map(([k, v]) => <div key={k} className="stat-row wide-key"><span className="small dim">{k}</span><span className="small">{v}</span></div>)}
@@ -492,6 +500,7 @@ function Footer() {
   return (
     <div className="footer">
       <WorkingOn disabled={running} />
+      <ComposerSettings />
       {running ? (
         <>
           <Spinner size={11} />
@@ -507,7 +516,7 @@ function Footer() {
 }
 
 /** The permission mode: a chip with the mode's icon and name, opening a list of the modes to pick from. */
-function ComposerSettings() {
+export function ComposerSettings() {
   const mode = useView('mode');
   const { modes } = useCore((s) => s.statics);
   const rank = (id: string) => { const i = SECURITY_ORDER.indexOf(id); return i < 0 ? SECURITY_ORDER.length : i; };

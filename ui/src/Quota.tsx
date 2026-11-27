@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { act, openExternal, shortDate, usd, type QuotaMeter, type QuotaSnapshot, type View } from './api';
 import { ui, useCore, useView } from './store';
-import { Icon, Popover } from './widgets';
+import { Icon } from './widgets';
 
 /** How each provider tells Scout its limits: Scout can ask, it says so in its answers, or it doesn't say. */
 const HOW: Record<string, 'asks' | 'answers' | 'never'> = {
@@ -85,34 +85,32 @@ function headline(s: QuotaSnapshot): QuotaMeter | null {
   return counted.sort((a, b) => share(a)! - share(b)!)[0] ?? null;
 }
 
-/** In the composer while a free model is picked: what's left of the free requests, with all of the provider's limits on click. */
-export function FreeQuotaChip() {
+/** While a free model is picked: its limits, with the one closest to running out, for the composer's usage ring. */
+export function useFreeLimit(): { top: QuotaMeter; snapshots: QuotaSnapshot[] } | null {
   const current = useView('model');
   const quotas = useView('quotas');
   const free = useCurrentFree();
-  const now = useNow();
+  if (!free) return null;
   const mine = quotas.filter((s) => s.provider === current.provider);
-  const top = mine.map(headline).find((m) => m) ?? null;
-  if (!free || !top) return null;
-  const f = share(top);
-  const short = top.label === 'Free requests today' ? `${amount(top.left!, top.unit)} free today` : `${amount(top.left!, top.unit)} left`;
+  const top = mine.map(headline).filter((m): m is QuotaMeter => !!m).sort((a, b) => share(a)! - share(b)!)[0];
+  return top ? { top, snapshots: mine } : null;
+}
+
+/** The free model's limits, with every provider's limits a click away. Opened from the composer's usage ring. */
+export function FreeLimits({ snapshots, close }: { snapshots: QuotaSnapshot[]; close: () => void }) {
+  const now = useNow();
+  const tier = snapshots[0]?.tier;
   return (
-    <Popover align="end" side="top" width={300} onOpen={() => act('quotaRefresh')} trigger={(_, toggle) => (
-      <button type="button" className={`chip ${f !== null && f < 0.1 ? 'red' : ''}`} title="Free requests left" onClick={toggle}>{short}</button>
-    )}>
-      {(close) => (
-        <div className="stack pad">
-          <b className="strong">Limits{mine[0]?.tier ? ` · ${TIERS[mine[0].tier] ?? mine[0].tier}` : ''}</b>
-          {mine.map((s) => (
-            <div key={s.account ?? ''} className="stack">
-              {s.account && <div className="tiny muted">{s.account}</div>}
-              {s.meters.map((m) => <MeterRow key={m.label} m={m} now={now} />)}
-            </div>
-          ))}
-          <button type="button" className="link small quota-all" onClick={() => { close(); ui.set({ page: 'usage' }); }}>Every provider's limits</button>
+    <div className="stack">
+      <b className="strong">Limits{tier ? ` · ${TIERS[tier] ?? tier}` : ''}</b>
+      {snapshots.map((s) => (
+        <div key={s.account ?? ''} className="stack">
+          {s.account && <div className="tiny muted">{s.account}</div>}
+          {s.meters.map((m) => <MeterRow key={m.label} m={m} now={now} />)}
         </div>
-      )}
-    </Popover>
+      ))}
+      <button type="button" className="link small quota-all" onClick={() => { close(); ui.set({ usageOpen: true }); }}>Every provider's limits</button>
+    </div>
   );
 }
 

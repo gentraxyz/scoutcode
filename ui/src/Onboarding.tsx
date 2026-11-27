@@ -8,11 +8,11 @@
 // - Path: just the agent, or the agent and ScoutCode
 // - ScoutCode: sign in (with Scout logo); continuing without an account only on the ScoutCode-only path
 // - Meet: the agent asks, in a scripted chat, for its name, title, shape, colour and notes, and is made from the answers
-// - Why Scout (free usage, providers + ScoutCode Cloud, Epsilon, memory, Dreaming, games and music)
+// - Why Scout (free usage, providers + ScoutCode Cloud, Epsilon, memory, games and music)
 // - Providers: a list to add or remove from, beside a live copy of the model menu showing what they'll get
 // - Project Setup (defaults to ~/Scout; preloads detected chats on mount and groups them by project, defaulting to Skip)
 // - Appearance (theme, accent, window material, logo — with Classic logo fixed)
-// - General Options (sectioned cards with icons: personal instructions, ScoutMote, Discord RPC, Games, Notifications & updates)
+// - General Options (sectioned cards with icons: ScoutMote, Discord RPC, Games, Notifications & updates)
 // `ui.onboardingMode` can also open just the agent's steps (from the Agent page, signed out) or just ScoutCode's (from the Code tab).
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { act, invoke, setExplore, type Games, type Music, type View } from './api';
@@ -92,23 +92,12 @@ function StepFrame({ title, sub, wide, children, back, next }: {
   );
 }
 
-/** What leaving setup always does, from its last step or from Skip: keep the notification defaults, record Dreaming as off unless it was turned on, and fall back to guest mode with no account. */
-function finishSetup(cfg: Cfg, dreaming: boolean | null) {
-  if (dreaming === null) act('setDreaming', { on: false });
+/** What leaving setup always does, from its last step or from Skip: keep the notification defaults, and fall back to guest mode with no account. */
+function finishSetup(cfg: Cfg) {
   if (cfg.notifyFlash === null || cfg.notifyToast === null) {
     act('setNotify', { flash: cfg.notifyFlash ?? true, toast: cfg.notifyToast ?? false });
   }
   if (cfg.loginNeeded) act('setGuest', { on: true });
-}
-
-// ---------- Preferences (instructions.json) ----------
-
-type Prefs = { global: string; project: string; language: string };
-
-/** Reloads first, so a step only changes what it means to and never writes back another project's instructions. */
-async function savePrefs(cwd: string, patch: Partial<Prefs>) {
-  const p = await invoke<Prefs>('instructions_load', { cwd });
-  await invoke('instructions_save', { cwd, ...p, ...patch });
 }
 
 // ---------- Providers ----------
@@ -186,7 +175,6 @@ function flyToRail(from: HTMLElement, tab: Tab) {
 // ---------- Step 1: Language (Apple-style searchable tall list) ----------
 
 function LanguageStep({ onNext }: { onNext: () => void }) {
-  const { cwd } = useView('chat');
   const coreLanguages = useCore((s) => s.statics?.languages);
   const { t, lang: uiLanguage } = useTranslation();
   const [reply, setReply] = useState(replyLanguageFor(uiLanguage));
@@ -204,8 +192,8 @@ function LanguageStep({ onNext }: { onNext: () => void }) {
   }, [coreLanguages]);
 
   useEffect(() => {
-    invoke<Prefs>('instructions_load', { cwd }).then((p) => {
-      if (p.language !== replyLanguageFor(uiLanguage)) setReply(p.language);
+    invoke<string>('language_load').then((language) => {
+      if (language !== replyLanguageFor(uiLanguage)) setReply(language);
     }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -215,7 +203,7 @@ function LanguageStep({ onNext }: { onNext: () => void }) {
   };
 
   const handleContinue = () => {
-    savePrefs(cwd, { language: reply }).catch(() => {});
+    invoke('language_save', { language: reply }).catch(() => {});
     onNext();
   };
 
@@ -304,7 +292,6 @@ const SPECIAL_FEATURE_KEYS: { icon: string; titleKey: TranslationKey; descKey: T
   { icon: 'gift', titleKey: 'special_free_title', descKey: 'special_free_desc' },
   { icon: 'layers', titleKey: 'special_providers_title', descKey: 'special_providers_desc' },
   { icon: 'memory', titleKey: 'special_memory_title', descKey: 'special_memory_desc' },
-  { icon: 'sparkle', titleKey: 'special_dream_title', descKey: 'special_dream_desc' },
   { icon: 'game', titleKey: 'special_play_title', descKey: 'special_play_desc' },
 ];
 
@@ -491,7 +478,7 @@ function PathStep({ path, onPick, onBack, onNext }: { path: Path; onPick: (p: Pa
             ['check', 'Everything in Just my agent'],
             ['layers', 'Link free AI providers for coding'],
             ['folder', 'Pick a project and bring in your Claude Code and Codex chats'],
-            ['sliders', 'Options like Dreaming, games and music'],
+            ['sliders', 'Options like games and music'],
           ],
         )}
       </div>
@@ -1032,22 +1019,9 @@ function OptionRow({ icon, title, sub, children }: { icon?: string; title: strin
 
 function OptionsStep({ onBack, onDone }: { onBack?: () => void; onDone: () => void }) {
   const cfg = useView('cfg');
-  const { cwd } = useView('chat');
   const sm = useView('scoutMote');
   const updater = useView('updater');
-  const dreaming = useView('dreaming');
   const { t } = useTranslation();
-  const [instructions, setInstructions] = useState<string | null>(null);
-  const [savedInstructions, setSavedInstructions] = useState('');
-
-  useEffect(() => {
-    invoke<Prefs>('instructions_load', { cwd }).then((p) => { setInstructions(p.global); setSavedInstructions(p.global); }).catch(() => {});
-  }, [cwd]);
-
-  const saveInstructions = async () => {
-    if (instructions === null || instructions === savedInstructions) return;
-    await savePrefs(cwd, { global: instructions }).then(() => setSavedInstructions(instructions)).catch(() => {});
-  };
 
   const flash = cfg.notifyFlash ?? true;
   const toast = cfg.notifyToast ?? false;
@@ -1062,42 +1036,19 @@ function OptionsStep({ onBack, onDone }: { onBack?: () => void; onDone: () => vo
     act('setMusic', { music: { ...music, ...next } });
   };
 
-  const finish = async () => {
-    await saveInstructions();
-    onDone();
-  };
-
   return (
     <StepFrame
       title={t('opt_title')}
       sub={t('opt_sub')}
       wide
       back={onBack}
-      next={{ label: t('opt_finish'), onClick: finish }}
+      next={{ label: t('opt_finish'), onClick: onDone }}
     >
       <div className="ob-options-grid">
         <OptionSection icon="search" title={t('opt_explore_title')} desc={t('opt_explore_desc')} badge={t('opt_suggested')}>
           <OptionRow icon="bolt" title={t('opt_explore_enable')} sub={t('opt_explore_enable_sub')}>
             <Toggle label={t('opt_explore_enable')} on={cfg.explore.on} onChange={(on) => setExplore(on, cfg.explore.models)} />
           </OptionRow>
-        </OptionSection>
-
-        <OptionSection icon="sparkle" title={t('opt_dreaming_title')} desc={t('opt_dreaming_desc')}>
-          <OptionRow icon="sparkle" title={t('opt_dreaming_enable')} sub={t('opt_dreaming_enable_sub')}>
-            <Toggle label={t('opt_dreaming_enable')} on={dreaming.on === true} onChange={(on) => act('setDreaming', { on })} />
-          </OptionRow>
-        </OptionSection>
-
-        <OptionSection icon="pencil" title={t('opt_instructions_title')} desc={t('opt_instructions_desc')}>
-          <textarea
-            className="input"
-            rows={2}
-            placeholder={t('opt_instructions_ph')}
-            value={instructions ?? ''}
-            disabled={instructions === null}
-            onChange={(e) => setInstructions(e.target.value)}
-            onBlur={saveInstructions}
-          />
         </OptionSection>
 
         {cfg.hasKey && (
@@ -1206,7 +1157,6 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   useState(() => { if (!hasSavedRail()) seedRail(DEFAULT_RAIL); return true; });
   const { t } = useTranslation();
   const cfg = useView('cfg');
-  const dreaming = useView('dreaming').on;
 
   // Preload folder places and detected Claude Code / Codex chats right at the start of onboarding
   // so they are ready by the time the user reaches the Project step.
@@ -1220,7 +1170,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   /** Leaving setup from its last step or the welcome's Skip. Lands on the Agent page when there's an account for it. */
   const finish = () => {
-    finishSetup(cfg, dreaming);
+    finishSetup(cfg);
     if (mode === 'code' || (mode === 'full' && path !== 'agent')) markCodeSetupDone();
     else if (mode === 'full') markCodeSetupPending();
     ui.set({ page: mode === 'code' || !cfg.hasKey ? 'chat' : 'agent' });

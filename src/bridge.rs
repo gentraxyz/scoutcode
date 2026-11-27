@@ -75,11 +75,12 @@ fn generated<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sy
         open_url,
         set_material,
         set_app_icon,
+        set_badge,
         reveal,
         usage_log,
         image_models,
-        instructions_load,
-        instructions_save,
+        language_load,
+        language_save,
         memory_load,
         memory_save,
         skill_upload,
@@ -123,18 +124,6 @@ fn generated<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sy
         music_soundcloud_add,
         local_add_file,
         local_hf_files,
-        browser_bounds,
-        browser_go,
-        browser_take_over,
-        browser_status,
-        browser_tab_new,
-        browser_tab_select,
-        browser_tab_close,
-        browser_tab_reopen,
-        browser_tab_move,
-        browser_zoom,
-        browser_find,
-        browser_browse_page,
     ]
 }
 
@@ -181,72 +170,6 @@ fn logs_open_folder() {
     }
 }
 
-// The built-in browser (browser.rs). Async, so they run off the main thread: making its webview waits on the main thread.
-
-#[tauri::command]
-async fn browser_bounds(x: f64, y: f64, width: f64, height: f64, shown: bool) {
-    crate::browser::set_bounds(x, y, width, height, shown);
-}
-
-/// An address, or "back", "forward" or "reload".
-#[tauri::command]
-async fn browser_go(to: String) -> Result<(), String> {
-    crate::browser::user_go(&to)
-}
-
-#[tauri::command]
-async fn browser_take_over(on: bool) {
-    crate::browser::set_user(on);
-}
-
-#[tauri::command]
-async fn browser_status() -> Value {
-    crate::browser::status()
-}
-
-#[tauri::command]
-async fn browser_tab_new(url: Option<String>) -> Result<u64, String> {
-    crate::browser::new_tab(url.as_deref())
-}
-
-#[tauri::command]
-async fn browser_tab_select(id: u64) {
-    crate::browser::select_tab(id);
-}
-
-#[tauri::command]
-async fn browser_tab_close(id: u64) {
-    crate::browser::close_tab(id);
-}
-
-#[tauri::command]
-async fn browser_tab_reopen() -> Result<(), String> {
-    crate::browser::reopen_tab()
-}
-
-#[tauri::command]
-async fn browser_tab_move(id: u64, to: usize) {
-    crate::browser::move_tab(id, to);
-}
-
-/// 1 is 100%.
-#[tauri::command]
-async fn browser_zoom(factor: f64) -> Result<(), String> {
-    crate::browser::set_zoom(factor)
-}
-
-/// Finds text in the page in front; says whether it's there.
-#[tauri::command]
-async fn browser_find(text: String, back: bool) -> Result<bool, String> {
-    crate::browser::find(&text, back)
-}
-
-/// The Browse page came on screen or went away: messages sent meanwhile are about the browser.
-#[tauri::command]
-async fn browser_browse_page(on: bool) {
-    crate::browser::set_browse(on);
-}
-
 #[tauri::command]
 fn snapshot(core: Shared) -> Value {
     core.lock().unwrap().snapshot()
@@ -260,6 +183,11 @@ enum Action {
     Resume,
     NewChat,
     OpenChat { id: String },
+    /// The Code agent (code_agent.rs): a message to it, stop it, clear its chat, and the first-open welcome.
+    CodeSend { text: String },
+    CodeStop,
+    CodeClear,
+    CodeWelcome,
     DeleteChat { id: String },
     SetDone { id: String, done: bool },
     /// The chats in one list (Recent or Done) in the order they now show, top first.
@@ -311,9 +239,11 @@ enum Action {
     RemoveAccount { which: String, id: String },
     SetNotify { flash: bool, toast: bool },
     TestNotification,
+    SetAgentNotify { on: bool },
+    /// A new message from an agent, seen by the UI's polling.
+    AgentAlert { title: String, body: String },
     SetDiscord { presence: bool, project: bool },
     SetImages { on: bool, provider: Option<String>, model: Option<String> },
-    SetBrowserAgent { on: bool },
     SaveImageKey { key: Option<String> },
     SetExplore { on: bool, models: Vec<ModelRef> },
     /// Code Review in the chat's side panel: `task` is what to review and how, `label` its name in the list.
@@ -329,13 +259,6 @@ enum Action {
     UsageChange { body: Value, said: String },
     ToggleLink { mode: String },
     SetScoutMote { on: bool },
-    /// The user touched the window, for Dreaming's idle timer. Sent at most about once a minute.
-    Activity,
-    SetDreaming { on: bool },
-    DreamNow,
-    DreamUndo { id: String },
-    /// "all" for every dream in the log.
-    DreamSeen { id: String },
     McpSetEnabled { name: String, on: bool },
     McpRemove { name: String },
     McpReconnect,
@@ -404,6 +327,12 @@ fn act_inner(core: Shared, action: Action) -> Result<(), String> {
         Action::Resume => c.resume(),
         Action::NewChat => c.new_chat(),
         Action::OpenChat { id } => c.open_chat(&id),
+        Action::CodeSend { text } => {
+            c.code_send(text);
+        }
+        Action::CodeStop => c.code_stop(),
+        Action::CodeClear => c.code_clear(),
+        Action::CodeWelcome => c.code_welcome(),
         Action::DeleteChat { id } => c.delete_chat(&id),
         Action::SetDone { id, done } => c.set_done(&id, done),
         Action::ReorderChats { ids } => c.reorder_chats(&ids),
@@ -473,9 +402,10 @@ fn act_inner(core: Shared, action: Action) -> Result<(), String> {
             _ => {}
         },
         Action::SetNotify { flash, toast } => c.set_notify(flash, toast),
+        Action::SetAgentNotify { on } => c.set_agent_notify(on),
+        Action::AgentAlert { title, body } => c.agent_alert(&title, &body),
         Action::SetDiscord { presence, project } => c.set_discord(presence, project),
         Action::SetImages { on, provider, model } => c.set_images(on, provider, model),
-        Action::SetBrowserAgent { on } => c.set_browser_agent(on),
         Action::SaveImageKey { key } => c.save_image_key(key),
         Action::SetExplore { on, models } => c.set_explore(on, models),
         Action::ReviewStart { label, task, models } => c.review_start(label, task, models)?,
@@ -490,11 +420,6 @@ fn act_inner(core: Shared, action: Action) -> Result<(), String> {
         Action::UsageChange { body, said } => c.usage_request(Some((body, said))),
         Action::ToggleLink { mode } => c.toggle_link(&mode),
         Action::SetScoutMote { on } => c.set_scout_mote(on),
-        Action::Activity => c.activity(),
-        Action::SetDreaming { on } => c.set_dreaming(on),
-        Action::DreamNow => c.dream_now(),
-        Action::DreamUndo { id } => c.dream_undo(&id),
-        Action::DreamSeen { id } => c.dream_seen(&id),
         Action::McpSetEnabled { name, on } => {
             let found = mcp_client::hub().views().into_iter().find(|s| s.name == name);
             if let Some(mut cfg) = found.map(|s| s.cfg) {
@@ -922,6 +847,19 @@ fn set_app_icon<R: Runtime>(window: tauri::WebviewWindow<R>, rgba: Vec<u8>, size
     window.set_icon(tauri::image::Image::new_owned(rgba, size, size)).map_err(|e| e.to_string())
 }
 
+/// The badge in the corner of the taskbar button: `size`×`size` RGBA drawn by the UI, or none.
+#[tauri::command]
+fn set_badge<R: Runtime>(window: tauri::WebviewWindow<R>, rgba: Option<Vec<u8>>, size: u32) -> Result<(), String> {
+    if rgba.as_ref().is_some_and(|p| size == 0 || size > 256 || p.len() != (size * size * 4) as usize) {
+        return Err("The badge must be square RGBA.".into());
+    }
+    #[cfg(windows)]
+    window.set_overlay_icon(rgba.map(|p| tauri::image::Image::new_owned(p, size, size))).map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    let _ = (window, rgba);
+    Ok(())
+}
+
 /// Opens web pages in the browser. Anything else a page might link to stays closed.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -1034,14 +972,13 @@ fn image_models(provider: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn instructions_load(cwd: String) -> Result<Value, String> {
-    let p = crate::instructions::Preferences::load()?;
-    Ok(json!({ "global": p.global, "project": p.project(&cwd), "language": p.language }))
+fn language_load() -> Result<String, String> {
+    Ok(crate::language::Preferences::load()?.language)
 }
 
 #[tauri::command]
-fn instructions_save(cwd: String, global: String, project: String, language: String) -> Result<(), String> {
-    crate::instructions::Preferences::load()?.save_changes(&cwd, &global, &project, &language).map(|_| ())
+fn language_save(language: String) -> Result<(), String> {
+    crate::language::Preferences::save(&language)
 }
 
 const MEMORY_SCOPES: [crate::memory::Scope; 2] = [crate::memory::Scope::Project, crate::memory::Scope::User];

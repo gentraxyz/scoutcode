@@ -1,0 +1,119 @@
+/* The Scout Season popup (Season.tsx). The theme's primary is near-white, so the Season has its own accent: gold for
+   ScoutPass, and the app's accent for progress and what's ready to claim. */
+.season { --season-gold: #e7b343; --season-hot: var(--accent); --season-tile: 96px; gap: 22px; }
+.season-modal .settings-page { max-width: 880px; }
+.season h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--strong); }
+
+/* the chips: days left, ScoutPass */
+.season-chip { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; font-size: 11.5px; color: var(--muted);
+  background: var(--surface-hi); border: 1px solid var(--border-hi); white-space: nowrap; }
+.season-chip.pass { color: var(--season-gold); background: color-mix(in srgb, var(--season-gold) 12%, transparent); border-color: color-mix(in srgb, var(--season-gold) 30%, transparent); }
+
+/* the top: the season, where the user stands, and claiming */
+.season-hero { position: relative; display: flex; flex-direction: column; gap: 18px; padding: 20px 22px; border-radius: 16px; border: 1px solid var(--border-hi); overflow: hidden;
+  background: radial-gradient(90% 120% at 100% 0%, color-mix(in srgb, var(--season-gold) 10%, transparent), transparent 60%), var(--surface); }
+.season-hero-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.season-eyebrow { font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--dim); }
+.season-name { margin: 4px 0 0; font-size: 22px; font-weight: 650; line-height: 1.2; color: var(--strong); }
+.season-hero-note { margin: 0; }
+.season-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--bg) 40%, transparent); }
+.season-stat { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; min-width: 0; }
+.season-stat + .season-stat { border-left: 1px solid var(--border); }
+.season-stat b { font-size: 22px; font-weight: 650; line-height: 1.15; color: var(--strong); font-variant-numeric: tabular-nums; }
+.season-stat-of { font-size: 14px; font-weight: 500; color: var(--dim); }
+.season-progress { display: flex; flex-direction: column; gap: 7px; }
+.season-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.season-bar { height: 8px; border-radius: 4px; background: var(--border-hi); overflow: hidden; }
+.season-bar span { display: block; height: 100%; width: calc(var(--f, 0) * 100%); border-radius: 4px; background: linear-gradient(90deg, var(--season-hot), var(--season-gold));
+  transition: width var(--slow) var(--ease-out); }
+.season-hero-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.season-nopass { gap: 10px; }
+.season .season-claim-all { flex: none; color: var(--accent-ink); background: var(--season-gold); border-color: var(--season-gold); font-weight: 600; }
+.season .season-claim-all:hover:not(:disabled) { background: color-mix(in srgb, var(--season-gold) 85%, white); border-color: color-mix(in srgb, var(--season-gold) 85%, white); }
+
+.season-message { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border-hi); }
+.season-message.ok { color: var(--green); background: color-mix(in srgb, var(--green) 8%, transparent); border-color: color-mix(in srgb, var(--green) 25%, transparent); }
+.season-message.bad { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); border-color: color-mix(in srgb, var(--red) 25%, transparent); }
+
+/* a section: a heading, then its card */
+.season-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.season-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* the tiers, left to right: a row of free rewards over a row of ScoutPass ones */
+.season-track-wrap { display: flex; gap: 10px; min-width: 0; padding: 14px 0 14px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.season-track-labels { flex: none; width: 84px; display: flex; flex-direction: column; gap: 8px; padding-top: 34px; }
+.season-track-label { height: var(--season-tile); display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.season-track-label.pass { color: var(--season-gold); }
+.season-track { flex: 1; min-width: 0; display: flex; overflow-x: auto; padding: 0 14px 10px 0; scroll-behavior: smooth; position: relative;
+  mask-image: linear-gradient(90deg, transparent, #000 18px, #000 calc(100% - 28px), transparent); }
+.season-tier { flex: none; width: 116px; display: flex; flex-direction: column; gap: 8px; padding: 0 4px; }
+.season-tier-head { position: relative; height: 26px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+/* the line running through the tier numbers, filled as far as the user's points go */
+.season-tier-line { position: absolute; left: -4px; right: -4px; top: 50%; height: 2px; margin-top: -1px; background: var(--border-hi); z-index: 0; }
+.season-tier-line span { display: block; height: 100%; width: calc(var(--f, 0) * 100%); background: var(--season-hot); }
+.season-tier:first-child .season-tier-line { left: 12px; }
+.season-tier:last-child .season-tier-line { right: 50%; }
+.season-tier-num { position: relative; z-index: 1; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 11.5px; font-weight: 650;
+  color: var(--dim); background: var(--surface-hi); border: 1px solid var(--border-hi); }
+.season-tier-head .tiny { position: relative; z-index: 1; padding: 0 0 0 6px; background: var(--surface); font-variant-numeric: tabular-nums; }
+.season-tier.unlocked .season-tier-num { color: var(--accent-ink); background: var(--season-hot); border-color: var(--season-hot); }
+.season-tier.current .season-tier-num { color: var(--season-hot); border-color: var(--season-hot); box-shadow: 0 0 0 3px color-mix(in srgb, var(--season-hot) 22%, transparent); }
+
+.season-reward { height: var(--season-tile); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 8px 6px; border-radius: 12px;
+  border: 1px solid var(--border-hi); background: var(--surface-hi); text-align: center; transition: border-color var(--fast) var(--ease), background-color var(--fast) var(--ease); }
+.season-reward.none { border-style: dashed; border-color: var(--border); background: none; }
+.season-reward-icon { display: flex; color: var(--muted); margin-bottom: 2px; }
+.season-reward-value { font-size: 14px; font-weight: 650; line-height: 1.2; color: var(--strong); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.season-reward-kind { font-size: 10.5px; color: var(--dim); }
+.season-reward-state { height: 22px; display: flex; align-items: center; margin-top: 3px; font-size: 11px; }
+.season-reward-state .row { gap: 3px; }
+.season-reward.pass:not(.none) { border-color: color-mix(in srgb, var(--season-gold) 28%, var(--border)); background: color-mix(in srgb, var(--season-gold) 6%, var(--surface-hi)); }
+.season-reward.pass .season-reward-icon { color: var(--season-gold); }
+.season-reward.locked { opacity: 0.55; }
+.season-reward.claimed .season-reward-value { color: var(--muted); }
+.season-reward.ready { border-color: var(--season-hot); background: color-mix(in srgb, var(--season-hot) 9%, var(--surface-hi)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--season-hot) 14%, transparent); }
+.season-reward.ready .season-reward-icon { color: var(--season-hot); }
+.season-reward.pass.ready { border-color: var(--season-gold); background: color-mix(in srgb, var(--season-gold) 12%, var(--surface-hi)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--season-gold) 16%, transparent); }
+.season .season-claim { height: 22px; padding: 0 12px; font-size: 11.5px; font-weight: 600; border-radius: 999px; color: var(--accent-ink); background: var(--season-hot); border-color: var(--season-hot); }
+.season .season-reward.pass .season-claim { background: var(--season-gold); border-color: var(--season-gold); }
+.season .season-claim:hover:not(:disabled) { filter: brightness(1.1); }
+
+/* earning points: a grid of cards; the latest points: a list */
+.season-earn { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.season-earn-item { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); }
+.season-plus { flex: none; color: var(--green); font-variant-numeric: tabular-nums; text-align: right; }
+.season-plus.minus { color: var(--red); }
+.season-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.season-list-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; min-width: 0; }
+.season-list-row + .season-list-row { border-top: 1px solid var(--border); }
+.season-list-row .season-plus { min-width: 44px; }
+.season-date { flex: none; }
+
+/* admins */
+.season .season-admin { gap: 12px; margin-top: 6px; padding-top: 22px; border-top: 1px solid var(--border); }
+.season-editor { display: flex; flex-direction: column; gap: 16px; padding: 18px; border: 1px solid var(--border-hi); border-radius: 14px; background: var(--surface); }
+.season-editor-title { font-size: 14px; font-weight: 600; color: var(--strong); }
+.season-editor-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.season-editor-label { font-size: 12px; font-weight: 500; color: var(--muted); }
+.season-fields { display: flex; flex-wrap: wrap; gap: 10px; }
+.season-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--dim); min-width: 150px; }
+.season-field.grow { flex: 1 1 220px; }
+.season-points-edit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
+.season-points-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.season-generate { gap: 6px; }
+.season-generate .input { height: 28px; padding: 4px 8px; }
+.season-edit-tiers { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; padding: 4px; border: 1px solid var(--border); border-radius: 10px; }
+.season-edit-tier { display: grid; grid-template-columns: 26px 84px minmax(0, 1fr) minmax(0, 1fr) 30px; align-items: center; gap: 8px; padding: 2px 6px; border-radius: 6px; }
+.season-edit-tier:not(.head):hover { background: var(--hover); }
+.season-edit-tier.head { position: sticky; top: -4px; z-index: 1; padding: 6px; background: var(--surface); }
+.season-reward-edit { gap: 6px; min-width: 0; }
+.season-reward-edit .select { width: 116px; flex: none; }
+.season-editor-foot { gap: 8px; border-top: 1px solid var(--border); padding-top: 14px; }
+
+@media (max-width: 640px) {
+  .season-stats { grid-template-columns: 1fr; }
+  .season-stat + .season-stat { border-left: 0; border-top: 1px solid var(--border); }
+  .season-points-edit { grid-template-columns: 1fr; }
+  .season-hero-foot { flex-direction: column; align-items: stretch; }
+  .season-nopass .ellipsis { white-space: normal; }
+}

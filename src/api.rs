@@ -262,9 +262,28 @@ fn observe_quota(cfg: &Config, res: &ureq::http::Response<ureq::Body>) {
     crate::quota::observe(&cfg.base_url, account, res.status().as_u16(), &|h| header(res, h));
 }
 
+/// ScoutCode wants the account to prove it's human: a 403 with `x-scoutcode-challenge`, the /verify link (the site's
+/// src/lib/human.ts). Opens it in the browser, at most once every two minutes, and returns what to add to the error. Only
+/// ScoutCode's own links are opened, whichever provider answered.
+pub fn human_check(res: &ureq::http::Response<ureq::Body>) -> Option<String> {
+    let url = header(res, "x-scoutcode-challenge").filter(|_| res.status().as_u16() == 403)?;
+    let ours = ["https://scoutcode.dev/verify?c=", "http://localhost:", "http://127.0.0.1:"].iter().any(|p| url.starts_with(p));
+    if !ours || !url.contains("/verify?c=") || url.chars().any(|c| c.is_whitespace() || c == '"') {
+        return None;
+    }
+    static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.is_none_or(|t| t.elapsed() > Duration::from_secs(120)) {
+        *last = Some(std::time::Instant::now());
+        crate::oauth::open_browser(&url);
+    }
+    Some(format!(" Your browser opened {url} to check you're human; try again once that's done."))
+}
+
 fn error_from(mut res: ureq::http::Response<ureq::Body>) -> ApiError {
     let status = res.status().as_u16();
     let retry = header(&res, "retry-after").and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0);
+    let human = human_check(&res);
     let text = res.body_mut().read_to_string().unwrap_or_default();
     let mut message = serde_json::from_str::<Value>(&text)
         .ok()
@@ -282,6 +301,9 @@ fn error_from(mut res: ureq::http::Response<ureq::Body>) -> ApiError {
     }
     if status == 402 {
         message += " (out of money: ask an admin to top up your account)";
+    }
+    if let Some(h) = human {
+        message += &h;
     }
     ApiError { message, status, retry_after: retry, aborted: false }
 }
@@ -1365,6 +1387,12 @@ pub struct UsageInfo {
     pub referrals: Option<Referrals>,
     #[serde(default)]
     pub discord_link: Option<DiscordLink>,
+    /// Scout Points and the Scout Season, passed to the window as the server sent them. None from older servers.
+    #[serde(default)]
+    pub season: Option<Value>,
+    /// Every season, for admins.
+    #[serde(default)]
+    pub seasons: Option<Value>,
     #[serde(default)]
     pub users: Vec<ManagedUser>,
 }
@@ -1452,10 +1480,6 @@ pub fn list_models(cfg: &Config) -> Result<(Vec<ModelInfo>, Option<String>), Api
     // Missing on a server from before uncensored models; none are marked then either.
     if let Some(t) = body.get("uncensored_terms") {
         set_uncensored_terms(t);
-    }
-    // Missing on a server from before Dreaming, which leaves the saved model alone.
-    if let Some(m) = body.get("dreaming_model") {
-        crate::dream::set_model(m.as_str());
     }
     let models = body
         .get("data")

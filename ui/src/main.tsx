@@ -6,11 +6,13 @@ import { SetupCursor } from './SetupCursor';
 import { invoke } from './api';
 import { connect } from './store';
 import { startUiLog, uiLog } from './uiLog';
+import { installTooltips } from './Tooltip';
 import './styles.css';
 import './theme';
 
 // The setup's small windows are this same UI, and their errors belong in the log too.
 startUiLog();
+installTooltips();
 
 // The right-click menu is the browser's (Back, Reload, Inspect). Text fields keep theirs for copy and paste.
 document.addEventListener('contextmenu', (e) => {

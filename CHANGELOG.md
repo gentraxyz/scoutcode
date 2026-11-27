@@ -4,6 +4,12 @@ Each release has a `## <version>` section, newest first, matching `version` in `
 heading is the one-line summary shown beside "Restart to update"; everything after it is the changelog shown in
 Settings > Updates and in "What's new". A release can't be published without its section.
 
+## 0.3.1
+Scout Season is easier to read, and a reminder to verify your account shows until you do.
+
+- Scout Season: each reward shows its amount and whether it's balance or ScoutPass, and the mouse wheel scrolls the tiers sideways.
+- A "Verify your account" reminder in the corner until you link Discord, Google or GitHub. Until then you get less of the weekly desktop credit and free-model requests.
+
 ## 0.3.0
 A home for your agents: they persist, share memory, and ask before they start coding tasks.
 

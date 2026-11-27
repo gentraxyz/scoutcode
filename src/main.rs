@@ -10,6 +10,7 @@ mod claude;
 #[cfg(windows)]
 mod claude_native;
 mod claude_setup;
+mod code_agent;
 mod codex;
 mod api;
 mod bridge;
@@ -17,7 +18,6 @@ mod config;
 mod favicon;
 mod profiles;
 mod copilot;
-mod browser;
 mod browser_ext;
 mod core;
 mod delta;
@@ -31,14 +31,13 @@ mod vibe;
 mod local;
 mod logs;
 mod diff;
-mod dream;
 mod title;
 mod dock;
 mod folders;
 mod grok;
 mod idle_memory;
 mod hermes;
-mod instructions;
+mod language;
 mod mcp;
 mod mcp_auth;
 mod mcp_client;
@@ -119,7 +118,6 @@ fn main() {
             std::thread::spawn(move || responder.respond(music::serve(&req)));
         })
         .setup(|app| {
-            browser::init(app.handle());
             let (tx, rx) = channel();
             let (wake_tx, wake_rx) = channel();
             let core = Arc::new(Mutex::new(core::Core::new(app.handle().clone(), tx, waker::Waker::new(wake_tx))));

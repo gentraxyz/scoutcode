@@ -32,8 +32,8 @@ computer are Rust, and the window is React in the system's WebView2.
   agents (Settings > Custom agents) route a turn across models you pick, so the next one carries on when one fails.
 - **Built-in workspace.** A right-hand panel with a real terminal (xterm.js on a pseudo console), the files changed since
   the last commit with their diffs, and a file tree with an editor.
-- **Memory and instructions.** Project memory in `.scout/memory.md` (which you can commit) and personal memory in
-  `~/.scoutcode/memory.md`, plus saved instructions and a response language. `SCOUT.md`, `AGENTS.md` and `CLAUDE.md` are
+- **Memory.** Project memory in `.scout/memory.md` (which you can commit) and personal memory in
+  `~/.scoutcode/memory.md`, plus a response language (Settings > Preferences). `SCOUT.md`, `AGENTS.md` and `CLAUDE.md` are
   read too.
 - **Skills and MCP.** Install skills from a folder, a `.zip` or [skills.sh](https://skills.sh), and mention them with `@`.
   Connect MCP servers over stdio or Streamable HTTP with the usual `mcpServers` config.
@@ -92,7 +92,7 @@ Everything stays on your computer in `~/.scoutcode` (`%USERPROFILE%\.scoutcode`)
 | --- | --- |
 | `config.json` | Sign-in, settings and keys you save |
 | `sessions/` | Saved chats |
-| `instructions.json`, `memory.md` | Your saved instructions and personal memory |
+| `instructions.json`, `memory.md` | Your response language and personal memory |
 | `skills/`, `mcp.json` | Installed skills and MCP servers |
 | `runtime/` | CLIs downloaded for providers that need them |
 

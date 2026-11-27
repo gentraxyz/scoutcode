@@ -277,7 +277,8 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .top-done.on { color: var(--green); }
 .daily-reward-bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-top: 6px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); }
 .daily-reward-info { text-align: left; line-height: 1.3; }
-.usage-alert { position: fixed; right: 16px; bottom: 16px; z-index: 80; width: min(340px, calc(100vw - 32px)); display: flex; align-items: center; gap: 10px; padding: 9px 8px 9px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); box-shadow: 0 8px 24px rgb(0 0 0 / 35%); }
+.corner-alerts { position: fixed; right: 16px; bottom: 16px; z-index: 80; width: min(340px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 8px; }
+.usage-alert { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 8px 9px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border-hi); box-shadow: 0 8px 24px rgb(0 0 0 / 35%); }
 .usage-alert > .icon { color: var(--accent); flex: none; }
 .profile { flex: none; padding: 6px 0 8px; border-top: 1px solid var(--border); margin-top: 4px; }
 .profile .popover-anchor { display: flex; }
@@ -314,7 +315,7 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .user-row:hover .user-actions, .user-actions:focus-within { opacity: 1; }
 .edit-pencil { opacity: 0; }
 .user-row:hover .edit-pencil, .edit-pencil:focus-visible { opacity: 1; }
-.user-bubble { max-width: 80%; background: var(--user-bg); border: 1px solid var(--border-hi); border-radius: 16px; padding: 10px 15px; color: var(--strong); display: flex; flex-direction: column; gap: 8px; }
+.user-bubble { max-width: 80%; background: var(--user-bg); border: 1px solid var(--border-hi); border-radius: 20px; padding: 9px 15px; color: var(--strong); display: flex; flex-direction: column; gap: 8px; }
 .edit-box { margin: 16px 0 14px; display: flex; flex-direction: column; gap: 8px; }
 .edit-box textarea { width: 100%; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 10px; padding: 8px 12px; outline: 0; resize: vertical; user-select: text; }
 .assistant { margin: 4px 0 10px; line-height: 1.6; }
@@ -416,24 +417,37 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 /* composer */
 .composer { flex: none; padding: 4px 20px 12px; }
 .composer-column { max-width: 776px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
-.panel { background: var(--surface); border: 1px solid var(--border-hi); border-radius: 14px; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+.panel { background: var(--surface); border: 1px solid var(--border-hi); border-radius: 16px; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
 .queue { padding: 6px 10px; gap: 2px; }
 .queued { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .meter { width: 80px; height: 3px; border-radius: 2px; background: var(--surface-hi); overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--green); }
-.card { background: var(--surface); border: 1px solid var(--border-hi); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.card { background: var(--surface); border: 1px solid var(--border-hi); border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
 .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .card-scroll { max-height: 320px; overflow-y: auto; user-select: text; }
 .card-scroll.tall { max-height: 50vh; }
 .code-text { color: var(--code); overflow-wrap: anywhere; user-select: text; }
-.input-box { position: relative; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 18px; padding: 14px 10px 8px 8px; display: flex; flex-direction: column; gap: 6px; }
-.input-box:focus-within { border-color: rgb(255 255 255 / 18%); }
-.input-box > .chips { padding-left: 6px; }
-.prompt { width: 100%; min-height: 63px; background: none; border: 0; outline: 0; resize: none; padding: 0 8px; font-size: 14px; line-height: 1.5; user-select: text; }
-.composer-controls { gap: 4px; }
+/* The prompt box, built like Agent's (.agent-composer-box): a round pill with + on the left, the prompt in the middle
+   and the controls and send on the right. When the prompt wraps (.tall) it takes the top row, the buttons sit under it,
+   and the corners soften. The controls row is display: contents so its buttons join the box's own row. */
+.input-box { position: relative; background: var(--surface); border: 1px solid var(--border-hi); border-radius: 26px; padding: 7px; display: flex; flex-flow: row wrap; align-items: flex-end; gap: 4px; }
+.input-box.tall { border-radius: 22px; padding: 10px 7px 7px; row-gap: 6px; }
+.input-box:focus-within { border-color: var(--focus, rgb(255 255 255 / 18%)); }
+.input-box > .chips { order: -2; flex: 1 0 100%; padding: 2px 4px 4px; }
+.prompt { order: 1; flex: 1 1 0; min-width: 140px; min-height: 30px; max-height: 40vh; background: none; border: 0; outline: 0; resize: none; padding: 5px 6px; font-size: 14px; line-height: 20px; color: var(--strong); user-select: text; }
+.prompt::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.input-box.tall .prompt { order: -1; flex-basis: 100%; padding: 0 8px; min-height: 20px; }
+.composer-controls { display: contents; }
+.composer-controls > * { order: 2; }
+.composer-controls > .attach { order: 0; }
+.composer-gap { display: none; }
+.input-box :is(.chip, .file-chip) { border-radius: 999px; }
+.input-box .chip { height: 30px; padding: 0 11px; }
+.input-box.tall .composer-gap { display: block; flex: 1; }
+.input-box:not(.tall) { align-items: center; }
 .round { width: 30px; height: 30px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--surface-hi); color: var(--dim); }
-.round.attach { background: var(--surface-hi); color: var(--muted); }
-.round.attach:hover { background: var(--raised); color: var(--strong); }
+.round.attach { background: transparent; color: var(--muted); }
+.round.attach:hover { background: var(--hover, var(--raised)); color: var(--strong); }
 .round.send:disabled { opacity: 1; background: var(--raised); color: var(--dim); }
 .round.send.ready { background: var(--primary); color: var(--primary-ink); opacity: 1; }
 .round.send.ready:hover { background: var(--primary-hi); }
@@ -450,6 +464,8 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .usage-ring { display: flex; margin: 0 8px 0 4px; }
 .ring-track { stroke: var(--faint); }
 .usage-ring:hover .ring-track { stroke: var(--muted); }
+/* A free model nearly out of its limits: the ring goes yellow (the accent), track and all. */
+.usage-ring.warn .ring-track, .ring-fill.warn { stroke: var(--accent); }
 .ring-fill { stroke: var(--usage); }
 .ring-fill.low { stroke: var(--red); }
 .stat-row { display: grid; grid-template-columns: 66px 1fr; gap: 8px; align-items: baseline; }
@@ -947,12 +963,6 @@ html[data-material="glass"] .delta-tab { border-radius: 10px; }
 .tree-row.selected { background: var(--surface-hi); color: var(--strong); }
 .tree-space { width: 13px; flex: none; }
 .file-banner { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
-
-/* the built-in browser: the page is a native webview that Rust keeps over .browser-host */
-.browser-address { height: 26px; min-width: 0; margin-left: 4px; padding: 0 10px; font-size: 12px; border-radius: 13px; }
-.browser-host { flex: 1 1 0; min-height: 0; position: relative; background: #fff; }
-.browser-host .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; background: var(--sidebar); }
-.browser-agent { color: var(--accent, inherit); }
 
 /* chatbots, in the model menu */
 .chatbots-panel { padding: 2px 2px 8px; }
@@ -1539,6 +1549,7 @@ html[data-material="glass"] :is(.popover, .model-card, .mention-menu) { border-r
 html[data-material="glass"] .find-bar { border-radius: 14px; }
 html[data-material="glass"] :is(.modal, .login-card, .game-float) { border-radius: 26px; }
 html[data-material="glass"] .modal.settings { --glass-tint: color-mix(in srgb, var(--bg) 78%, transparent); }
+html[data-material="glass"] .settings-bar { background: transparent; }
 /* Inside a pane, its own sections stay clear so the glass shows. */
 html[data-material="glass"] :is(.settings-nav, .dock-tabs, .dock-actions, .file-banner) { background: transparent; }
 html[data-material="glass"] .settings-nav { border-right-color: rgb(255 255 255 / 8%); }
@@ -1668,14 +1679,6 @@ html[data-material="glass"] ::-webkit-scrollbar-thumb { background: rgb(255 255 
 .review-sev.sev-low { color: var(--dim); background: var(--surface-hi); }
 .review-finding.sev-critical { border-color: color-mix(in srgb, #d64545 50%, var(--border)); }
 
-/* Dreaming: the Dream Log, in Settings and the Inbox. */
-.dream-entry { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
-.dream-entry.undone { opacity: 0.6; }
-.dream-head { gap: 8px; align-items: center; }
-.dream-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.dream-change { display: flex; flex-direction: column; gap: 1px; }
-.dream-removed { text-decoration: line-through; color: var(--dim); }
-.dream-now { gap: 8px; align-items: center; padding: 4px 0; }
 /* The terminal's suggestion: the rest of a command, dim, after the cursor (see attachSuggest in Dock.tsx). */
 .term-ghost { position: absolute; left: 0; top: 0; z-index: 2; white-space: pre; pointer-events: none; color: var(--faint); }
 
@@ -1724,8 +1727,13 @@ html[data-material="glass"] ::-webkit-scrollbar-thumb { background: rgb(255 255 
 .fp-more { padding: 8px 10px; }
 
 /* Usage, as a page */
-.usage-page { flex: 1 1 0; min-height: 0; overflow-y: auto; border-top: 1px solid var(--border); }
-.usage-page > .settings-page { max-width: 880px; margin: 0 auto; overflow: visible; padding: 24px 28px 40px; }
+/* Usage: a popup like Settings, one column with no section list. */
+.usage-modal .settings-scroll { flex: 1 1 0; min-height: 0; }
+.usage-modal .settings-page { max-width: 820px; }
+.usage-modal .settings-bar .icon { color: var(--muted); }
+.usage-exit-hint kbd { font: inherit; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; }
+.usage-exit-foot { display: flex; justify-content: flex-end; margin-top: 28px; }
+@media (max-width: 560px) { .usage-exit-hint { display: none; } }
 
 /* the account in the top bar: your avatar opens a normal menu (Usage, Settings, updates, the account page) */
 .account-btn { flex: none; width: 28px; height: 28px; margin: 0 6px 0 2px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: background-color var(--fast) var(--ease); }
@@ -1743,17 +1751,19 @@ html[data-material="glass"] ::-webkit-scrollbar-thumb { background: rgb(255 255 
 .mc-cap::after { content: attr(data-tip); position: absolute; left: 0; bottom: calc(100% + 7px); z-index: 1; width: max-content; max-width: 230px; padding: 5px 9px; border-radius: 8px; background: var(--surface-hi); border: 1px solid var(--border-hi); box-shadow: var(--shadow-pop); color: var(--strong); font-size: 12px; line-height: 1.4; pointer-events: none; opacity: 0; transform: translateY(4px); transition: opacity var(--fast) var(--ease), transform var(--med) var(--ease-out); }
 .mc-cap:hover::after { opacity: 1; transform: none; }
 
-/* Settings, as the whole window */
-.settings-screen { position: fixed; inset: 0; z-index: 35; display: flex; flex-direction: column; background: var(--bg); animation: fade-in var(--med) var(--ease); }
-.settings-bar { display: flex; align-items: center; gap: 10px; height: 44px; padding-left: 10px; flex: none; background: var(--sidebar); border-bottom: 1px solid var(--border); }
-.settings-back { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px 0 7px; border-radius: 8px; font-size: 13px; color: var(--muted); transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease); }
-.settings-back:hover { background: var(--menu-hover); color: var(--strong); }
-.settings-screen .settings-nav { width: 250px; padding: 16px 12px; gap: 0; border-right: 1px solid var(--border); }
-.settings-screen .settings-nav .side-search { margin: 0 0 14px; }
+/* Settings, as a popup in the middle of the window */
+.settings-modal { width: min(960px, calc(100vw - 48px)); height: min(680px, calc(100vh - 48px)); max-height: none; padding: 0; gap: 0; overflow: hidden; background: var(--bg); }
+.settings-bar { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 10px 0 18px; flex: none; background: var(--sidebar); border-bottom: 1px solid var(--border); }
+.settings-bar .chat-title { font-size: 14px; }
+.settings-close { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; color: var(--muted); transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease); }
+.settings-close:hover { background: var(--menu-hover); color: var(--strong); }
+.settings-modal .settings-body { flex: 1 1 0; min-height: 0; }
+.settings-modal .settings-nav { width: 220px; padding: 16px 12px; gap: 0; border-right: 1px solid var(--border); }
+.settings-modal .settings-nav .side-search { margin: 0 0 14px; }
 .settings-group { display: flex; flex-direction: column; gap: 1px; margin-bottom: 12px; }
-.settings-screen .settings-link { height: 34px; }
+.settings-modal .settings-link { height: 34px; }
 .settings-scroll { flex: 1 1 0; min-width: 0; overflow-y: auto; }
-.settings-screen .settings-page { flex: none; overflow: visible; max-width: 780px; margin: 0 auto; padding: 32px 36px 64px; }
+.settings-modal .settings-page { flex: none; overflow: visible; max-width: 720px; margin: 0 auto; padding: 28px 32px 48px; }
 .settings-part { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--border); }
 .settings-part h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--strong); }
 .settings-part h3 .icon { color: var(--muted); }
@@ -1873,3 +1883,7 @@ html[data-material="glass"] ::-webkit-scrollbar-thumb { background: rgb(255 255 
 /* A page or panel that broke fills its own place, and scrolls when the details are long. */
 .main > .error-screen, .main-body > .error-screen, .chat > .error-screen { flex: 1 1 0; min-height: 0; overflow: auto; }
 .page-loading { flex: 1 1 0; display: grid; place-items: center; color: var(--dim); }
+
+/* Tooltips (Tooltip.ts): the window's own bubble for a title, in place of the system's plain one. */
+.app-tip { position: fixed; top: 0; left: 0; z-index: 10000; max-width: 280px; padding: 6px 10px; border-radius: 8px; background: var(--surface-hi); border: 1px solid var(--border-hi); box-shadow: var(--shadow-pop); color: var(--strong); font-size: 12px; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none; opacity: 0; transform: translateY(3px) scale(0.97); transform-origin: top center; transition: opacity var(--fast) var(--ease), transform var(--med) var(--ease-out); }
+.app-tip.show { opacity: 1; transform: none; }

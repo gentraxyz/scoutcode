@@ -34,13 +34,20 @@ export type CoreState = { view: View; models: Model[]; items: Item[]; statics: S
 export const core = createStore<CoreState>(null as unknown as CoreState);
 
 /** A tab in the panel: one of its pages, the New Tab page, a sub-agent's work (by its tool item's id) or a background shell. */
-export type DockTab = 'terminal' | `terminal:${number}` | 'changes' | 'files' | 'games' | 'review' | 'browser' | 'new' | `new:${number}` | `task:${number}` | `shell:${string}`;
-export type SettingsTab = 'appearance' | 'preferences' | 'instructions' | 'memory' | 'providers' | 'router' | 'images' | 'browser' | 'skills' | 'mcp' | 'chatbots' | 'account' | 'updates' | 'logs';
+export type DockTab = 'terminal' | `terminal:${number}` | 'changes' | 'files' | 'games' | 'review' | 'new' | `new:${number}` | `task:${number}` | `shell:${string}`;
+export type SettingsTab = 'appearance' | 'preferences' | 'agents' | 'memory' | 'providers' | 'router' | 'images' | 'skills' | 'mcp' | 'chatbots' | 'account' | 'updates' | 'logs';
 
 export const ui = createStore({
   sidebar: true,
-  /** Agent (the home page: persistent agents, Agent.tsx), Code (the coding agent's chats, 'chat'), or another page. */
-  page: 'agent' as 'agent' | 'chat' | 'usage' | 'mission' | 'social',
+  /** Agent (the home page: persistent agents, Agent.tsx), the Code agent ('code', CodeAgent.tsx), one of its Code Agents
+   *  (the coding chats, 'chat'), or another page. */
+  page: 'agent' as 'agent' | 'code' | 'chat' | 'mission' | 'social',
+  /** The page Social was opened from, for its Back button. */
+  socialFrom: 'agent' as 'agent' | 'code' | 'chat' | 'mission',
+  /** The Usage popup is up (over whatever page is open, like Settings). */
+  usageOpen: false,
+  /** The Scout Season popup is up (Season.tsx). */
+  seasonOpen: false,
   /** The first-run setup is showing: on first run, or reopened from Settings. */
   onboarding: false,
   /** Which setup: all of it, only signing in and meeting an agent (from the Agent page), or only ScoutCode's steps (from the Code tab). */

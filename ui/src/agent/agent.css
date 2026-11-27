@@ -57,8 +57,15 @@
 .agent-msgs { max-width: 720px; min-height: 100%; margin: 0 auto; padding: 18px 24px 32px; display: flex; flex-direction: column; gap: 4px; }
 .agent-msg { display: flex; gap: 10px; align-items: flex-end; }
 .agent-msg.agent.first { margin-top: 14px; }
-.agent-msg.user { justify-content: flex-end; margin-top: 14px; }
-.agent-msg.user.failed { flex-direction: column; align-items: flex-end; gap: 4px; }
+.agent-msg.user { flex-direction: column; align-items: flex-end; gap: 0; margin-top: 14px; }
+.agent-msg.user.failed { gap: 4px; }
+/* When it was sent: its line is always there under the message (so nothing moves), and it fades in while you hover. */
+.agent-time { display: block; height: 16px; padding: 0 8px; color: var(--muted); font-size: 11px; line-height: 16px; white-space: nowrap; opacity: 0; transition: opacity 0.15s var(--ease-out, ease-out); }
+.agent-msg.agent .agent-time { margin-top: -4px; }
+.agent-msg:hover .agent-time { opacity: 1; }
+.agent-activity { position: relative; }
+.agent-activity .agent-time { position: absolute; left: 50%; top: 100%; padding: 0; transform: translateX(-50%); pointer-events: none; }
+.agent-activity:hover .agent-time { opacity: 0.8; }
 .agent-msg.user.failed .agent-bubble-user { border-color: color-mix(in srgb, var(--red) 55%, var(--border-hi)); }
 .agent-unsent { display: flex; align-items: center; gap: 10px; color: var(--red); max-width: 78%; }
 .agent-unsent span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -193,8 +200,6 @@
 .agent-color-custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .agent-editor-actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
 
-.agent-settings { width: min(520px, 92vw); padding: 22px !important; display: flex; flex-direction: column; gap: 14px; }
-.agent-settings h2 { margin: 0; font-size: 16px; color: var(--strong); }
 .agent-setting { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
 .agent-setting.column { flex-direction: column; align-items: stretch; gap: 8px; }
 .agent-setting b { color: var(--strong); font-size: 13px; font-weight: 500; }
@@ -207,7 +212,6 @@
 .agent-memory-text:focus { border-color: var(--focus); }
 .agent-memory-log ul { margin: 6px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; max-height: 140px; overflow-y: auto; }
 .agent-memory-log summary { cursor: pointer; }
-.agent-settings { max-height: 90vh; overflow-y: auto; }
 
 .agent-card-wrap { scroll-margin: 20px; }
 
@@ -287,12 +291,12 @@
 }
 
 /* Thinking: a slow sway. */
-.st-thinking { animation: agent-float 2.6s ease-in-out infinite; }
+.agent-avatar.st-thinking { animation: agent-float 2.6s ease-in-out infinite; }
 .st-thinking .agent-body { animation: agent-sway 2.8s ease-in-out infinite; }
 @keyframes agent-sway { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
 
 /* Working: bounces. */
-.st-working { animation: agent-hop 0.9s ease-in-out infinite; }
+.agent-avatar.st-working { animation: agent-hop 0.9s ease-in-out infinite; }
 .st-working .agent-body { animation: agent-thump 0.9s ease-in-out infinite; }
 @keyframes agent-hop { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-10%); } 55% { transform: translateY(-10%); } }
 @keyframes agent-thump { 0%, 100% { transform: scale(1.06, 0.94); } 20%, 75% { transform: scale(0.96, 1.04); } 45% { transform: scale(1); } }
@@ -318,4 +322,141 @@
 
 @media (prefers-reduced-motion: reduce) {
   .agent-avatar, .agent-avatar *, .agent-typing .dots i, .agent-hero, .agent-welcome { animation: none !important; }
+}
+
+/* ---------- the Code agent (CodeAgent.tsx) ---------- */
+/* Its Code Agents on the right: the same list Code had (search, Recent, Done), each one a widget card. */
+.code-agents-panel { width: 280px; flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); }
+.code-agents-panel .side-code { flex: 1; min-height: 0; display: flex; flex-direction: column; min-width: 0; padding: 12px 10px; }
+.code-agents-panel .session-row { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 6px; background: var(--surface); transition: border-color 0.15s, background 0.15s; }
+.code-agents-panel .session-row:hover { border-color: var(--border-hi); background: var(--hover); }
+.code-agents-panel .session-row .session-open { padding: 8px 10px; }
+/* A Code Agent it started, in its chat. */
+.code-agent-widget { display: flex; align-items: center; gap: 10px; width: min(420px, 100%); margin: 6px 0 6px; padding: 9px 12px; border-radius: 12px; border: 1px solid var(--border-hi); background: var(--surface); color: var(--text); text-align: left; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.code-agent-widget:hover { background: var(--hover); border-color: var(--focus); }
+.code-agent-widget.working { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-hi)); }
+.code-agent-widget.asking { border-color: color-mix(in srgb, var(--usage) 60%, var(--border-hi)); }
+.code-agent-widget-text { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; }
+.code-agent-error { color: var(--red); }
+.code-agent-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 0 4px; }
+.code-agent-signin { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+.top-bar .button.back-to-code { display: inline-flex; align-items: center; align-self: center; gap: 4px; margin-right: 8px; }
+@media (max-width: 980px) {
+  .code-agents-panel { width: 220px; }
+}
+@media (max-width: 720px) {
+  .code-agents-panel { display: none; }
+}
+
+/* ---------- the foot of the sidebar: Connect to Apps, the account and usage (ConnectApps.tsx) ---------- */
+.agent-side-foot { position: sticky; bottom: 0; margin-top: auto; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 8px; background: linear-gradient(to bottom, transparent, var(--bg) 10px); z-index: 2; }
+.apps-open { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: 8px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease); }
+.apps-open:hover { background: var(--menu-hover); color: var(--strong); }
+.apps-open .icon { opacity: 0.7; }
+.apps-open-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.apps-open-marks { display: flex; align-items: center; flex: none; }
+.apps-open-marks > span { display: flex; border-radius: 6px; box-shadow: 0 0 0 1.5px var(--bg); }
+.apps-open-marks > span + span { margin-left: -5px; }
+.apps-open-more { margin-left: 5px; font-size: 11px; color: var(--muted); box-shadow: none !important; }
+.agent-side-account { display: flex; align-items: center; gap: 2px; padding-top: 6px; margin-top: 2px; border-top: 1px solid var(--border); }
+.agent-side-account .account-anchor { flex: 1; min-width: 0; display: flex; }
+.account-btn.in-side { flex: 1; width: auto; min-width: 0; height: 42px; margin: 0; padding: 0 8px; gap: 10px; justify-content: flex-start; border-radius: 9px; text-align: left; }
+.account-btn.in-side .avatar { width: 28px; height: 28px; border-radius: 50%; font-size: 12px; background: linear-gradient(135deg, #8a6cff, #4f8cf5); color: #fff; }
+.account-btn-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.account-btn-name { font-size: 12.5px; font-weight: 500; color: var(--strong); }
+.account-btn-sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-side-account .usage-btn { flex: none; width: 34px; height: 34px; border: 0; border-radius: 9px; background: transparent; display: flex; align-items: center; justify-content: center; color: var(--muted); cursor: pointer; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease); }
+.agent-side-account .usage-btn:hover { background: var(--menu-hover); color: var(--strong); }
+
+/* An app's icon: its favicon on a light tile. */
+.app-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; background: #f4f4f5; color: #3a3a3e; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 6%); }
+.app-icon img { width: 66%; height: 66%; object-fit: contain; image-rendering: auto; }
+.app-icon b { font-weight: 700; line-height: 1; }
+
+/* ---------- Connect to Apps ---------- */
+.modal.apps-modal { width: min(760px, calc(100vw - 48px)); max-height: calc(100vh - 48px); padding: 22px 24px 24px; gap: 14px; position: relative; }
+.apps-head { display: flex; align-items: flex-start; }
+.apps-title { display: flex; flex-direction: column; gap: 2px; }
+.apps-title h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--strong); }
+.apps-targets { display: flex; gap: 6px; flex-wrap: wrap; }
+.apps-target { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border-hi); background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease), border-color var(--fast) var(--ease); }
+.apps-target:hover { color: var(--strong); background: var(--hover); }
+.apps-target.on { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); font-weight: 500; }
+
+/* The faces with their apps going round them. */
+.apps-stage { --r: 132px; position: relative; height: 340px; flex: none; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 16px; border: 1px solid var(--border); background: radial-gradient(circle at 50% 50%, rgb(138 108 255 / 13%), transparent 42%), radial-gradient(circle at 50% 50%, rgb(255 255 255 / 3%), transparent 70%), var(--sidebar); }
+.apps-ring { position: absolute; left: 50%; top: 50%; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+.apps-ring.outer { width: calc(var(--r) * 2); height: calc(var(--r) * 2); border: 1px solid rgb(255 255 255 / 8%); box-shadow: 0 0 40px rgb(138 108 255 / 6%) inset; }
+.apps-ring.inner { width: calc(var(--r) * 1.2); height: calc(var(--r) * 1.2); border: 1px solid rgb(255 255 255 / 4%); }
+.apps-faces { position: relative; display: flex; align-items: center; justify-content: center; width: 1px; height: 1px; z-index: 1; }
+.apps-face { position: absolute; display: flex; transition: transform 0.4s var(--glide, ease); }
+.apps-orbit { position: absolute; inset: 0; animation: apps-spin 80s linear infinite; }
+.apps-stage:hover .apps-orbit, .apps-stage:hover .apps-upright { animation-play-state: paused; }
+.apps-slot { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform: rotate(var(--a)) translateX(var(--r)) rotate(calc(-1 * var(--a))); }
+.apps-upright { position: absolute; display: flex; transform: translate(-50%, -50%); animation: apps-spin-back 80s linear infinite; }
+.apps-tile { position: relative; display: flex; padding: 0; border: 0; border-radius: 13px; background: transparent; cursor: pointer; box-shadow: 0 8px 24px rgb(0 0 0 / 45%), 0 0 0 1px rgb(255 255 255 / 8%); transition: transform 0.2s var(--spring, ease), box-shadow 0.2s; }
+.apps-tile:hover, .apps-tile.on { transform: translateY(-2px) scale(1.08); box-shadow: 0 12px 28px rgb(0 0 0 / 55%), 0 0 0 2px rgb(255 255 255 / 55%); }
+.apps-tile.setup .app-icon { opacity: 0.5; }
+.apps-tile.shared { box-shadow: 0 8px 24px rgb(0 0 0 / 45%), 0 0 0 1px rgb(255 255 255 / 8%), 0 0 0 4px rgb(138 108 255 / 22%); }
+.apps-tile.ghost { box-shadow: none; opacity: 0.32; filter: grayscale(1); transition: opacity 0.2s, filter 0.2s, transform 0.2s var(--spring, ease); }
+.apps-tile.ghost:hover { opacity: 0.9; filter: none; transform: scale(1.06); box-shadow: 0 0 0 1px rgb(255 255 255 / 20%); }
+.apps-tile-wait { position: absolute; right: -5px; bottom: -5px; width: 20px; height: 20px; border-radius: 50%; background: var(--surface); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 1px var(--border-hi); }
+.apps-tile-dot { position: absolute; right: -3px; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--sidebar); }
+.apps-tile.entering { animation: apps-enter 1.1s var(--glide, ease) both; }
+.apps-tile.entering::after { content: ''; position: absolute; inset: -3px; border-radius: 15px; border: 2px solid rgb(255 255 255 / 70%); animation: apps-burst 0.9s ease-out 0.6s both; pointer-events: none; }
+@keyframes apps-spin { to { transform: rotate(360deg); } }
+@keyframes apps-spin-back { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(-360deg); } }
+@keyframes apps-enter {
+  0% { transform: translateY(170px) scale(0.3); opacity: 0; filter: blur(6px); }
+  60% { transform: translateY(-4px) scale(1.15); opacity: 1; filter: none; }
+  100% { transform: none; }
+}
+@keyframes apps-burst { from { transform: scale(1); opacity: 1; } to { transform: scale(1.9); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .apps-orbit, .apps-upright { animation: none; } }
+
+.apps-caption { min-height: 46px; display: flex; align-items: center; justify-content: center; text-align: center; }
+.apps-picked { width: 100%; display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--hover); min-width: 0; text-align: left; }
+.apps-picked-text { min-width: 0; display: flex; flex-direction: column; }
+.apps-picked-text b { color: var(--strong); font-size: 13px; font-weight: 600; }
+.apps-picked .button.compact { align-self: center; }
+.apps-disconnect:hover:not(:disabled) { color: var(--red); border-color: color-mix(in srgb, var(--red), transparent 50%); }
+.apps-err { text-align: center; margin: 0; }
+
+.apps-section-head { display: flex; align-items: center; padding-top: 2px; }
+.apps-section-head b { color: var(--strong); font-size: 13px; font-weight: 600; }
+.apps-add { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; border: 1px dashed var(--border-hi); background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+.apps-add:hover { color: var(--strong); border-color: var(--focus); background: var(--hover); }
+.apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.apps-suggest { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--hover); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), transform var(--fast) var(--ease); }
+.apps-suggest:hover:not(:disabled) { background: var(--menu-hover); border-color: var(--border-hi); }
+.apps-suggest:disabled { cursor: default; }
+.apps-suggest-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.apps-suggest-text b { color: var(--strong); font-size: 12.5px; font-weight: 600; }
+.apps-suggest-text .tiny { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.apps-suggest-state { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted); opacity: 0; transition: opacity var(--fast) var(--ease); }
+.apps-suggest:hover .apps-suggest-state, .apps-suggest.on .apps-suggest-state, .apps-suggest.all .apps-suggest-state, .apps-suggest.busy .apps-suggest-state { opacity: 1; }
+.apps-suggest.off:hover .apps-suggest-state { color: var(--strong); }
+.apps-suggest.on .apps-suggest-state { color: var(--green); }
+
+/* What an app needs, over the popup. */
+.apps-need-back { position: absolute; inset: 0; z-index: 3; border-radius: inherit; background: rgb(0 0 0 / 55%); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 20px; animation: fade-in var(--med) var(--ease); }
+.apps-need { width: min(420px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 20px; border-radius: 16px; background: var(--surface); border: 1px solid var(--border-hi); box-shadow: 0 18px 48px rgb(0 0 0 / 55%); animation: modal-in var(--med) var(--ease-out); }
+.apps-need-head { display: flex; align-items: center; gap: 12px; }
+.apps-need-title { display: flex; flex-direction: column; min-width: 0; }
+.apps-need-title b { color: var(--strong); font-size: 14px; font-weight: 600; }
+.apps-need-wait { display: flex; align-items: center; gap: 9px; padding: 12px; border-radius: 10px; background: var(--hover); }
+.apps-need-note { display: flex; align-items: center; gap: 6px; }
+.apps-need-actions { display: flex; align-items: center; gap: 6px; padding-top: 2px; }
+.apps-need-actions .button.compact { align-self: center; }
+.apps-link { border: 0; background: none; padding: 0; color: var(--muted); font: inherit; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.apps-link:hover { color: var(--strong); }
+.apps-kind { display: flex; gap: 4px; padding: 3px; border-radius: 9px; background: var(--hover); border: 1px solid var(--border); }
+.apps-kind button { flex: 1; height: 26px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.apps-kind button.on { background: var(--surface-hi); color: var(--strong); box-shadow: 0 0 0 1px var(--border-hi); }
+.apps-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+@media (max-width: 720px) {
+  .apps-open-text, .account-btn-text, .apps-open-marks { display: none; }
+  .apps-open { justify-content: center; }
+  .agent-side-account { flex-direction: column; }
 }

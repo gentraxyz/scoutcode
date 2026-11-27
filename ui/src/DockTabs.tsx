@@ -2,8 +2,6 @@
 // panel can show (what used to be buttons beside the window controls) and the agent's background work.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke, type AgentStep, type Item } from './api';
-import { openGame } from './Games';
-import { openMusic } from './Music';
 import { Markdown } from './Transcript';
 import { core, ui, useCore, useUi, useView, type DockTab } from './store';
 import { Icon, IconButton, Spinner } from './widgets';
@@ -14,7 +12,6 @@ export type Shell = { id: string; command: string; running: boolean; exit: numbe
 /** What a fixed tab shows: its icon, name and a line for the New Tab page. */
 const KINDS: { id: DockTab; icon: string; name: string; about: string; shortcut?: string }[] = [
   { id: 'terminal', icon: 'terminal', name: 'Terminal', about: 'A new shell in the project folder', shortcut: 'Ctrl+`' },
-  { id: 'browser', icon: 'globe', name: 'Browser', about: 'A web page beside the chat' },
   { id: 'files', icon: 'files', name: 'Files', about: "The project's files, with an editor" },
   { id: 'changes', icon: 'changes', name: 'Changes', about: 'What changed since the last commit' },
   { id: 'review', icon: 'shield', name: 'Code Review', about: 'A second opinion from another model' },
@@ -249,9 +246,9 @@ export function NewTabPage({ tab }: { tab: DockTab }) {
   // Games lives in the Entertainment submenu, so it's left out of the grid.
   const kinds = KINDS.filter((k) => k.id !== 'games');
   const entertainment: { icon: string; name: string; about: string; run: () => void }[] = [
-    ...(games.on ? [{ icon: 'game', name: 'Games', about: 'Something to play while Scout works', run: () => (games.place === 'panel' ? navigate(tab, 'games') : openGame(games, true)) }] : []),
-    ...(music.on ? [{ icon: 'music', name: 'Music', about: 'The music player', run: () => openMusic() }] : []),
-    { icon: 'social', name: 'Social', about: 'Posts from Bluesky, Dev.to and Mastodon', run: () => ui.set({ page: 'social' }) },
+    ...(games.on ? [{ icon: 'game', name: 'Games', about: 'Something to play while Scout works', run: () => (games.place === 'panel' ? navigate(tab, 'games') : void import('./Games').then((m) => m.openGame(games, true))) }] : []),
+    ...(music.on ? [{ icon: 'music', name: 'Music', about: 'The music player', run: () => void import('./Music').then((m) => m.openMusic()) }] : []),
+    { icon: 'social', name: 'Social', about: 'Posts from Bluesky, Dev.to and Mastodon', run: () => { const { page, socialFrom } = ui.get(); ui.set({ page: 'social', socialFrom: page === 'social' ? socialFrom : page }); } },
   ];
   return (
     <div className="dock-page newtab" onKeyDown={arrows}>

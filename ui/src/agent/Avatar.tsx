@@ -27,6 +27,9 @@ const MOODS: Partial<Record<Status, FaceId[]>> = {
   waiting: ['wide', 'happy', 'wink'],
 };
 
+/** The Code agent's body: a rounded tag, pointed at the sides like < and >. */
+const CODE_TAG = 'M30 13H70Q77 13 81 19L95 43Q99 50 95 57L81 81Q77 87 70 87H30Q23 87 19 81L5 57Q1 50 5 43L19 19Q23 13 30 13Z';
+
 /** Where the eyes sit inside each body, in the 100×100 box, and how big they are. */
 const BODIES: Record<Shape, { body: ReactNode; y: number; s: number }> = {
   circle: { body: <circle cx="50" cy="50" r="50" />, y: 47, s: 1 },
@@ -37,6 +40,18 @@ const BODIES: Record<Shape, { body: ReactNode; y: number; s: number }> = {
   star: { body: <path d="M50 7L62.9 35.2L93.7 38.8L70.9 59.8L77 90.2L50 75L23 90.2L29.1 59.8L6.3 38.8L37.1 35.2Z" strokeWidth="9" strokeLinejoin="round" />, y: 53, s: 0.7 },
   diamond: { body: <path d="M50 5L95 50L50 95L5 50Z" strokeWidth="9" strokeLinejoin="round" />, y: 48, s: 0.88 },
   ghost: { body: <path d="M8 50A42 42 0 0 1 92 50V90Q85 98 78 90T64 90T50 90T36 90T22 90T8 90Z" />, y: 45, s: 0.95 },
+  // The Code agent only: a code tag, its sides pointed like < and >, with a faint rim so a dark one still reads on the
+  // dark theme.
+  code: {
+    body: (
+      <>
+        <path d={CODE_TAG} />
+        <path d={CODE_TAG} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2.5" />
+      </>
+    ),
+    y: 47,
+    s: 0.95,
+  },
 };
 
 /** Dark or light eyes, whichever reads on the colour. */
